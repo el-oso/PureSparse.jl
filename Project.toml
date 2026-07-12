@@ -1,0 +1,21 @@
+name = "PureSparse"
+uuid = "ec4be3f8-c56a-4afe-9cdb-3d99b644fbd7"
+version = "0.1.0"
+authors = ["el-oso <15278831+el-oso@users.noreply.github.com>"]
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Preferences = "21216c6a-2e73-6563-6e65-726566657250"
+PureBLAS = "cc9e14db-574f-4602-bf53-1167cc4b26d2"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+StrictMode = "0e98b4f4-d0e6-42ac-af0a-707c24852f32"
+TypeContracts = "c7a3f1e2-84b5-4d69-9e0a-1f2b3c4d5e6f"
+
+[compat]
+LinearAlgebra = "1.12.0"
+Preferences = "1.5.2"
+PureBLAS = "0.1.0"
+SparseArrays = "1.12.0"
+StrictMode = "0.3.7"
+TypeContracts = "0.14.0"
+julia = "1.12"
