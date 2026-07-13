@@ -122,7 +122,6 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
     cdbuf = ws.cd
     ir = ws.ir
     rs = ws.rs
-    mus = sym.max_update_size
 
     # ---- 1. assembly (same amap replay as cholesky!, design §4.2) + ‖A‖ scale ----
     # δ's ‖A‖-scale (design §5.1) is max|assembled entry| — our own choice of scale
@@ -215,16 +214,25 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
                 contig = nr == 1
                 C = contig ? view(panel, lr0:(lr0 + ctot - 1), lr0:(lr0 + k1 - 1)) :
                     view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
-                # L·D scaled copy of the R1 rows, staged in cdbuf (design §5.1). cdbuf
-                # holds max_update_size ≥ ctot·k1 values, which does NOT bound k1·ncol_d
-                # (a wide descendant with a short update block exceeds it), so the gemm
-                # is chunked over descendant columns: chunk width w = mus ÷ k1 ≥ ctot ≥ 1
-                # always fits, and in the common case one chunk covers all of ncol_d.
-                w = min(ncol_d, max(1, div(mus, k1)))
+                # L·D scaled copy of the R1 rows, staged in cdbuf (design §5.1). The
+                # natural staging shape (k1, ncol_d) is NOT bounded by max_extend_rows
+                # on the column axis (a wide descendant with a short update block), so
+                # the gemm is chunked over descendant columns with width capped at
+                # cdbuf's own column capacity (= max_extend_rows): each chunk's
+                # view(cdbuf, 1:k1, 1:wk) is then in-bounds by construction (k1 ≤
+                # max_extend_rows by the same containment as `c`; wk ≤ size(cdbuf, 2)
+                # by the cap — full derivation in types.jl's Workspace docstring) and,
+                # being a view of a pre-existing Matrix, costs zero allocation — the
+                # old flat max_update_size-sized cdbuf needed a fresh `_panelview`
+                # unsafe_wrap per chunk, ldlt!'s last per-call allocation source. In
+                # the common case (ncol_d ≤ max_extend_rows) one chunk covers all of
+                # ncol_d; chunking over the contraction axis only adds gemm calls
+                # (beta = 1 accumulation from the second chunk on), never extra flops.
+                w = min(ncol_d, size(cdbuf, 2))
                 c0 = 1
                 while c0 <= ncol_d
                     wk = min(w, ncol_d - c0 + 1)
-                    CD = _panelview(cdbuf, 1, k1, wk)
+                    CD = view(cdbuf, 1:k1, 1:wk)
                     for kk in 1:wk
                         dv = dvec[dj0 + c0 + kk - 2]
                         for a in 1:k1

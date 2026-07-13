@@ -284,6 +284,63 @@ gate 8/8**, numbers consistent with the original run (0.30–3.9ms PureSparse vs
 0.89–18.1ms CHOLMOD across n=200–2000). See "CURRENT FOCUS" and the M2 task 8 section
 below for the full tables and per-run caveats (unlocked clock).
 
+## M2 — zero-allocation `ldlt!` CLOSED, last open M2 gate item (2026-07-13)
+
+`ldlt!` is now genuinely zero-alloc: `@allocated ldlt!(F, A) == 0` measured directly
+after warmup on random SQD KKT matrices at n = 35 / 100 / 320 / 1000 (previously
+336 / 1344 / 6944 / 24640 bytes at those sizes — the allocation scaled with the number
+of update chunks, all of it Array headers from the per-chunk `_panelview` unsafe_wrap
+of `Workspace.cd`; the task-description's "1120 bytes on an n=35 case" was one point of
+that same curve on a different random draw). CLAUDE.md requirement 5 is now met for
+BOTH numeric refactorization paths — `cholesky!` re-verified 0 bytes, untouched.
+
+**The fix (option 2 of the two paths scoped in "M1 task 7" below — restructure the
+chunking, no new `Symbolic` field):** `Workspace.cd` changed from a flat
+`Vector{T}(max_update_size)` to a pre-allocated square
+`Matrix{T}(max_extend_rows, max_extend_rows)` used via `view(cdbuf, 1:k1, 1:wk)` —
+the identical zero-alloc view-of-a-Matrix technique that fixed `c`. The bound that
+made this valid for `c` (both extents ≤ `max_extend_rows` by row-containment) does
+NOT hold naturally for `cd`'s column extent (a wide descendant's `ncol_d` is
+unbounded by `max_extend_rows`), so the bound is instead established BY CONSTRUCTION:
+the update gemm was already chunked over descendant columns (previously with width
+`max_update_size ÷ k1`, purely to fit the old flat buffer); the chunk width is now
+capped at the buffer's own column capacity, `w = min(ncol_d, size(cdbuf, 2))`. Rows:
+`k1 ≤ max_extend_rows` by the same `R1 ⊆ R ⊆` descendant-below-diagonal-rows
+containment as `c`. Full derivation in `types.jl`'s `Workspace` docstring. Verified
+empirically, not just derived: a dev-time `@assert k1 ≤ size(cdbuf,1) && wk ≤
+size(cdbuf,2)` ran inside the chunk loop across the FULL test suite (15212 tests,
+including the SQD zoo and small-k1/wide-descendant cases) and never tripped, then was
+removed (the loop is `@inbounds`, which would elide the view's own bounds check —
+hence the explicit dev assertion rather than trusting the derivation alone).
+Chunking-over-the-contraction-axis semantics (`beta = 1` accumulation from the second
+chunk, contig fast path ordering) are unchanged; a small-k1/wide-descendant pair now
+takes `⌈ncol_d/max_extend_rows⌉` gemm calls instead of `⌈ncol_d·k1/max_update_size⌉`
+— same total flops, only per-call count. `Symbolic.max_update_size` no longer sizes
+any buffer (kept as a sizing diagnostic). Memory: `cd` is now the same
+`max_extend_rows²` shape as `c` — the exact precedent whose cost was measured at
+1.0×–4.4× the flat sizing on the M1 gate set (a one-time per-`Workspace` cost, paid
+by LLᵀ factors too since `Workspace` is shared, as the flat `cd` already was).
+
+**Verified:** full suite **15212/15212 passing** (15206 pre-existing + a new
+`ldlt!` zero-alloc gate testitem in `test/ldlt_tests.jl` mirroring `cholesky!`'s,
+including a lopsided-KKT shape for the wide-descendant case); residuals
+`norm(K*x-b)/norm(b)` ~2e-16..6.5e-16 at n=35..1000, bit-identical to the pre-fix
+baseline (same RNG draws — the restructure changed WHERE the staged copy lives, not
+one floating-point operation); inertia `(n_pos, n_neg, n_zero)` matches construction
+at every size; `cholesky!` still 0 bytes with residuals also bit-identical. M2 SQD
+wall-time gate re-run after the change (a buffer-shape change can shift cache
+behavior, so measured rather than assumed): **8/8 PASS** (neuromancer, unlocked
+clock), PS+PureBLAS warm medians 0.037/0.26/1.17/3.34 ms at n=200/500/1000/2000
+(own arm) vs CHOLMOD+OpenBLAS 0.073/0.93/5.10/18.7 ms — every point at or faster
+than the pre-change run recorded in the M2 task 8 table (e.g. n=2000 own 3.34 vs
+3.74 ms), i.e. no regression and plausibly a small win from the removed per-chunk
+allocations (not isolated from run-to-run variance; the gate criterion is the
+CHOLMOD comparison, which passes with the same ~2–5.5× margins as before).
+Datapoints saved per the save-datapoints rule (as
+`benchmark/results/gate_ldlt_neuromancer_m2zeroalloc.json` in the main checkout, a
+new file so the pre-change run's `gate_ldlt_neuromancer.json` datapoints stay
+intact).
+
 ## M1 task 7 — zero-allocation hardening, `cholesky!` now genuinely zero-alloc (2026-07-13)
 
 `Workspace.c` (`src/types.jl`) changed from a flat `Vector{T}(max_update_size)` —
@@ -306,7 +363,8 @@ applied to `ldlt!`'s `C` buffer, dropping it to **1120 bytes** (remaining source
 `max_update_size` but is NOT bounded by `max_extend_rows` the same way `c`'s is —
 `wk` can exceed `max_extend_rows` when `k1` is small, worked through explicitly, not
 assumed fixable by the same trick — left as a real, precisely-scoped follow-up, not
-attempted this pass). `solve!`'s outer permuted-RHS buffer now reuses `Workspace.rhs`
+attempted this pass; **since CLOSED, see "M2 — zero-allocation `ldlt!`" above**).
+`solve!`'s outer permuted-RHS buffer now reuses `Workspace.rhs`
 (pre-allocated at size `n`) for the single-RHS path instead of a fresh allocation per
 call — a real improvement, not yet zero (7904 B remaining on a test case; two further
 allocation sites in `_solve_L!`/`_solve_Lt!` identified and documented in
@@ -555,7 +613,8 @@ same pattern (D scales, unit-L bit-stable at 1e-12 under value scaling).
 **Deliberately out of scope here (still-open M2 items):** zero-alloc `ldlt!` (same
 category as M1 task 7's remaining `cholesky!`/`solve!` allocations — `ldlt!` shares the
 per-call `_panelview(cbuf,...)` update-buffer allocation and now a `cdbuf` one, plus
-`solve!`'s permuted-RHS scratch); simplicial storage/conversion; Davis–Hager
+`solve!`'s permuted-RHS scratch — **since CLOSED, see "M2 — zero-allocation `ldlt!`"
+above**); simplicial storage/conversion; Davis–Hager
 update/downdate; `refine!`; SQD benchmark-gate additions; IPM guide docs.
 
 ## CURRENT FOCUS — M1 core + real benchmark harness done; wall-time gate PASSING (11/14)
@@ -874,7 +933,8 @@ inertia stats), `simplicial/updown.jl` (simplicial storage + Davis–Hager updat
 split solves for all three factor types, IPM guide docs, SQD benchmark additions.
 
 **Gate:** SQD zoo (synthetic IPM iterate sequences) factor without failure; inertia
-matches construction; update/downdate round-trip ≤ 100·eps·n; zero-alloc `ldlt!`.
+matches construction; update/downdate round-trip ≤ 100·eps·n; zero-alloc `ldlt!`
+*(DONE 2026-07-13, the last open M2 gate item — see "M2 — zero-allocation `ldlt!`")*.
 
 **Tasks:**
 1. `ldlt` base case + dense unit tests vs a from-scratch no-pivot dense oracle. *(DONE

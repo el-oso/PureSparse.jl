@@ -63,8 +63,9 @@ FactorStats() = FactorStats(0, 0.0, 0, 0, 0, 0, 0.0, Inf, 0)
     Workspace{T,Ti}
 
 Preallocated scratch buffers reused across every `cholesky!`/`ldlt!`/`solve!` call on a
-factor sharing one `Symbolic` — sized once from `Symbolic.max_update_size`/
-`max_extend_rows` so the numeric phase never allocates (CLAUDE.md requirement 5).
+factor sharing one `Symbolic` — sized once from `Symbolic.max_extend_rows` (the numeric
+buffers `c`/`cd`/`ir`/`rs`) so the numeric phase never allocates (CLAUDE.md requirement
+5; `Symbolic.max_update_size` remains a sizing diagnostic, no longer a buffer bound).
 """
 struct Workspace{T,Ti<:Integer}
     c::Matrix{T}                  # update block buffer, (max_extend_rows, max_extend_rows) —
@@ -80,10 +81,31 @@ struct Workspace{T,Ti<:Integer}
                                    # modest 1.0–4.4x memory increase over the old flat
                                    # `max_update_size` sizing (measured on the M1 gate set), a
                                    # one-time Workspace cost, not a hot-path one.
-    cd::Vector{T}                  # L*D scaled-copy buffer for LDLᵀ updates, length max_update_size —
-                                   # STILL allocates per-call via `_panelview` (M1 task 7 follow-up,
-                                   # not covered by this pass: its (k1, wk) chunk shape isn't bounded
-                                   # by max_extend_rows the way `c`'s is — see ROADMAP.md)
+    cd::Matrix{T}                  # L·D scaled-copy staging buffer for LDLᵀ descendant updates,
+                                   # (max_extend_rows, max_extend_rows), used via
+                                   # `view(cd, 1:k1, 1:wk)` — the same zero-alloc
+                                   # view-of-a-preallocated-Matrix technique as `c` above.
+                                   # In-bounds proof: ROWS — k1 = |R1| ≤ the descendant's own
+                                   # below-diagonal row count ≤ max_extend_rows, by exactly the
+                                   # containment argument written for `c` (R1 ⊆ R ⊆ d's
+                                   # below-diagonal rows). COLUMNS — unlike `c`, the natural
+                                   # (un-chunked) column extent here is the descendant's column
+                                   # count ncol_d, which max_extend_rows does NOT bound (a wide
+                                   # root-side supernode can have many columns and few
+                                   # below-diagonal rows); the bound instead holds BY
+                                   # CONSTRUCTION: ldlt.jl's update gemm was already chunked
+                                   # over descendant columns (to fit the old flat
+                                   # max_update_size sizing), and the chunk width is now capped
+                                   # at this buffer's own column capacity, wk ≤ size(cd, 2) =
+                                   # max_extend_rows, so the view can never overflow — verified
+                                   # empirically (dev-time assertion over the full test suite +
+                                   # gate matrices) before the assertion was removed. Cost of
+                                   # the cap: a small-k1/wide-descendant pair now takes
+                                   # ⌈ncol_d/max_extend_rows⌉ gemm calls where the old sizing
+                                   # allowed ⌈ncol_d·k1/max_update_size⌉ — same total flops,
+                                   # only per-call overhead; the flat sizing's fresh
+                                   # `_panelview` unsafe_wrap per chunk (an Array-header
+                                   # allocation, the last 1120 B/call of ldlt!) is gone.
     relmap::Vector{Ti}            # length n, no clearing needed between supernodes (design §4.3)
     ir::Vector{Ti}                # length max_extend_rows: per-update hoisted target-row list —
                                    # the staged scatter's `relmap[_row(rowind, ...)]` double
@@ -115,7 +137,7 @@ function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
     mer = max(sym.max_extend_rows, 1)
     Workspace{T,Ti}(
         Matrix{T}(undef, mer, mer),
-        Vector{T}(undef, sym.max_update_size),
+        Matrix{T}(undef, mer, mer),
         Vector{Ti}(undef, sym.n),
         Vector{Ti}(undef, mer),
         Vector{Ti}(undef, mer + 1),

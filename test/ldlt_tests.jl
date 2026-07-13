@@ -220,6 +220,38 @@ end
     @test relerr(L2, L1) < 1.0e-12
 end
 
+@testitem "ldlt!: refactorize is genuinely zero-allocation (M2 gate, CLAUDE.md req 5)" setup = [LDLTHelpers] begin
+    using Random, LinearAlgebra, SparseArrays
+    rng = MersenneTwister(77)
+    # Two shapes: a generic SQD KKT, and a lopsided one (few coupled variables, wide
+    # blocks) to also exercise wide-descendant/short-update-block pairs — the small-k1
+    # case whose chunk width used to exceed max_extend_rows under the old flat
+    # max_update_size-sized `cd` staging buffer.
+    for (npos, nneg, dens) in ((20, 15, 0.3), (60, 8, 0.25))
+        n = npos + nneg
+        K = random_sqd_kkt(rng, npos, nneg, dens)
+        signs = vcat(fill(1, npos), fill(-1, nneg))
+        F = PureSparse.ldlt(K; signs)
+        PureSparse.ldlt!(F, K)   # warm up (any first-touch allocation happens here)
+        allocs = @allocated PureSparse.ldlt!(F, K)
+        # History: 1120 bytes remained after M1 task 7 fixed the shared `c` update
+        # buffer -> 0 after `Workspace.cd` (the L·D scaled-copy staging buffer) changed
+        # from a flat `Vector{T}(max_update_size)` needing a fresh `_panelview`
+        # unsafe_wrap per chunk to a pre-allocated square
+        # `Matrix{T}(max_extend_rows, max_extend_rows)` used via
+        # `view(cdbuf, 1:k1, 1:wk)` — in-bounds because k1 ≤ max_extend_rows (same
+        # containment proof as `c`) and the chunk width wk is capped at the buffer's
+        # own column capacity by construction (derivation in types.jl's Workspace
+        # docstring, cap in ldlt.jl's update loop).
+        @test allocs == 0
+        # zero-alloc must not have cost correctness on this factor
+        b = randn(rng, n)
+        x = F \ b
+        @test norm(Matrix(K) * x - b) / norm(b) < 1.0e-8
+        @test (F.stats.n_pos, F.stats.n_neg, F.stats.n_zero) == (npos, nneg, 0)
+    end
+end
+
 @testitem "ldlt: n_pos/n_neg convenience is exactly equivalent to explicit signs" setup = [LDLTHelpers] begin
     using Random
     rng = MersenneTwister(76)
