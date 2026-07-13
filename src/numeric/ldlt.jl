@@ -185,7 +185,25 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
 
             if k1 > 0
                 ctot = k1 + k2
-                C = view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
+                # Contiguity fast path (same as llt.jl's): when the descendant's rows
+                # occupy a contiguous run of the ancestor's row list (identity-shift
+                # scatter), the chunked gemm accumulates straight into the panel
+                # (beta = 1 from the first chunk) and the staged scatter disappears.
+                # The gemm then also writes the never-stored/never-read strict-upper of
+                # the k1×k1 diagonal-block part — harmlessly, and with its symmetric
+                # mirror values (C's top block is L·D·Lᵀ-symmetric), not garbage; that
+                # region was already junk-written by ger!'s trailing rectangle below.
+                # Both view branches are the same SubArray type, so `C` stays concrete.
+                lr0 = Int(relmap[_row(rowind, drp0, q)])
+                contig = true
+                for a in 2:ctot
+                    if Int(relmap[_row(rowind, drp0, q + a - 1)]) != lr0 + a - 1
+                        contig = false
+                        break
+                    end
+                end
+                C = contig ? view(panel, lr0:(lr0 + ctot - 1), lr0:(lr0 + k1 - 1)) :
+                    view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
                 # L·D scaled copy of the R1 rows, staged in cdbuf (design §5.1). cdbuf
                 # holds max_update_size ≥ ctot·k1 values, which does NOT bound k1·ncol_d
                 # (a wide descendant with a short update block exceeds it), so the gemm
@@ -204,19 +222,21 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
                     end
                     Lblk = view(panel_d, q:(q + ctot - 1), c0:(c0 + wk - 1))
                     gemm!(C, Lblk, CD; transA = 'N', transB = 'T', alpha = -one(T),
-                        beta = (c0 == 1 ? zero(T) : one(T)))
+                        beta = ((contig || c0 > 1) ? one(T) : zero(T)))
                     c0 += wk
                 end
-                # Scatter-add: full C for the below-block rows, lower triangle only
-                # inside the diagonal block (its strict-upper is never stored/read,
-                # same convention as llt.jl's syrk scatter).
-                for a in 1:ctot
-                    ra = _row(rowind, drp0, q + a - 1)
-                    lra = Int(relmap[ra])
-                    bmax = min(a, k1)
-                    for b in 1:bmax
-                        rb = _row(rowind, drp0, q + b - 1)
-                        panel[lra, Int(relmap[rb])] += C[a, b]
+                if !contig
+                    # Scatter-add: full C for the below-block rows, lower triangle only
+                    # inside the diagonal block (its strict-upper is never stored/read,
+                    # same convention as llt.jl's syrk scatter). Column-outer/row-inner
+                    # so the inner loop walks `panel` and `C` contiguously down one column
+                    # (same measured-locality fix as llt.jl's scatters).
+                    for b in 1:k1
+                        lrb = Int(relmap[_row(rowind, drp0, q + b - 1)])
+                        for a in b:ctot
+                            lra = Int(relmap[_row(rowind, drp0, q + a - 1)])
+                            panel[lra, lrb] += C[a, b]
+                        end
                     end
                 end
             end

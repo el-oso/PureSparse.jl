@@ -12,6 +12,87 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
+## Perf investigation — large-n scatter-add overhead found and fixed (2026-07-13)
+
+`benchmark/size_sweep.jl` showed PureSparse losing to CHOLMOD+OpenBLAS at n=1024/2048,
+by a WIDER margin on the PS+OpenBLAS arm than PS+PureBLAS — the tell that the gap lived
+in shared scheduling code (`src/numeric/llt.jl`), not kernel quality, since both
+PureSparse arms call the identical OpenBLAS kernels through the swap in that
+configuration.
+
+**Profiled first, not guessed** (`Profile.@profile` over 30 warm `cholesky!` calls at
+n=2048, flat + tree output). The `@inline` hypothesis named in the task brief was
+checked and ruled out: `_row`/`_panelview` already carry `@inline` (still true), and
+`Base.return_types` on `cholesky!`/`ldlt!` showed fully concrete return types — no
+boxing, no dispatch failure anywhere in the loop. The actual hot spot: the
+scatter-add loops that fold a descendant's computed update block `C`/`C1`/`C2` into the
+ancestor panel (`llt.jl` lines ~135–160 pre-fix) were **row-outer, column-inner**
+(`for a in 1:k1, for b in 1:a`), which strides `panel`/`C1` by their full column height
+on every inner-loop step — at n≈2048 that stride is tens of KB, effectively a cache
+miss per element on two arrays at once. This one section of code was ~22–28% of total
+`cholesky!` wall time in the flat profile.
+
+**Two fixes, both purely eliminating overhead — no scheduling/algorithm change:**
+
+1. **Loop-order swap**: column-outer/row-inner (`for b in 1:k1, for a in b:k1`) so the
+   inner loop walks `panel` and `C`/`C1`/`C2` contiguously down one column instead of
+   striding. Isolated microbenchmark (`k1=1000` triangle scatter): **2.4x faster**
+   (1.30ms → 0.54ms). Applied identically to `llt.jl`'s two scatter sites and
+   `ldlt.jl`'s one (same left-looking structure, same bug — CLAUDE.md's mirrored-fix
+   expectation).
+2. **Contiguity fast path**: when a descendant's remaining rows form a contiguous run
+   of the ancestor's row list (the common case in the dense trailing part of the
+   factor — `lr(a) = lr0 + a - 1`), the whole "compute update block C into a staging
+   buffer, then scatter-add element-by-element via `relmap[_row(...)]` lookups" pattern
+   is unnecessary: `syrk!`/`gemm!` can accumulate directly into the panel with
+   `beta=1`, since the target IS a contiguous subview of the panel. This removes the
+   staging write+read and all per-element `relmap` lookups for that case entirely,
+   falling back to the staged path (loop-swap-only) when non-contiguous. Applied to
+   both `llt.jl` (syrk!/gemm! sites) and `ldlt.jl` (its chunked gemm! site, `contig`
+   passed through the chunk-`beta` logic so multi-chunk descendants still accumulate
+   correctly).
+
+**Verified, not assumed:** correctness re-checked via direct residual (`norm(A*x-b)/norm(b)`
+on random SPD and random SQD/KKT matrices spanning the fast and non-fast paths, both
+~1e-15/1e-16, matching pre-fix behavior), zero-allocation gate re-checked (`cholesky!`
+still 0 bytes, `ldlt!` unchanged at 7728 bytes — the fast path reuses `panel`, never
+touches `Workspace.cd`'s allocation-bearing chunk path differently). Full suite
+**15206/15206 passing** (`test/runtests.jl`, unchanged from before this pass — no test
+needed loosening).
+
+**Before → after, n=1024/2048, warm numeric refactor median (`neuromancer`, focused
+repro matching `size_sweep.jl`'s methodology):**
+
+| n | arm | before | after |
+|---|---|---|---|
+| 1024 | PS+PureBLAS / CHOLMOD | 0.952x (near-tie) | **1.10x** |
+| 1024 | PS+OpenBLAS / CHOLMOD | 0.924x (losing) | **1.04x** |
+| 2048 | PS+PureBLAS / CHOLMOD | 0.834x (losing) | **1.03x** |
+| 2048 | PS+OpenBLAS / CHOLMOD | 0.789x (losing, worse) | **0.96x** (near-tie, was losing by 21%) |
+
+Full `benchmark/size_sweep.jl` re-run afterward (n=2..2048, saved to
+`benchmark/results/size_sweep_neuromancer.json`) confirms: PS+PureBLAS now beats
+CHOLMOD at every size 2–2048 (1.04x–8.77x), PS+OpenBLAS beats or ties CHOLMOD at every
+size except n=64 (0.74x, an existing small-n per-call-overhead effect unrelated to this
+fix — same as pre-existing behavior at that size) and n=2048 (0.96x, up from 0.79x).
+`n=2048`'s remaining ~4% OpenBLAS-arm gap was not chased further: profiling after the
+fix shows `potrf!`/`syrk!`/`gemm!`/`trsm!` kernel time now dominates (as it should),
+with the scatter loops no longer visible as a distinct hot spot in the flat profile —
+what's left looks like ordinary dense-kernel-share-of-total-time noise, not a
+scheduling-layer defect, and chasing sub-5% further would mean second-guessing OpenBLAS
+kernel tuning, out of scope for this pass.
+
+**Gates re-run, both still PASS, no regression:** M1 LLᵀ gate **14/14** (up from
+11–14/14 baseline — the OpenBLAS arm, which was the weaker of the two PureSparse arms
+against CHOLMOD, now clears CHOLMOD on every matrix too, not just PureBLAS's arm). M2
+SQD/LDLᵀ gate **8/8**, unchanged (0.042–3.61ms PureSparse vs 0.073–18.25ms CHOLMOD
+across n=200–2000 — `ldlt.jl`'s fast path pays off less dramatically here since the SQD
+gate matrices are smaller/sparser than the size-sweep's dense-trailing-part-heavy random
+SPD case, but the fix is real and correctness-verified regardless).
+
+Changed: `src/numeric/llt.jl` (`cholesky!`'s descendant-update loop), `src/numeric/ldlt.jl`
+(`ldlt!`'s descendant-update loop, same pattern). Branch: `perf-large-n`.
+
 ## M4 progress — drop-in LANDED for `cholesky` AND `ldlt` (2026-07-13)
 
 `src/dropin_toggle.jl` (always loaded): `activate!()`/`deactivate!()` set the
