@@ -75,20 +75,36 @@ Diagnosed root cause (not guessed — verified by direct measurement, per CLAUDE
   `TypeError` and would have made calibration impossible without this fix. Fixed via
   `Tuple(@load_preference(...))`.
 
-**Not yet fixed — real follow-up, not swept under the rug:** relaxed amalgamation needs a
-child-ordering extension (choose, during `etree.jl`'s postorder DFS, which sibling is
-visited LAST per parent — e.g. by colcount/pattern similarity to the parent — so a good
-merge candidate becomes contiguity-eligible instead of an arbitrary DFS-order child).
-This touches the earliest pipeline stage (postorder) that everything downstream depends
-on, so it is scoped as a careful, dedicated task (delegated to Fable per CLAUDE.md's "hard
-algorithmic piece" guidance), not attempted as a quick patch under time pressure. See "M1
-task 7b" below.
+**Task 7b (child-ordering postorder) IMPLEMENTED and MEASURED A NO-OP (2026-07-13) — the
+child-choice link of the diagnosis above is wrong.** `postorder` now takes an optional
+sibling `priority` (max-colcount child visited last, i.e. made contiguity-eligible;
+derivation in the `postorder` docstring), wired through `symbolic()` via a preliminary
+default-order postorder+relabel (Gilbert–Ng–Peyton `column_counts` requires a postordered
+labeling, so counts are computed there and mapped back). All 12220 tests stay green, the
+postorder genuinely changes (154 of 6400 positions on laplacian2d 80×80) — and `nsuper`
+is IDENTICAL on every gate matrix (3041 on lap80, 75.8% width-1, cells within 0.2%), gate
+unchanged (5/14 vs 6/14 baseline; the one differing row, `random_n1000_d005` own-arm
+1.209ms vs 1.194ms, is a 2% unlocked-clock noise swing, and its supernode partition is
+bit-identical). Instrumented root cause: of 1777 contiguity-eligible (child,parent) pairs
+on lap80, the zero-fraction test rejects only **2** — so WHICH child is contiguous never
+mattered; whatever sits in the slot merges. The true binding constraint is structural:
+**one contiguous child branch per parent per single ascending amalgamation pass** (4815
+fundamental → 3041 after 1774 merges; the other 3037 pairs fail contiguity and no sibling
+order can fix that, since an earlier sibling is always processed before the later
+sibling's merge extends the parent's column range). Real lead, measured in scratch but
+NOT implemented (out of the 7b scope, needs design sign-off): **iterating
+`relaxed_amalgamation` to a fixpoint** collapses lap80 to 90 supernodes (0% width-1) —
+but with the current `rows_est = colcount[start[s]]` chain proxy it over-merges (padded
+cells 233K → 804K vs nnzL 114K, effective z ≈ 0.86 ≫ every tier limit) because cascaded
+merges of non-nesting siblings make the topmost-column colcount a big underestimate of
+the true union row height. A correct version needs a union-height row estimate (e.g.
+incremental merge of child rowinds, or `supernode_rowind`-style height) inside the merge
+test, then fixpoint (or a proper multi-child bottom-up pass). That is the next 7b'.
 
 Remaining M1 tasks: (7) allocation hardening for `cholesky!` (currently
 correct but not zero-alloc — see "known follow-up" below) and `solve!` (deliberately
-deferred, allocates per call); **(7b, NEW) child-ordering relaxed amalgamation** — the
-real blocker on the gate above, diagnosed but not yet fixed; (9) DocumenterVitepress docs
-pages.
+deferred, allocates per call); **(7b', NEW) multi-child amalgamation with a union-height
+row estimate** — see the measured finding above; (9) DocumenterVitepress docs pages.
 
 **Dependency note:** PureBLAS.jl's `Project.toml` had its `TypeContracts` compat bumped
 from `"0.13.1"` to `"0.13.1, 0.14"` and its TypeContracts dependency switched to

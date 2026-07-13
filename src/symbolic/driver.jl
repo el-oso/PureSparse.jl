@@ -134,7 +134,32 @@ function symbolic(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering = AMDOrde
 
     ucolptr, urowval = symmetrized_upper(n, A.colptr, A.rowval, amd_perm, amd_iperm)
     parent0 = etree(n, ucolptr, urowval)
-    post, postinv = postorder(n, parent0)
+
+    # Merge-aware postorder (design §3.5): relaxed amalgamation requires column
+    # contiguity, which the postorder grants to exactly ONE child per parent (the
+    # last-visited sibling) — so pick that sibling by column count (derivation in the
+    # `postorder` docstring). column_counts (Gilbert–Ng–Peyton) needs a postordered
+    # labeling, so run a preliminary default-order postorder + relabel to get exact
+    # counts and map them back to parent0's labels. Column counts are a property of the
+    # elimination order, unchanged by etree-postorder relabeling (design §3.2 — the
+    # postorder is composed into `perm` precisely because it preserves fill), and here
+    # they carry no correctness weight anyway: they are only a sibling-ordering
+    # heuristic, and the final `colcount` below is recomputed on the final pattern.
+    #
+    # MEASURED (2026-07-13, ROADMAP "CURRENT FOCUS"): on the gate matrices this changes
+    # WHICH sibling merges but not HOW MANY merge — the zero-fraction test rejects almost
+    # no contiguity-eligible pair (2 of 1777 on laplacian2d 80×80), so nsuper is
+    # unchanged; the binding constraint is one-contiguous-child-per-parent per
+    # amalgamation pass, not sibling choice. Kept because any future multi-pass/cascade
+    # amalgamation needs a principled sibling order as its substrate.
+    _, postinv_pre = postorder(n, parent0)
+    cp_pre, rv_pre = relabel_pattern(n, ucolptr, urowval, postinv_pre)
+    cc_pre = column_counts(n, cp_pre, rv_pre, etree(n, cp_pre, rv_pre))
+    colcount0 = Vector{Ti}(undef, n)
+    @inbounds for j in 1:n
+        colcount0[j] = cc_pre[postinv_pre[j]]
+    end
+    post, postinv = postorder(n, parent0, colcount0)
 
     perm = Vector{Ti}(undef, n)     # perm[finallabel] = original index (design.md §3.2 composition)
     @inbounds for orig in 1:n

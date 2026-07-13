@@ -108,22 +108,56 @@ function etree(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Intege
 end
 
 """
-    postorder(n, parent) -> (post::Vector{Ti}, postinv::Vector{Ti})
+    postorder(n, parent[, priority]) -> (post::Vector{Ti}, postinv::Vector{Ti})
 
-Postorder of the forest given by `parent` (children visited in ascending column order,
-for determinism — design.md §3.2). `post[k]` is the k-th node visited; `postinv[j]` is
-node `j`'s position in the postorder. Iterative (stack-based) — no recursion whose depth
-depends on runtime data (CLAUDE.md req 4).
+Postorder of the forest given by `parent`. `post[k]` is the k-th node visited;
+`postinv[j]` is node `j`'s position in the postorder. Iterative (stack-based) — no
+recursion whose depth depends on runtime data (CLAUDE.md req 4).
+
+Without `priority`, each node's children are visited in ascending column order (for
+determinism — design.md §3.2). With `priority` (length `n`), children are visited in
+ascending `(priority, column)` order, so the LAST-visited child — the one the postorder
+makes numerically contiguous with its parent, and therefore the only sibling eligible
+for relaxed amalgamation's column-contiguity requirement (design §3.5) — is the
+max-priority child. Any sibling order yields a valid postorder (parents still follow all
+descendants), so this changes nothing about etree/colcount correctness downstream, only
+which sibling ends up parent-contiguous.
+
+Why colcount is the priority `symbolic()` passes (own derivation, no external recipe):
+for an etree child `s` of `t`, `pattern(L[:,s]) \\ {s,t} ⊆ pattern(L[:,t])` (Liu 1986,
+`refs/linear_algebra/Supernodal/liu1986.pdf`), hence `colcount[s] ≤ colcount[t] + 1`
+with equality exactly when the patterns nest — the fundamental-supernode condition
+(Liu–Ng–Peyton 1993, design §3.4). So the max-colcount child is the closest to exact
+nesting, i.e. the one whose merge pads the fewest explicit zeros into the block that
+relaxed amalgamation's zero-fraction test evaluates (Ashcraft–Grimes 1989 / Ng–Peyton
+1993 motivate the merge itself; the sibling-selection rule is our own reasoning on top).
 """
-function postorder(n::Int, parent::Vector{Ti}) where {Ti<:Integer}
-    # Build child lists via a head/next linked-list (bucketed by parent), children in
-    # ascending order so DFS visits them ascending too.
+function postorder(
+        n::Int, parent::Vector{Ti}, priority::Union{Nothing,Vector{Ti}} = nothing,
+) where {Ti<:Integer}
+    # Build child lists via a head/next linked-list (bucketed by parent). Head insertion
+    # reverses insertion order, so inserting in DESCENDING visit order yields per-parent
+    # lists in ascending visit order, which the DFS then consumes front-to-back.
     head = zeros(Ti, n + 1)     # head[n+1] = roots (parent == 0)
     next = zeros(Ti, n)
-    @inbounds for j in n:-1:1
-        p = parent[j] == 0 ? n + 1 : parent[j]
-        next[j] = head[p]
-        head[p] = j
+    if isnothing(priority)
+        @inbounds for j in n:-1:1
+            p = parent[j] == 0 ? n + 1 : parent[j]
+            next[j] = head[p]
+            head[p] = j
+        end
+    else
+        length(priority) == n ||
+            throw(DimensionMismatch("postorder: priority has length $(length(priority)), expected $n"))
+        # Descending (priority, column) insertion ⇒ ascending (priority, column) visit
+        # order ⇒ last-visited sibling = max priority, ties broken by largest column
+        # (identical to the no-priority behavior when priorities are uniform).
+        ins = sort!(collect(Ti, 1:n); by = j -> (priority[j], j), rev = true)
+        @inbounds for j in ins
+            p = parent[j] == 0 ? n + 1 : parent[j]
+            next[j] = head[p]
+            head[p] = j
+        end
     end
     post = Vector{Ti}(undef, n)
     postinv = Vector{Ti}(undef, n)
