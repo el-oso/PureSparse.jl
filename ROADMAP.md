@@ -6,7 +6,7 @@ Fable (v1) → adversarially reviewed by Opus (2 BLOCKERs, 7 DEFECTs found, all 
 corrected by Fable (v2, current). Clean-room policy: `docs/design.md` §11 — CHOLMOD
 source must never be read, only published papers.
 
-## CURRENT FOCUS — M1 core + real benchmark harness done; gate NOT YET PASSING (diagnosed)
+## CURRENT FOCUS — M1 core + real benchmark harness done; wall-time gate PASSING (11/14)
 
 M1 tasks 1–6 are done and tested (12220/12220 tests passing): scaffold, AMD ordering,
 etree/postorder/column-counts, fundamental-supernode detection + relaxed amalgamation,
@@ -101,10 +101,98 @@ the true union row height. A correct version needs a union-height row estimate (
 incremental merge of child rowinds, or `supernode_rowind`-style height) inside the merge
 test, then fixpoint (or a proper multi-child bottom-up pass). That is the next 7b'.
 
+**Task 7b' (multi-child fixpoint amalgamation with an exact union-height estimate)
+IMPLEMENTED and MOVED THE GATE (2026-07-13): 6/14 baseline → 4/14 with the fixpoint
+change alone at the OLD thresholds → 11/14 after recalibrating `AMALG_COLS`/`AMALG_ZMAX`
+against it.** Two independent changes, both in `src/symbolic/supernodes.jl` /
+`src/tuning.jl`:
+
+1. **Fixpoint loop, not a single ascending pass.** `relaxed_amalgamation` now repeats
+   ascending passes until one performs no merge (path-halved `owner` array redirects
+   absorbed supernodes to their current alive target in near-O(1), so re-scanning is
+   cheap). Measured pass counts on the gate set: 2 (both banded matrices — their etree is
+   near-chain, one extra sibling almost never appears) up to 7 (both laplacian2d sizes —
+   bushy 2D-grid etrees, most nodes have 3-4 children). This is what actually escapes the
+   "one contiguous child per parent per pass" ceiling task 7b diagnosed.
+2. **Exact row-count estimate**, replacing the `colcount[start[s]]` proxy: every block
+   the fixpoint process ever forms has exactly one "range root" (its last column — proved
+   by induction over the merge step, since a merge only ever redirects into a target
+   whose interval already contains `parent[endc[child]]`), so the block's true
+   below-diagonal row set is exactly `struct(L[:,endc]) \ {endc}` and its height is
+   `ncols + colcount[endc] - 1` — O(1) per merge decision, no incremental pattern union
+   needed. Verified empirically over every gate matrix's final partition
+   (`height-formula-violations=0` in every run) and pinned as a first-class test on
+   laplacian2d(24,24) (`test/supernode_tests.jl`, "2D grid Laplacian: superset invariant +
+   z-bound under multi-pass amalgamation") that also re-checks the §3.4 superset
+   invariant against a from-scratch elimination-game oracle on the actual bushy partition
+   the fixpoint produces, not just the random-graph zoo the prior tests used.
+
+**Before/after supernode-partition stats (old single-pass proxy vs new fixpoint+exact
+height, calibrated thresholds — see below):**
+
+| matrix | nsuper (old→new) | mean width (old→new) | width-1 % (old→new) | cells/nnzL (old→new) |
+|---|---|---|---|---|
+| random_n200_d02 | 77→30 | 2.6→6.67 | 53.2→33.3 | 2.123→2.767 |
+| random_n500_d01 | 182→78 | 2.75→6.41 | 53.3→43.6 | 1.86→2.083 |
+| random_n1000_d005 | 366→169 | 2.73→5.92 | 49.7→39.6 | 1.535→1.793 |
+| banded_n1000_bw20 | 8→62 | 125.0→16.13 | 0.0→0.0 | 6.884→1.716 |
+| banded_n3000_bw10 | 24→188 | 125.0→15.96 | 0.0→0.0 | 12.423→2.36 |
+| laplacian2d_40x40 | 719→193 | 2.23→8.29 | 75.7→25.9 | 2.233→2.266 |
+| laplacian2d_80x80 | 3041→659 | 2.1→9.71 | 75.8→16.7 | 2.048→2.035 |
+
+Two things worth calling out plainly: (a) on the banded matrices the OLD single-pass
+algorithm already collapsed everything into a few very wide supernodes (width ~125) via
+long single-child chains, but with catastrophic padding (cells/nnzL 6.9x–12.4x nnzL) that
+nobody had actually measured before — the new algorithm's exact height estimate rejects
+those over-fat chain merges and produces MORE, narrower, far-less-padded supernodes
+(1.7x–2.4x) that turned out to be the single biggest wall-time win on the whole set; (b)
+on laplacian2d, `nsuper` collapses roughly in line with the scratch-measured lead from
+task 7b (was 3041→90 uncalibrated/over-merged; with real thresholds it's 3041→659, less
+dramatic than the uncalibrated number but with padding ratios that actually respect
+`AMALG_ZMAX`).
+
+**Threshold recalibration was necessary and is not optional plumbing.** The fixpoint
+change ALONE, at the original starting-point thresholds (`AMALG_COLS=(8,32,128)`,
+`AMALG_ZMAX=(0.9,0.15,0.03)` — chosen in M1 task 4 before the estimate was trustworthy
+enough to calibrate against), REGRESSED the gate to 4/14 (down from the 6/14 single-pass
+baseline): banded flipped decisively to PASS, laplacian2d got measurably closer but still
+failed, and all three random matrices regressed from PASS/near-pass to fail. A Chairmarks
+sweep of the warm-refactor arm over `amalg_zmax ∈ {(0.9,0.15,0.03), (0.95,0.3,0.08),
+(0.97,0.35,0.08), (0.98,0.4,0.1)}` × `amalg_cols ∈ {(8,32,128), (16,64,128), (16,64,256)}`
+on the 7 affected matrices found that tightening zmax (less merging) made every matrix
+class WORSE, not better — the opposite of the "thresholds are too permissive" hypothesis
+tested first — while loosening to `amalg_zmax=(0.97,0.35,0.08)` (reusing, not
+re-deriving, the exact zmax point already probed as "far more permissive" in task 7b's
+prior session) combined with doubling `amalg_cols` to `(16,64,128)` gave a clean win on
+every gate matrix except small unstructured-random ones (`random_n200`, `random_n1000`
+own-arm), which sit at a noise-level tie against CHOLMOD's near-zero per-call overhead at
+that size — a pre-existing gap unrelated to supernode shape (random_n200 already failed
+in the very first 6/14 baseline, before any of this session's work). New defaults are now
+baked into `src/tuning.jl` (with the sweep and rationale in its derivation comment) and
+`docs/design.md` §3.5's table, not left as a benchmark-only override.
+
+**Full 14-row gate result (2026-07-13, `neuromancer`, unlocked clock — same
+best-effort/noisier caveat as the original baseline run):** `julia --project=benchmark
+benchmark/gate.jl` → **11/14 matrix-arm combinations PASS** (up from 6/14 baseline, 4/14
+mid-way through this task before recalibration). Every banded and laplacian2d row now
+PASSes on both own-ordering and same-permutation arms; `random_n500` now also passes
+cleanly (was already passing pre-fixpoint too); `random_n200` (both arms) and
+`random_n1000` own-arm remain fail (near-tie, see above) — `random_n1000` same-perm now
+passes. Full test suite: 13554/13554 passing (`test/runtests.jl`, ReTestItems) with the
+new code and new defaults, including the new laplacian2d-specific invariant test.
+
+**M1's "faster on at least half the set" gate requirement is now MET** (11/14 ≥ 7/14).
+This is a real, measured wall-time win, not a supernode-count win that didn't translate —
+the padded-cell ratios above show the fixpoint's merges are legitimately more
+BLAS-3-efficient, not just fewer-and-fatter.
+
 Remaining M1 tasks: (7) allocation hardening for `cholesky!` (currently
 correct but not zero-alloc — see "known follow-up" below) and `solve!` (deliberately
-deferred, allocates per call); **(7b', NEW) multi-child amalgamation with a union-height
-row estimate** — see the measured finding above; (9) DocumenterVitepress docs pages.
+deferred, allocates per call); (9) DocumenterVitepress docs pages. Task 7b' above is
+DONE. Possible follow-up (not required by M1's gate, which is already met): investigate
+why `random_n200`/`random_n1000` own-arm sit at a noise-level tie — likely per-call
+dispatch/relmap-setup fixed cost at very small n, not a supernode-shape problem, so a fix
+(if pursued) would live in the numeric update-loop scheduling (§4.3), not amalgamation.
 
 **Dependency note:** PureBLAS.jl's `Project.toml` had its `TypeContracts` compat bumped
 from `"0.13.1"` to `"0.13.1, 0.14"` and its TypeContracts dependency switched to
@@ -181,9 +269,13 @@ CHOLMOD-AMD fill on the zoo.
 6. Supernodal LLᵀ numeric (load → linked-list update loop → potrf/trsm) + solve.
 7. Refactorize/allocation hardening + StrictMode guards. *(partial — see "known follow-up")*
 8. Benchmark harness + gate run + amalgamation threshold calibration. *(harness done,
-   `benchmark/{matrices,openblas_backend,gate,benchmarks}.jl`; gate run for real, 6/14
-   passing, root cause diagnosed — see "CURRENT FOCUS"; the fix itself is task 7b)*
-7b. Child-ordering relaxed amalgamation (see "CURRENT FOCUS" diagnosis) — delegated to Fable.
+   `benchmark/{matrices,openblas_backend,gate,benchmarks}.jl`; gate run for real, DONE —
+   11/14 passing, see "CURRENT FOCUS"; threshold calibration folded into task 7b')*
+7b. Child-ordering relaxed amalgamation (see "CURRENT FOCUS" history) — implemented,
+    measured a no-op, superseded by 7b'.
+7b'. Multi-child fixpoint amalgamation with an exact union-height row estimate +
+    threshold recalibration (see "CURRENT FOCUS") — DONE, moved the gate from 6/14 to
+    11/14.
 9. Docs pages (Home/Tutorial/Benchmarking via DocumenterVitepress).
 
 ### M2 — LDLᵀ/SQD + Update/Downdate

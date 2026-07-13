@@ -59,26 +59,67 @@ end
     return 0
 end
 
+# Path-halving owner lookup for dead-supernode redirect: `owner[s]` points from an
+# absorbed supernode to the block that absorbed it (`owner[s] == s` while alive). Merges
+# only ever point a smaller index at a larger one (etree postorder ⇒ sparent > child), so
+# chains are strictly ascending and halving terminates.
+@inline function _find_owner(owner::Vector{Ti}, s::Ti) where {Ti<:Integer}
+    @inbounds while owner[s] != s
+        owner[s] = owner[owner[s]]
+        s = owner[s]
+    end
+    return s
+end
+
 """
     relaxed_amalgamation(n, nsuper, super, parent, colcount;
                           amalg_cols=AMALG_COLS, amalg_zmax=AMALG_ZMAX)
         -> (nsuper2, super2)
 
-Bottom-up pass (design §3.5) over the fundamental supernodal etree: merge supernode `s`
-into its parent `t = sparent[s]` — padding with explicit zeros — when `s`'s columns
-CONTIGUOUSLY precede `t`'s (the only case a dense-panel merge can represent; per etree
-postorder, this holds exactly when `s` is `t`'s last-visited child) and the merged
-block's zero-fraction is within the tier limit for its width (tuning.jl). Processes
-supernodes in ascending (postorder) order so a supernode's own absorptions (always from
-smaller indices — etree children always postorder before their parent) are complete
-before it is itself considered for merging into its parent; a chain of merges is grown by
-sequentially extending the surviving parent's column range leftward, no separate
-union-find needed since a merge only ever redirects a smaller index into a larger one.
+Bottom-up fixpoint (design §3.5) over the fundamental supernodal etree: merge supernode
+`s` into the alive block `t` containing `parent[endc[s]]` — padding with explicit zeros —
+when `s`'s columns CONTIGUOUSLY precede `t`'s (the only case a dense-panel merge can
+represent) and the merged block's zero-fraction is within the tier limit for its width
+(tuning.jl). Ascending (postorder) passes are repeated until a pass performs no merge:
+one ascending pass can only merge each parent's single currently-contiguous child (the
+column-contiguity test admits exactly one child at a time, and by the time an accepted
+merge extends the parent's range leftward to expose the next sibling, that sibling has
+already been passed over), so bushy etrees — 2D grid Laplacians under AMD, most etree
+nodes with 2+ children — need one extra pass per additional absorbable sibling.
+Termination: every pass either merges nothing (loop exits) or strictly decreases the
+alive-block count (bounded below by 1), so at most `nsuper` passes run; in practice the
+pass count is the maximum sibling-absorption depth (single digits on the gate set).
+Absorbed supernodes redirect to their absorbing block through a path-halved `owner`
+array, so later passes find the current alive merge target in near-O(1).
 
-Row-count estimate: `s` always contiguously precedes `t`, so `start[s] < start[t]` and
-`s`'s own top column becomes the merged block's new topmost column — `colcount[start[s]]`
-is the row-count proxy used (colcount is non-increasing down an etree path, so the
-topmost column bounds the taller columns further down).
+Row count of the merged block — EXACT, not a proxy (independent derivation from the
+etree column-inclusion property, `struct(L[:,j]) ∖ {j} ⊆ struct(L[:,parent(j)])`, Liu's
+etree theory, design §3.2):
+
+Every block this process forms has exactly ONE "range root" — a column whose etree
+parent lies outside the block's column interval — namely its last column `endc`, by
+induction: a fundamental supernode is a parent chain (only its last column's parent
+leaves the interval), and a merge of child block `[a1,b1]` into target `[a2,b2]`
+requires `parent[b1] ∈ [a2,b2]` (that is what `sparent`-with-redirect targets), so `b1`
+stops being a range root and the merged block's only root is `b2`. Consequently the
+etree path upward from any column of the block exits the interval only through `endc`,
+and by repeated column inclusion every below-diagonal row of every member column lands
+in `struct(L[:,endc])` — while `endc`'s own pattern is trivially a subset of the block's
+rows. The block's below-diagonal row set is therefore exactly
+`struct(L[:,endc]) ∖ {endc}` and its stored height is
+
+    height = ncols + colcount[endc] − 1
+
+with no pattern arrays or unions needed. (This also matches what `supernode_rowind`
+computes for the final partition, so panel sizes agree with the merge-time estimate.)
+The previous single-pass proxy `colcount[start[s]]` equals this only while patterns nest
+exactly; under cascaded sibling absorption it underestimates the union height and lets
+the zero-fraction gate silently accept over-fat merges (measured on laplacian2d 80×80:
+naive fixpoint with the proxy inflated padded cells to ~7× nnzL — see ROADMAP task 7b').
+
+`true_nnz` over a merged block is a contiguous colcount sum, taken O(1) from a prefix
+sum. The zero-fraction convention (`z = 1 − true_nnz / (height·width)`, rectangle cells
+vs lower-triangular nonzeros) is unchanged from the single-pass version.
 """
 function relaxed_amalgamation(
         n::Int, nsuper::Int, super::Vector{Ti}, parent::Vector{Ti}, colcount::Vector{Ti};
@@ -92,38 +133,39 @@ function relaxed_amalgamation(
         endc[s] = super[s + 1] - one(Ti)
     end
     alive = trues(nsuper)
+    owner = collect(Ti, 1:nsuper)
 
-    @inbounds for s in 1:(nsuper - 1)
-        t = sparent[s]
-        (t == 0 || t <= s) && continue     # root, or malformed (shouldn't happen: etree postorder ⇒ t > s)
-        endc[s] + 1 == start[t] || continue  # not column-contiguous: not a mergeable pair (design §3.5)
+    # ccsum[j+1] = Σ colcount[1:j]: O(1) true-nnz for any contiguous column range.
+    ccsum = Vector{Int}(undef, n + 1)
+    ccsum[1] = 0
+    @inbounds for j in 1:n
+        ccsum[j + 1] = ccsum[j] + Int(colcount[j])
+    end
 
-        ns = Int(endc[s] - start[s]) + 1
-        nt = Int(endc[t] - start[t]) + 1
-        merged_cols = ns + nt
-        tier = _amalg_tier(merged_cols, amalg_cols)
-        tier == 0 && continue
+    merged_any = true
+    @inbounds while merged_any
+        merged_any = false
+        for s in 1:(nsuper - 1)
+            alive[s] || continue
+            sparent[s] == 0 && continue        # s's last column is an etree root
+            t = _find_owner(owner, sparent[s]) # alive block containing parent[endc[s]]
+            t <= s && continue                 # malformed (shouldn't happen: postorder ⇒ ancestors > s)
+            endc[s] + 1 == start[t] || continue  # not column-contiguous: not a mergeable pair (design §3.5)
 
-        # start[s] < start[t] always (s contiguously precedes t), so s's own top column
-        # becomes the new merged block's topmost column — use ITS colcount, not t's old
-        # (pre-merge) top. Using colcount[start[t]] here undercounts the required row
-        # height whenever colcount[start[s]] > colcount[start[t]] (the common case, since
-        # colcount is non-increasing along an etree path), silently accepting merges that
-        # violate their own zmax bound.
-        rows_est = Int(colcount[start[s]])
-        true_nnz = 0
-        for j in start[s]:endc[s]
-            true_nnz += Int(colcount[j])
-        end
-        for j in start[t]:endc[t]
-            true_nnz += Int(colcount[j])
-        end
-        merged_cells = rows_est * merged_cols
-        z = merged_cells == 0 ? 0.0 : 1.0 - true_nnz / merged_cells
+            merged_cols = Int(endc[t] - start[s]) + 1
+            tier = _amalg_tier(merged_cols, amalg_cols)
+            tier == 0 && continue
 
-        if z <= amalg_zmax[tier]
-            start[t] = start[s]
-            alive[s] = false
+            height = merged_cols + Int(colcount[endc[t]]) - 1  # exact (see docstring)
+            true_nnz = ccsum[endc[t] + 1] - ccsum[start[s]]
+            z = 1.0 - true_nnz / (height * merged_cols)
+
+            if z <= amalg_zmax[tier]
+                start[t] = start[s]
+                alive[s] = false
+                owner[s] = t
+                merged_any = true
+            end
         end
     end
 

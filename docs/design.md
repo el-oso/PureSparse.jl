@@ -336,8 +336,11 @@ even when patterns don't nest, padding with explicit zeros, to fatten dense bloc
 BLAS-3). **Those papers motivate the transformation but prescribe no thresholds; the
 thresholds below are our own free tunables (see §1.4 provenance note).**
 
-Bottom-up pass over the supernodal etree: merge child c into parent s if the zero-fraction
-of the merged block,
+Bottom-up FIXPOINT pass over the supernodal etree (design §3.5 revision, ROADMAP task
+7b'; see the `relaxed_amalgamation` docstring in `src/symbolic/supernodes.jl` for the
+full algorithm and the exact union-height row estimate that replaced the original
+single-pass proxy): merge child c into parent s if the zero-fraction of the merged
+block,
 
 `z = 1 − (true nnz of merged columns) / (merged block cells)`,
 
@@ -345,15 +348,19 @@ is at or below the tier limit for the merged width `nc`:
 
 | merged width `nc` | max z | rationale |
 |---|---|---|
-| ≤ `amalg_cols[1] = 8` | `amalg_zmax[1] = 0.9` | Blocks narrower than PureBLAS's microkernel register tile (~8 columns for the Float64 kernel) waste the kernel regardless of density; per-supernode fixed costs (kernel dispatch, relmap scatter setup, update-list traversal) dominate. Padding cost is tiny in absolute terms even at z=0.9, so merge nearly always. |
-| ≤ `amalg_cols[2] = 32` | `amalg_zmax[2] = 0.15` | Update flops scale ~quadratically in width; a zero-fraction z inflates flops by roughly 1/(1−z)² on the padded block. z=0.15 caps inflation near 1.38× on blocks where BLAS-3 efficiency gain over two skinnier calls is empirically of that order (to be measured, not assumed — M1 calibration). |
-| ≤ `amalg_cols[3] = 128` | `amalg_zmax[3] = 0.03` | Wide panels already run near peak; padding is pure loss. Also: a 128-column Float64 panel of typical row count starts pressuring L2 residency of the update buffer (128 cols × ~1000 rows × 8 B ≈ 1 MB), so growth must earn its keep — only near-perfect nesting qualifies. |
+| ≤ `amalg_cols[1] = 16` | `amalg_zmax[1] = 0.97` | Blocks in this range are at most 2× PureBLAS's Float64 microkernel register tile (~8 columns); per-supernode fixed costs (kernel dispatch, relmap scatter setup, update-list traversal) dominate regardless of density, so merge nearly always. |
+| ≤ `amalg_cols[2] = 64` | `amalg_zmax[2] = 0.35` | Update flops scale ~quadratically in width; a zero-fraction z inflates flops by roughly 1/(1−z)² on the padded block. |
+| ≤ `amalg_cols[3] = 128` | `amalg_zmax[3] = 0.08` | Wide panels already run near peak; padding is increasingly pure loss, and panel growth starts pressuring the update-buffer's cache residency, so only near-nesting qualifies. |
 | > 128 | no merge | — |
 
-These numbers were picked from the flop-inflation and L2-footprint arithmetic above as a
-*reasonable starting point only*; M1's benchmark pass (§10) sweeps them per matrix class
-and updates the defaults empirically. They carry no external provenance and no
-correctness weight — any thresholds satisfy the §3.4 superset invariant.
+**Empirically recalibrated 2026-07-13 (ROADMAP task 7b')** from the original
+starting-point numbers (`(8,32,128)`/`(0.9,0.15,0.03)`, picked from flop-inflation/L2
+arithmetic alone before any real measurement was possible) against the M1 wall-time gate
+(§9.3) once the row-count estimate feeding the z-test became exact instead of a proxy —
+see `src/tuning.jl`'s `AMALG_COLS`/`AMALG_ZMAX` derivation comment for the sweep that
+produced these values and the measured gate-pass-count before/after. They still carry no
+external provenance and no correctness weight — any thresholds satisfy the §3.4 superset
+invariant — and remain free tunables, not hardware- or paper-derived constants.
 
 ### 3.6 Supernodal structure and workspace bounds
 

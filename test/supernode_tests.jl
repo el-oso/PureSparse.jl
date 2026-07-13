@@ -187,15 +187,18 @@ end
             j1 + 1 in fundamental_starts && j0 in fundamental_starts &&
                 count(b -> j0 <= b < j1 + 1, super) == 1 && continue
             true_nnz = sum(colcount[j0:j1])
-            rows_est = colcount[j0]
-            cells = rows_est * width
+            # Exact merged-block height (single-range-root derivation in the
+            # `relaxed_amalgamation` docstring): width + colcount[last column] - 1.
+            height = width + colcount[j1] - 1
+            cells = height * width
             cells == 0 && continue
             z = 1.0 - true_nnz / cells
             tier = PureSparse._amalg_tier(width, PureSparse.AMALG_COLS)
-            # This final range was assembled by at least one accepted merge, whose LAST
-            # step's z-check (by additivity of colcount sums over contiguous ranges) is
-            # exactly this z computed over the full final range — so it must satisfy the
-            # tier bound it was accepted under.
+            # This final range was assembled by at least one accepted merge; the LAST
+            # accepted merge extended the block to exactly this final range (merges only
+            # grow `start` leftward), and its z-check used exactly this height and this
+            # colcount sum — so the final range must satisfy the tier bound it was
+            # accepted under.
             @test tier != 0
             @test z <= PureSparse.AMALG_ZMAX[tier] + 1.0e-9
         end
@@ -268,6 +271,78 @@ end
             @test mer >= 0
         end
     end
+end
+
+@testitem "2D grid Laplacian: superset invariant + z-bound under multi-pass amalgamation" setup = [SupernodeHelpers] begin
+    # 2D grid Laplacians under AMD have BUSHY etrees (most nodes have 2+ children) — the
+    # case where the fixpoint amalgamation absorbs several siblings into one parent
+    # across passes. The random-pattern items above barely exercise that; this pins the
+    # §3.4 superset invariant and the per-block zero-fraction bound on exactly the
+    # partition shape the multi-pass merge produces (ROADMAP task 7b').
+    using SparseArrays
+    nx = ny = 24
+    n = nx * ny
+    idx(i, j) = (j - 1) * nx + i
+    I = Int[]; J = Int[]; V = Float64[]
+    for j in 1:ny, i in 1:nx
+        p = idx(i, j)
+        i > 1 && (push!(I, p); push!(J, idx(i - 1, j)); push!(V, -1.0))
+        j > 1 && (push!(I, p); push!(J, idx(i, j - 1)); push!(V, -1.0))
+        push!(I, p); push!(J, p); push!(V, 4.0)
+    end
+    A = sparse(I, J, V, n, n)   # lower triangle stored, as `symbolic` reads it
+
+    S = PureSparse.symbolic(A)
+
+    # Ground-truth per-column L-patterns on the PERMUTED pattern (S.super/S.rowind live
+    # in the final AMD∘postorder labeling S.perm).
+    Ifull, Jfull, _ = findnz(A + A')
+    up_I = Int[]; up_J = Int[]
+    for (i, j) in zip(Ifull, Jfull)
+        pi, pj = S.iperm[i], S.iperm[j]
+        pi < pj && (push!(up_I, pi); push!(up_J, pj))
+    end
+    P = sparse(up_I, up_J, trues(length(up_I)), n, n)
+    truth = true_column_patterns(n, Vector{Int}(P.colptr), Vector{Int}(P.rowval))
+
+    # Fundamental partition on the same (final) labeling, to tell merged blocks (which
+    # faced a z-test) from untouched fundamental ones (which never did — their z under
+    # the rectangle-cells convention can legitimately exceed every tier, e.g. the dense
+    # trailing root block where the diagonal block's strict-upper triangle counts as
+    # zeros).
+    _, super_fund = PureSparse.fundamental_supernodes(n, S.parent, S.colcount)
+    fundamental_starts = Set(super_fund)
+    merged_count = 0
+
+    for s in 1:S.nsuper
+        j0, j1 = S.super[s], S.super[s + 1] - 1
+        rng = S.rowind_ptr[s]:(S.rowind_ptr[s + 1] - 1)
+        rows_s = Set(S.rowind[rng])
+        @test issorted(S.rowind[rng])
+        # Exact-height derivation check: stored height == width + colcount[last col] - 1.
+        @test length(rng) == (j1 - j0 + 1) + S.colcount[j1] - 1
+        for j in j0:j1
+            @test j in rows_s                 # own columns present (diagonal block)
+            @test truth[j] ⊆ rows_s           # SUPERSET INVARIANT (design §3.4)
+        end
+        # Zero-fraction tier bound on every MERGED block (same skip logic as the random
+        # item: a final range that is exactly one untouched fundamental supernode never
+        # faced a z-test).
+        width = j1 - j0 + 1
+        is_untouched = j0 in fundamental_starts && (j1 + 1) in fundamental_starts &&
+            count(b -> j0 <= b < j1 + 1, super_fund) == 1
+        if !is_untouched
+            merged_count += 1
+            tier = PureSparse._amalg_tier(width, PureSparse.AMALG_COLS)
+            z = 1.0 - sum(S.colcount[j0:j1]) / (length(rng) * width)
+            # The LAST accepted merge covered exactly this final range with exactly this
+            # height, so the tier bound it was accepted under must hold here.
+            @test tier != 0
+            @test z <= PureSparse.AMALG_ZMAX[tier] + 1.0e-9
+        end
+    end
+    # The whole point of the multi-pass version: bushy-etree merges actually happen.
+    @test merged_count > 0
 end
 
 @testitem "supernode_rowind workspace bounds are internally consistent" setup = [SupernodeHelpers] begin
