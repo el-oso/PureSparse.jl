@@ -34,6 +34,59 @@ function _build_panels(x::Vector{T}, sym::Symbolic{Ti}) where {T,Ti<:Integer}
     return panels
 end
 
+# Staged-update scatter-add: fold columns 1..k1 of the staged block cbuf[1:ctot, 1:k1]
+# (lower triangle of the k1×k1 head + all of the (ctot-k1)-row tail — one fused pass,
+# they are vertically adjacent rows of the same cbuf columns) into `panel` at the target
+# rows ir[1:ctot], whose maximal-consecutive-run structure is rs[1:nr+1] (built by the
+# caller's contiguity-check walk). Column-outer so the inner loop walks both `panel` and
+# `cbuf` contiguously down one column (ir ascends — rowind is sorted); the row-outer
+# order was measured at ~28% of total cholesky! wall time before the swap. Target rows
+# come from the ir hoist (one sequential load per element) rather than a per-element
+# relmap[_row(...)] double indirection — that recomputation was measured at ~1.5
+# ns/element (≈12 of 65 ms at n=2048 on galen/5900X) across k1 identical re-resolutions.
+#
+# Two strategies, picked per update: run-based contiguous SIMD adds when runs are long
+# on average (66% of scattered elements at n=2048 live in runs ≥ 9 rows, 38% in runs
+# > 32 — measured), element-based otherwise. Run-based scattering pays a per-run visit
+# cost of O(nr) PER COLUMN (r0 only skips runs wholly above the triangle start), so
+# applying it unconditionally was a measured net LOSS (57.98 → 59.81 ms at n=2048 on
+# galen) — below a mean run length of 8, an ≤8-wide SIMD add plus loop setup does not
+# beat 8 plain indexed adds. Shared by cholesky! and ldlt! (identical scatter). Kept
+# @noinline: inlining this 3-branch body into the factorization loop was a measured
+# 30–95% regression at n=16..64 on wintermute (7640U/Zen4) — the call is once per
+# staged update, so call cost is noise while the outer loop stays compact.
+@noinline function _scatter_update!(
+        panel::Matrix{T}, cbuf::Matrix{T}, ir::Vector{Ti}, rs::Vector{Ti},
+        nr::Int, k1::Int, ctot::Int,
+) where {T,Ti<:Integer}
+    @inbounds if ctot >= 8 * nr
+        r0 = 1
+        for b in 1:k1
+            lrb = Int(ir[b])
+            while Int(rs[r0 + 1]) <= b   # run ends before row b: skip forever
+                r0 += 1
+            end
+            for r in r0:nr
+                a0 = Int(rs[r])
+                aend = Int(rs[r + 1]) - 1
+                astart = a0 < b ? b : a0
+                lr = Int(ir[astart])
+                @simd for t in 0:(aend - astart)
+                    panel[lr + t, lrb] += cbuf[astart + t, b]
+                end
+            end
+        end
+    else
+        for b in 1:k1
+            lrb = Int(ir[b])
+            for a in b:ctot
+                panel[Int(ir[a]), lrb] += cbuf[a, b]
+            end
+        end
+    end
+    return nothing
+end
+
 """
     cholesky(sym::Symbolic{Ti}, A::SparseMatrixCSC{T}) where {T,Ti} -> SupernodalFactor{T,Ti}
 
@@ -84,6 +137,8 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
     next = ws.next
     dptr = ws.dptr
     cbuf = ws.c
+    ir = ws.ir
+    rs = ws.rs
 
     fill!(x, zero(T))
     @inbounds for p in eachindex(A.nzval)
@@ -141,14 +196,28 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
                 # scatter was ~22–28% of total cholesky! wall time; this removes it for
                 # the contiguous case. `panel` (ancestor s) and `panel_d` (descendant
                 # d < s) never alias — distinct px ranges of x.
+                # The check loop doubles as the scatter's index hoist: every
+                # relmap[_row(...)] target row it visits is stored into ws.ir (the
+                # lookup result is IDENTICAL for every column b of the update block, so
+                # resolving it once removes a per-element double indirection that was
+                # measured at ~1.5 ns/element — ≈12 of 65 ms at n=2048 on galen/5900X),
+                # and simultaneously records the maximal-consecutive-run structure of
+                # those targets in ws.rs (contig ⟺ a single run). rowind is sorted, so
+                # ir ascends and runs are well defined.
                 lr0 = Int(relmap[_row(rowind, drp0, q)])
-                contig = true
+                ir[1] = Ti(lr0)
+                nr = 1
+                rs[1] = Ti(1)
                 for a in 2:ctot
-                    if Int(relmap[_row(rowind, drp0, q + a - 1)]) != lr0 + a - 1
-                        contig = false
-                        break
+                    lra = relmap[_row(rowind, drp0, q + a - 1)]
+                    ir[a] = lra
+                    if lra != ir[a - 1] + one(Ti)
+                        nr += 1
+                        rs[nr] = Ti(a)
                     end
                 end
+                rs[nr + 1] = Ti(ctot + 1)
+                contig = nr == 1
                 if contig
                     # rows q..q+k1-1 are ancestor columns (their local indices are ≤ nscol
                     # because the ancestor's first nscol rows ARE its columns j0..j1), so
@@ -165,33 +234,14 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
                     C = view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
                     C1 = view(C, 1:k1, :)
                     syrk!(C1, L1; uplo = 'L', trans = 'N', alpha = -one(T), beta = zero(T))
-                    # Scatter LOWER triangle of C1 only (syrk leaves the strict-upper
-                    # stale). Column-outer/row-inner: the inner loop then walks BOTH
-                    # `panel` and `C1` contiguously down one column (rowind is sorted, so
-                    # lra ascends), instead of striding by the full column height on every
-                    # step — at n≈2048 those strides are ~16 KB (a page per element, on
-                    # two arrays at once); the row-outer order was measured at ~28% of
-                    # total cholesky! wall time before the swap.
-                    for b in 1:k1
-                        lrb = Int(relmap[_row(rowind, drp0, q + b - 1)])
-                        for a in b:k1
-                            lra = Int(relmap[_row(rowind, drp0, q + a - 1)])
-                            panel[lra, lrb] += C1[a, b]
-                        end
-                    end
                     if k2 > 0
                         L2 = view(panel_d, (q + k1):nsrow_d, 1:ncol_d)
                         C2 = view(C, (k1 + 1):ctot, :)
                         gemm!(C2, L2, L1; transA = 'N', transB = 'T', alpha = -one(T), beta = zero(T))
-                        # column-outer/row-inner for the same locality reason as the C1 scatter
-                        for b in 1:k1
-                            lrb = Int(relmap[_row(rowind, drp0, q + b - 1)])
-                            for a in 1:k2
-                                lra = Int(relmap[_row(rowind, drp0, q + k1 + a - 1)])
-                                panel[lra, lrb] += C2[a, b]
-                            end
-                        end
                     end
+                    # Fold the staged block into the panel (see _scatter_update! above
+                    # for the full strategy/measurement notes).
+                    _scatter_update!(panel, cbuf, ir, rs, nr, k1, ctot)
                 end
             end
 

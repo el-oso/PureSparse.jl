@@ -120,6 +120,8 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
     dptr = ws.dptr
     cbuf = ws.c
     cdbuf = ws.cd
+    ir = ws.ir
+    rs = ws.rs
     mus = sym.max_update_size
 
     # ---- 1. assembly (same amap replay as cholesky!, design §4.2) + ‖A‖ scale ----
@@ -194,14 +196,23 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
                 # mirror values (C's top block is L·D·Lᵀ-symmetric), not garbage; that
                 # region was already junk-written by ger!'s trailing rectangle below.
                 # Both view branches are the same SubArray type, so `C` stays concrete.
+                # Check loop doubles as the scatter's index hoist into ws.ir plus the
+                # run-structure build into ws.rs (identical for every column b of the
+                # update block; contig ⟺ a single run — see llt.jl's comment).
                 lr0 = Int(relmap[_row(rowind, drp0, q)])
-                contig = true
+                ir[1] = Ti(lr0)
+                nr = 1
+                rs[1] = Ti(1)
                 for a in 2:ctot
-                    if Int(relmap[_row(rowind, drp0, q + a - 1)]) != lr0 + a - 1
-                        contig = false
-                        break
+                    lra = relmap[_row(rowind, drp0, q + a - 1)]
+                    ir[a] = lra
+                    if lra != ir[a - 1] + one(Ti)
+                        nr += 1
+                        rs[nr] = Ti(a)
                     end
                 end
+                rs[nr + 1] = Ti(ctot + 1)
+                contig = nr == 1
                 C = contig ? view(panel, lr0:(lr0 + ctot - 1), lr0:(lr0 + k1 - 1)) :
                     view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
                 # L·D scaled copy of the R1 rows, staged in cdbuf (design §5.1). cdbuf
@@ -228,16 +239,11 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
                 if !contig
                     # Scatter-add: full C for the below-block rows, lower triangle only
                     # inside the diagonal block (its strict-upper is never stored/read,
-                    # same convention as llt.jl's syrk scatter). Column-outer/row-inner
-                    # so the inner loop walks `panel` and `C` contiguously down one column
-                    # (same measured-locality fix as llt.jl's scatters).
-                    for b in 1:k1
-                        lrb = Int(relmap[_row(rowind, drp0, q + b - 1)])
-                        for a in b:ctot
-                            lra = Int(relmap[_row(rowind, drp0, q + a - 1)])
-                            panel[lra, lrb] += C[a, b]
-                        end
-                    end
+                    # same convention as llt.jl's syrk scatter). Shared llt.jl helper —
+                    # identical scatter semantics; in this branch C IS
+                    # view(cbuf, 1:ctot, 1:k1), so the helper's direct cbuf[a, b]
+                    # indexing addresses the same elements without the view wrapper.
+                    _scatter_update!(panel, cbuf, ir, rs, nr, k1, ctot)
                 end
             end
 

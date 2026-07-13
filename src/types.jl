@@ -85,6 +85,24 @@ struct Workspace{T,Ti<:Integer}
                                    # not covered by this pass: its (k1, wk) chunk shape isn't bounded
                                    # by max_extend_rows the way `c`'s is — see ROADMAP.md)
     relmap::Vector{Ti}            # length n, no clearing needed between supernodes (design §4.3)
+    ir::Vector{Ti}                # length max_extend_rows: per-update hoisted target-row list —
+                                   # the staged scatter's `relmap[_row(rowind, ...)]` double
+                                   # indirection is IDENTICAL for every column b of the update
+                                   # block, so it is resolved once per (descendant, ancestor)
+                                   # pair into this buffer (filled during the contiguity check,
+                                   # which already walks those same lookups) instead of being
+                                   # recomputed k1 times. Measured on galen (5900X) at n=2048:
+                                   # the recomputation was ~1.5 ns/element over 7.9e6 scattered
+                                   # elements per factorization. ctot ≤ max_extend_rows by the
+                                   # same containment argument as `c` above.
+    rs::Vector{Ti}                # length max_extend_rows + 1: run starts of the hoisted
+                                   # target-row list — ir splits into nr maximal consecutive
+                                   # runs, rs[r] = first local index a of run r, rs[nr+1] =
+                                   # ctot+1 sentinel. Built inside the same contiguity-check
+                                   # walk (contig ⟺ nr == 1); the scatter then adds run-by-run
+                                   # with contiguous SIMD inner loops instead of element-by-
+                                   # element indexed stores. Measured (galen, n=2048): 66% of
+                                   # scattered elements live in runs ≥ 9 rows, 38% in runs > 32.
     head::Vector{Ti}              # length nsuper+1, intrusive linked-list heads (0 = empty)
     next::Vector{Ti}              # length nsuper, intrusive linked-list next pointers
     dptr::Vector{Ti}              # length nsuper, per-descendant progress cursor into rowind
@@ -99,6 +117,8 @@ function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
         Matrix{T}(undef, mer, mer),
         Vector{T}(undef, sym.max_update_size),
         Vector{Ti}(undef, sym.n),
+        Vector{Ti}(undef, mer),
+        Vector{Ti}(undef, mer + 1),
         zeros(Ti, sym.nsuper + 1),
         zeros(Ti, sym.nsuper),
         Vector{Ti}(undef, sym.nsuper),
