@@ -12,6 +12,31 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
+## M1 gate — `juliac --trim` smoke build succeeds (2026-07-13)
+
+The last open M1 gate item (design.md §10) is closed. `juliac/entry.jl` is the
+factor-and-solve smoke: a 12×12-grid 2-D Laplacian (n=144, SPD, FEM-class) through
+`symbolic` → `cholesky` → `solve!` → `cholesky!` (analyze-once/refactorize path) →
+`ldlt` → `solve!`, each gated on a hand-rolled `‖b − A·x‖∞ < 1e-10` residual (exit 0
+iff all pass). `julia juliac/build.jl` compiles it with
+`juliac --output-exe --experimental --trim=safe` (mirrors PureBLAS.jl/juliac/build.jl;
+output `juliac/build/puresparse_smoke`, gitignored, ~23 MB). Verified: build finishes
+with **0 trim-verifier errors** and the trimmed executable prints residuals ~1e-14 —
+identical to the same entry run under normal Julia — and exits 0.
+
+**No `src/` changes were needed** — the library's factor-and-solve path was already
+trim-clean. The only trim incompatibilities were in the entry file itself, fixed there
+with comments: `sparse(I,J,V,…)` (stdlib coalescing takes an abstract
+`combine::Function` — the smoke builds its CSC arrays directly instead) and bare
+`println` (routes through the abstract `Base.stdout::IO` global — `Core.stdout` used
+instead).
+
+Regression guard: `test/trim_tests.jl` (TrimCheck `@validate`, the same reachability
+analysis juliac --trim runs, mirroring PureBLAS's trim testitem) REDs in the ordinary
+suite if `symbolic`/`cholesky`/`cholesky!`/`ldlt`/`ldlt!`/`solve!` (Float64/Int64
+roots, kwarg-default paths included) regress; the minutes-long end-to-end juliac build
+stays manual via `julia juliac/build.jl`. TrimCheck added to test/Project.toml.
+
 ## Perf investigation — large-n scatter-add overhead found and fixed (2026-07-13)
 
 `benchmark/size_sweep.jl` showed PureSparse losing to CHOLMOD+OpenBLAS at n=1024/2048,
