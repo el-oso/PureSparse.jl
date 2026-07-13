@@ -12,7 +12,26 @@ M1 tasks 1–6 are done and tested (12220/12220 tests passing): scaffold, AMD or
 etree/postorder/column-counts, fundamental-supernode detection + relaxed amalgamation,
 row-structure/workspace-bound computation, the `symbolic()` driver, and the numeric
 supernodal LLᵀ factorization + solve (`cholesky`/`cholesky!`/`solve!`/`solve_L!`/
-`solve_Lt!`/`\`). Remaining M1 tasks: (7) allocation hardening for `cholesky!` (currently
+`solve_Lt!`/`\`).
+
+**Unofficial preview benchmark** (informal `@elapsed`, no CPU pinning, no median-of-many —
+NOT the rigorous §9.3 gate methodology, just a sanity check): random SPD matrices,
+`cholesky!` refactor time vs `LinearAlgebra.cholesky!` (CHOLMOD) refactor time —
+
+| n | nnz(A) | nnzL (PureSparse AMD) | nnzL (CHOLMOD) | PureSparse | CHOLMOD | CHOLMOD/PureSparse |
+|---|---|---|---|---|---|---|
+| 200 | 379 | 490 | 488 | 0.078ms | 2.369ms | 30.2x |
+| 500 | 1730 | 13923 | 24822 | 0.41ms | 0.441ms | 1.08x |
+| 1000 | 6042 | 146289 | 192797 | 3.95ms | 3.77ms | 0.95x |
+
+Encouraging given zero performance tuning has happened yet: AMD is already finding
+noticeably less fill than CHOLMOD's own ordering (18-40% less at n=500/1000), and
+PureSparse is within 5% of CHOLMOD's wall-time at n=1000 despite that fill advantage not
+yet translating into a wall-time win — meaning there's real headroom once tasks 7-8 land
+(zero-alloc + the calibrated amalgamation thresholds). Re-run properly (locked clock,
+Chairmarks, median) once task 8's harness exists — do not treat this table as the gate.
+
+Remaining M1 tasks: (7) allocation hardening for `cholesky!` (currently
 correct but not zero-alloc — see "known follow-up" below) and `solve!` (deliberately
 deferred, allocates per call); (8) Chairmarks/PkgBenchmark harness + amalgamation
 threshold calibration; (9) DocumenterVitepress docs pages.
