@@ -376,8 +376,21 @@ observable behavior only):
     authoritative — so this gate was ALSO run on `galen` (governor `performance`,
     confirmed via SSH) as the trusted cross-check; see its result immediately below.
   - **Run on `galen` (AMD Ryzen 9 5900X, SSH, `~/.juliaup/bin/julia`, governor
-    `performance`):** [filled in once the run completes — see
-    `benchmark/results/dropin_gate_galen.json`].
+    `performance`, confirmed): warm gate 14/14 PASS**, PureSparse+PureBLAS strictly
+    faster than CHOLMOD+OpenBLAS through the dropin entry point on every matrix-arm
+    combination — e.g. `banded_n1000_bw20` own-arm: dropin-through warm 0.117ms vs
+    CHOLMOD warm 0.472ms (4.0x); `laplacian2d_80x80` own-arm: 1.366ms vs 2.447ms
+    (1.79x); the tightest margin, `random_n1000_d005` own-arm, still clears at
+    0.770ms vs 0.945ms (1.23x). Zero-alloc re-check on this run: `cholesky!`/`ldlt!`
+    both **0 bytes** with the drop-in active. Confirms the `neuromancer` result was
+    not a fluke of that machine's clock-lock uncertainty — both the corroborating
+    and the trusted machine agree. Full table:
+    `benchmark/results/dropin_gate_galen.json`. (Environment note: galen's existing
+    `PureSparse.jl`/`TypeContracts` sibling checkouts were stale relative to this
+    worktree's `Manifest.toml` pins — ran from a freshly-synced, non-destructive copy
+    at `~/Documents/claude/PureSparse.jl_m4closeout` with a version-matched
+    `TypeContracts_m4closeout`/`StrictMode.jl` sibling rather than touching galen's
+    pre-existing, independently-versioned checkouts.)
   - Cold-path (symbolic+numeric, first factorization of a pattern) is NOT part of the
     contractual gate (design §9.3/CLAUDE.md req 2 define the gate on the WARM refactor,
     the IPM-relevant number) and was not expected to pass here — PureSparse's own
