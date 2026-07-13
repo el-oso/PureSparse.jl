@@ -23,6 +23,7 @@ struct Symbolic{Ti<:Integer}
     rowind::Vector{Ti}            # concatenated row patterns, one block per supernode
     snode_of::Vector{Ti}          # column -> supernode, length n
     sparent::Vector{Ti}           # supernode elimination tree, length nsuper (0 = root)
+    px::Vector{Ti}                # per-supernode offset into x, length nsuper+1 (design §4.1)
 
     # --- assembly ---
     amap::Vector{Ti}              # nnz(tril(permuted A)) -> destination offset in x (design §4.2)
@@ -97,8 +98,7 @@ supernode, stored contiguously in `x`. Produced by [`cholesky`](@ref)/refactored
 by [`cholesky!`](@ref) (zero allocations after the first call).
 """
 mutable struct SupernodalFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
-    sym::Symbolic{Ti}
-    px::Vector{Ti}                 # per-supernode offsets into x, length nsuper+1
+    sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
     x::Vector{T}                   # dense column-major storage, one block per supernode
     ws::Workspace{T,Ti}
     stats::FactorStats
@@ -113,8 +113,7 @@ layout as [`SupernodalFactor`](@ref) (unit-lower L, explicit 1s on the diagonal 
 panel) plus a separate diagonal `d` and the caller's expected pivot `signs`.
 """
 mutable struct LDLFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
-    sym::Symbolic{Ti}
-    px::Vector{Ti}
+    sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
     x::Vector{T}
     d::Vector{T}                   # diagonal of D, permuted, length n
     signs::Vector{Int8}            # expected pivot signs (+1/-1/0=free), permuted, length n

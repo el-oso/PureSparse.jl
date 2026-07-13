@@ -11,6 +11,7 @@ include("ordering/amd.jl")
 include("symbolic/etree.jl")
 include("symbolic/counts.jl")
 include("symbolic/supernodes.jl")
+include("symbolic/driver.jl")
 include("contracts.jl")
 
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, solve!, issuccess
