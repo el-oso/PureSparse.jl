@@ -1,15 +1,12 @@
 # Drop-in stdlib surface (design.md §10 M4). Only `include`d when `DROPIN_ACTIVE`
 # (tuning.jl) — see that const's comment for why this must be a compile-time gate, not
-# a runtime one. Scope: `LinearAlgebra.cholesky` for real (non-complex) sparse SPD
+# a runtime one. Scope: `LinearAlgebra.cholesky`/`ldlt` for real (non-complex) sparse
 # input — PureSparse itself doesn't support complex element types yet (design.md §1.1
 # non-goals), so complex input is deliberately NOT intercepted here and falls through
-# to CHOLMOD's own method untouched (verified: our signature below is a strict subset
-# of CHOLMOD's own `Union{...} where T<:Real` signature — Julia picks the more
+# to CHOLMOD's own method untouched (verified: our signatures below are a strict
+# subset of CHOLMOD's own `Union{...} where T<:Real` signatures — Julia picks the more
 # specific match for real `T`, and only CHOLMOD's method applies to `Complex{T}` since
-# ours doesn't mention it at all). `LinearAlgebra.ldlt` drop-in is a listed extension,
-# not implemented this pass (design.md's M4 gate is stated in terms of "a downstream
-# SparseArrays-dependent smoke test suite," which for the common case means
-# `cholesky`; scoping ldlt out is a documented, not silent, cut — see ROADMAP.md).
+# ours doesn't mention it at all).
 
 using SparseArrays: SparseMatrixCSC
 using LinearAlgebra: Symmetric, Hermitian, PosDefException, I
@@ -55,6 +52,39 @@ function LinearAlgebra.cholesky(A::_RealSparseArg{T}; check::Bool = true,
     end
     ordering = isnothing(perm) ? AMDOrdering() : GivenOrdering(collect(Int, perm))
     F = cholesky(Afull; ordering)
+    if check && !issuccess(F)
+        throw(PosDefException(F.stats.fail_col))
+    end
+    return F
+end
+
+"""
+    LinearAlgebra.ldlt(A::Union{SparseMatrixCSC,Symmetric,Hermitian}; check=true, perm=nothing, shift=0) -> LDLFactor
+
+**Drop-in override, active only when [`activate!`](@ref) has been called and Julia
+restarted** (design.md §10 M4). Same kwarg surface and `perm=`/allocation caveats as
+[`cholesky`](@ref)'s drop-in above (read that docstring first). Unlike CHOLMOD's own
+`ldlt`, which does dynamic pivoting for general symmetric indefinite matrices,
+PureSparse's `ldlt` is fixed-pivot with signed regularization (design.md §5.1,
+CLAUDE.md requirement 8 — deliberate scope, not a missing feature). This entry point
+has no way to receive expected pivot signs (stdlib's `ldlt` doesn't take a `signs`/
+`n_pos`/`n_neg` kwarg — verified directly against its actual method signature), so it
+always factors with `signs = nothing` — free signs, magnitude-floor-only
+regularization (never a forced sign flip). `check=true` throwing on `!issuccess(F)` is
+therefore reachable only via the (rare) magnitude-floor path, since a free-sign
+factorization can't fail on "wrong sign." Callers who know their matrix's expected
+inertia (the common SQD/KKT case) get materially better regularization behavior from
+`PureSparse.ldlt(A; n_pos, n_neg)` directly than from this drop-in entry point — this
+is an intentional, documented gap in drop-in fidelity, not an oversight.
+"""
+function LinearAlgebra.ldlt(A::_RealSparseArg{T}; check::Bool = true,
+        perm::Union{Nothing,AbstractVector{<:Integer}} = nothing, shift::Real = zero(T)) where {T<:Real}
+    Afull = SparseMatrixCSC(sparse(A))
+    if !iszero(shift)
+        Afull = Afull + T(shift) * I
+    end
+    ordering = isnothing(perm) ? AMDOrdering() : GivenOrdering(collect(Int, perm))
+    F = ldlt(Afull; ordering)
     if check && !issuccess(F)
         throw(PosDefException(F.stats.fail_col))
     end
@@ -129,3 +159,24 @@ function LinearAlgebra.logdet(F::SupernodalFactor{T}) where {T}
     return 2acc
 end
 LinearAlgebra.det(F::SupernodalFactor) = exp(LinearAlgebra.logdet(F))
+
+"""
+    logdet(F::LDLFactor) -> Real
+    det(F::LDLFactor) -> Real
+
+`|det(P·A·Pᵀ)| = |det(D)|` (`L` is unit-lower, `det(L)=1`; `det(P)² = 1` regardless of
+`P`'s sign, so `|det(D)|` is exactly `|det(A)|`). Returns the ABSOLUTE VALUE of the
+pivot product — my first attempt here returned the signed product and asserted
+(wrongly, without actually checking the negative-determinant case) that this matched
+CHOLMOD; it doesn't. Checked directly: CHOLMOD's `det`/`logdet` on an indefinite
+`ldlt` factor with `diag(2,-3,5)` (true determinant `-30`) returns `det(F) == 30`,
+`logdet(F) == log(30)` — the abs-value convention, not the signed product (plausibly
+because CHOLMOD's general indefinite `ldlt` does dynamic Bunch–Kaufman-style pivoting
+with possible 2×2 blocks internally, where a per-pivot sign isn't as simple to
+attribute; not independently confirmed, only the observed input/output behavior is).
+Matching that observed behavior exactly (not the mathematically-cleaner signed
+version) is what "drop-in" means here — `logdet` is therefore always real, never
+throwing `DomainError`/promoting to `Complex`, for any nonsingular factor.
+"""
+LinearAlgebra.det(F::LDLFactor) = abs(prod(F.d))
+LinearAlgebra.logdet(F::LDLFactor) = log(LinearAlgebra.det(F))

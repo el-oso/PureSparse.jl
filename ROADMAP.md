@@ -12,18 +12,44 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
-## M4 progress — drop-in (`activate!`/`deactivate!`) LANDED for `cholesky` (2026-07-13)
+## M4 progress — drop-in LANDED for `cholesky` AND `ldlt` (2026-07-13)
 
 `src/dropin_toggle.jl` (always loaded): `activate!()`/`deactivate!()` set the
 `dropin_active` Preference. `src/dropin.jl` (only `include`d when `DROPIN_ACTIVE` —
-`src/tuning.jl` — is `true`): extends `LinearAlgebra.cholesky` for
-`SparseMatrixCSC`/`Symmetric`/`Hermitian` real (non-complex) input, matching CHOLMOD's
-own kwarg surface (`shift`, `check`, `perm`) and adding stdlib-surface parity on the
-returned `SupernodalFactor`: `.p` (permutation, `getproperty` override), `.L` (sparse
-extraction via the new `sparse_L`), `logdet`, `det`. Int32 indices already worked for
-free (M1's generic-over-`Ti` design). `ldlt` drop-in and `LDLFactor`/
-`SimplicialLDLFactor` property parity are NOT done this pass — documented as a
+`src/tuning.jl` — is `true`): extends `LinearAlgebra.cholesky` AND `LinearAlgebra.ldlt`
+for `SparseMatrixCSC`/`Symmetric`/`Hermitian` real (non-complex) input, matching
+CHOLMOD's own kwarg surface (`shift`, `check`, `perm`) and adding stdlib-surface parity
+on the returned `SupernodalFactor`/`LDLFactor`: `.p` (permutation, `getproperty`
+override), `.L` (sparse extraction via the new `sparse_L`, generic over both factor
+types), `logdet`, `det` (each with its own convention, see below). Int32 indices
+already worked for free (M1's generic-over-`Ti` design). `SimplicialLDLFactor`
+property parity (post-`updowndate!`) is NOT done this pass — documented as a
 follow-up, not silently skipped.
+
+**`ldlt`'s drop-in scope is deliberately narrower than `cholesky`'s (a real,
+documented gap, not an oversight):** stdlib's own `LinearAlgebra.ldlt` has no
+`signs`/`n_pos`/`n_neg` kwarg (verified directly against its actual method
+signature — it only takes `shift`/`check`/`perm`, same as `cholesky`), so the drop-in
+entry point always factors with `signs = nothing` (free signs, magnitude-floor-only
+regularization, design.md §5.1). `PureSparse.ldlt(A; n_pos, n_neg)` called directly
+gets materially better regularization behavior for the common SQD/KKT case — the
+drop-in `LinearAlgebra.ldlt(A)` is the weaker, general-indefinite-matrix path.
+
+**Real bug caught in my OWN first attempt at `LDLFactor`'s `logdet`/`det`, fixed
+after checking rather than shipping the assumption:** the first version returned the
+SIGNED pivot product (`det(F) = prod(F.d)`) and its docstring claimed, unverified,
+that this "matches CHOLMOD's own convention." Testing an actual negative-determinant
+case (`diag(2,-3,5)`, true determinant `-30`) immediately surfaced two problems: (a)
+`logdet` threw `DomainError` (`log` of a negative real doesn't auto-promote to
+`Complex` in Julia — a second, compounding wrong assumption), and (b) checking
+CHOLMOD's OWN behavior on the identical input showed `det(F) == 30`, not `-30` — an
+**absolute-value** convention, not the signed product at all (plausibly because
+CHOLMOD's general indefinite `ldlt` does dynamic Bunch–Kaufman-style pivoting with
+possible 2×2 blocks, where per-pivot sign isn't simply attributable — not
+independently confirmed, only the observed behavior is). Fixed to
+`det(F) = abs(prod(F.d))`, matching CHOLMOD's observed output exactly on both the
+even- and odd-negative-pivot-count cases; `logdet` is consequently always real, never
+throwing.
 
 **Why this can't be a same-session runtime toggle (worked through explicitly, not
 assumed):** PureBLAS's own `activate()`/`deactivate()` forwards through
@@ -56,13 +82,18 @@ code literally asserting `F.p == perm` would observe the difference. Documented 
 ISOLATED subprocess with its own temp `--project` (own `LocalPreferences.toml` setting
 `dropin_active=true` — writing to `test/`'s own `LocalPreferences.toml` directly would
 contaminate every OTHER test item's precompiled state, since Preferences are
-project-scoped) that exercises the actual stdlib entry point
-(`LinearAlgebra.cholesky`, not `PureSparse.cholesky`) end-to-end: bare
-`SparseMatrixCSC` and `Symmetric` input, solve residual, `.L`/`.p` extraction vs a
-dense oracle, `logdet`/`det` vs `LinearAlgebra.cholesky` on the dense reconstruction,
-`shift`, `perm` (checked for the weaker-but-correct property above), `check=true`
-throwing `PosDefException` on non-SPD and `check=false` not throwing, Int32 indices —
-subprocess exit code 0 is the pass signal (any `@assert` failure exits nonzero). A
+project-scoped) that exercises the actual stdlib entry points
+(`LinearAlgebra.cholesky`/`ldlt`, not `PureSparse.cholesky`/`ldlt`) end-to-end. For
+`cholesky`: bare `SparseMatrixCSC` and `Symmetric` input, solve residual, `.L`/`.p`
+extraction vs a dense oracle, `logdet`/`det` vs `LinearAlgebra.cholesky` on the dense
+reconstruction, `shift`, `perm` (checked for the weaker-but-correct property above),
+`check=true` throwing `PosDefException` on non-SPD and `check=false` not throwing,
+Int32 indices. For `ldlt`: same shape on a random SQD KKT matrix (solve residual,
+`L·D·Lᵀ` reconstruction, `shift`, `perm`), plus the abs-value `det`/`logdet` convention
+checked on BOTH an even-negative-pivot-count case (matches the signed product too, so
+alone it wouldn't have caught the bug) and the odd-count `diag(2,-3,5)` case that
+actually surfaced it (`det(F) == 30` exactly, `logdet` real and non-throwing).
+Subprocess exit code 0 is the pass signal (any `@assert` failure exits nonzero). A
 second item confirms the OPPOSITE: in the normal (non-dropin) test environment,
 `DROPIN_ACTIVE == false`, `dropin.jl`'s symbols are undefined, and
 `LinearAlgebra.cholesky` has exactly its original 1 method for `SparseMatrixCSC` — i.e.
