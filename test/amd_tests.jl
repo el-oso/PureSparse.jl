@@ -274,7 +274,7 @@ end
         for j in 1:n
             A[j, j] = n + 1.0
         end
-        return cholesky(Symmetric(A, :L)).p
+        return LinearAlgebra.cholesky(Symmetric(A, :L)).p
     end
 
     # 2D grid Laplacian pattern (the classic sparse SPD stress case) + random patterns
