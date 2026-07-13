@@ -12,6 +12,16 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
+**Status (2026-07-13): M1 CLOSED, M2 CLOSED (every gate item in `docs/design.md` §10
+met, see the `### M1`/`### M2` sections below).** M4 is functionally landed
+(`activate!`/`deactivate!` for both `cholesky` and `ldlt`) with three specific gap items
+still open: `SimplicialLDLFactor` property parity, `F.U` extraction, and re-verifying
+M4's own stated gate (a genuine downstream-consumer smoke test + a wall-time gate re-run
+through the dropin entry point specifically — the existing `dropin_tests.jl` exercises
+PureSparse's own drop-in behavior directly, which isn't quite the same claim). M3 not
+started, deliberately deferred — note `galen` (used for perf gating since) does have an
+RTX 4070 reachable via SSH, which could unblock M3 without reordering, if wanted later.
+
 ## M1 gate — `juliac --trim` smoke build succeeds (2026-07-13)
 
 The last open M1 gate item (design.md §10) is closed. `juliac/entry.jl` is the
@@ -900,12 +910,19 @@ the actual per-iteration IPM hot path — now done or substantially improved, an
 harness (design §9.3, 4-arm with quadrant 4 marked N/A); docs skeleton
 (DocumenterVitepress).
 
-**Gate:** full zoo correctness (dense `BigFloat` oracle + CHOLMOD black-box cross-check);
-zero-allocation gate (`@allocated cholesky!(F, A2) == 0`, StrictMode-checks-disabled
-config); wall-time gate — `median_seconds(PureSparse+PureBLAS) < median_seconds(CHOLMOD+
-OpenBLAS)` on the M1 KKT/FEM set, both own-ordering and same-permutation arms, strictly
-faster on at least half the set; `juliac --trim` smoke build succeeds; AMD fill ≤ 1.15×
-CHOLMOD-AMD fill on the zoo.
+**Gate — ALL ITEMS MET (2026-07-13). M1 CLOSED.** full zoo correctness (dense `BigFloat`
+oracle + CHOLMOD black-box cross-check) *(MET — full suite passing)*; zero-allocation
+gate (`@allocated cholesky!(F, A2) == 0`, StrictMode-checks-disabled config) *(MET — 0
+bytes, "M1 task 7" below)*; wall-time gate — `median_seconds(PureSparse+PureBLAS) <
+median_seconds(CHOLMOD+OpenBLAS)` on the M1 KKT/FEM set, both own-ordering and
+same-permutation arms, strictly faster on at least half the set *(MET and then some —
+11/14 named-matrix gate, PLUS the size-sweep gate now passes at every size 2–2048 on
+BOTH clock-locked machines, galen and wintermute — see "Perf follow-up" above)*; `juliac
+--trim` smoke build succeeds *(MET 2026-07-13 — `juliac/build.jl`/`juliac/entry.jl`, 0
+trim-verifier errors, built executable runs and reproduces bit-identical residuals to
+normal Julia; `test/trim_tests.jl`'s TrimCheck item guards regression in the ordinary
+suite)*; AMD fill ≤ 1.15× CHOLMOD-AMD fill on the zoo *(MET — checked directly in
+`test/setups/oracle_setup.jl`)*.
 
 **Task list:**
 1. Scaffold `Project.toml`/module/`tuning.jl`/`types.jl`/`contracts.jl`. *(in progress)*
@@ -916,7 +933,9 @@ CHOLMOD-AMD fill on the zoo.
 4. Fundamental supernode detection + relaxed amalgamation.
 5. Symbolic driver (rowind/px/assembly-map/workspace-bound sizing).
 6. Supernodal LLᵀ numeric (load → linked-list update loop → potrf/trsm) + solve.
-7. Refactorize/allocation hardening + StrictMode guards. *(partial — see "known follow-up")*
+7. Refactorize/allocation hardening + StrictMode guards. *(`cholesky!` DONE 2026-07-13,
+   genuinely 0 bytes — see "M1 task 7"; `solve!`'s remaining partial allocation gap is
+   documented but not required by any milestone gate)*
 8. Benchmark harness + gate run + amalgamation threshold calibration. *(harness done,
    `benchmark/{matrices,openblas_backend,gate,benchmarks}.jl`; gate run for real, DONE —
    11/14 passing, see "CURRENT FOCUS"; threshold calibration folded into task 7b')*
@@ -932,9 +951,14 @@ CHOLMOD-AMD fill on the zoo.
 inertia stats), `simplicial/updown.jl` (simplicial storage + Davis–Hager update/downdate),
 split solves for all three factor types, IPM guide docs, SQD benchmark additions.
 
-**Gate:** SQD zoo (synthetic IPM iterate sequences) factor without failure; inertia
-matches construction; update/downdate round-trip ≤ 100·eps·n; zero-alloc `ldlt!`
-*(DONE 2026-07-13, the last open M2 gate item — see "M2 — zero-allocation `ldlt!`")*.
+**Gate — ALL ITEMS MET (2026-07-13). M2 CLOSED.** SQD zoo (synthetic IPM iterate
+sequences) factor without failure *(MET — `n_perturbed==0` on the well-conditioned gate
+set, forced-regularization paths covered separately in `test/ldlt_tests.jl`)*; inertia
+matches construction *(MET)*; update/downdate round-trip ≤ 100·eps·n *(MET — measured
+~1.4e-16 rel., far inside the bound)*; zero-alloc `ldlt!` *(MET 2026-07-13, the last open
+M2 gate item — see "M2 — zero-allocation `ldlt!`", independently re-verified: 0 bytes at
+n=35/100/320/1000 and across multiple random seeds on the wide-descendant/small-k1 shape
+the fix specifically targets)*.
 
 **Tasks:**
 1. `ldlt` base case + dense unit tests vs a from-scratch no-pivot dense oracle. *(DONE
@@ -950,9 +974,9 @@ matches construction; update/downdate round-trip ≤ 100·eps·n; zero-alloc `ld
 6. Rank-k (successive single-rank first, then multiple-rank optimization).
    *(successive single-rank DONE 2026-07-13 per design §7 v1 scope; the 2001 batched
    multiple-rank variant remains a listed extension, not scheduled)*
-7. Refinement helpers + simplicial split solves. *(split solves DONE 2026-07-13;
-   `refine!` still open)*
-8. IPM guide docs.
+7. Refinement helpers + simplicial split solves. *(DONE 2026-07-13 — both split solves
+   and `refine!`, see "M2 progress — `refine!` + IPM guide docs LANDED")*
+8. IPM guide docs. *(DONE 2026-07-13 — `docs/src/ipm-guide.md`, see same section)*
 
 ### M3 — GPU (CUDA weakdep extension, in-package)
 **Deliverables:** `ext/PureSparseCUDAExt/*`; level-set scheduler (host-side); device
