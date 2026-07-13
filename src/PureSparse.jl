@@ -9,7 +9,7 @@ import LinearAlgebra  # NOT `using` — our own `cholesky`/`cholesky!`/`ldlt`/`l
                        # exists (unwrapped, not just Symmetric-wrapped) and a bare `using`
                        # here would silently replace it the moment PureSparse loads.
 using SparseArrays
-using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!, gemv!
+using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
 
 include("tuning.jl")
 include("types.jl")
