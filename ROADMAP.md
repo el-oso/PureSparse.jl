@@ -107,8 +107,10 @@ repro matching `size_sweep.jl`'s methodology):**
 Full `benchmark/size_sweep.jl` re-run afterward (n=2..2048, saved to
 `benchmark/results/size_sweep_neuromancer.json`) confirms: PS+PureBLAS now beats
 CHOLMOD at every size 2–2048 (1.04x–8.77x), PS+OpenBLAS beats or ties CHOLMOD at every
-size except n=64 (0.74x, an existing small-n per-call-overhead effect unrelated to this
-fix — same as pre-existing behavior at that size) and n=2048 (0.96x, up from 0.79x).
+size except n=64 (0.74x, same pre-existing effect at that size — see the "Perf
+follow-up" section's later root-cause measurement: a still-fragmented supernode
+partition amplifying OpenBLAS's higher per-call overhead vs PureBLAS's) and n=2048
+(0.96x, up from 0.79x).
 `n=2048`'s remaining ~4% OpenBLAS-arm gap was not chased further: profiling after the
 fix shows `potrf!`/`syrk!`/`gemm!`/`trsm!` kernel time now dominates (as it should),
 with the scatter loops no longer visible as a distinct hot spot in the flat profile —
@@ -186,9 +188,21 @@ size (n=2..2048) on both clock-locked machines:**
 | 2048 | **1.03x** (was 0.90x) | **1.15x** |
 
 (Secondary OB/CHOLMOD diagnostic arm dips slightly under 1.0x at n=64 on both machines —
-0.81x galen, 0.76x wintermute — a pre-existing small-n per-call-overhead effect
-unrelated to this fix and not part of the contractual gate, which is defined on the
-PS+PureBLAS arm.)
+0.81x galen, 0.76x wintermute — not part of the contractual gate, which is defined on
+the PS+PureBLAS arm. **Root cause actually measured, not just asserted (2026-07-13):**
+reproduced the exact n=64 sweep matrix (`MersenneTwister(2026)` advanced through sizes
+2..64, matching `nnzL=224`) and found its supernode partition still fragmented at this
+transitional size — 16 supernodes for 64 columns, 9 of them width-1 — meaning ~16
+separate small `potrf!`/`trsm!`/`syrk!` calls per factorization. Separately
+micro-benchmarked `potrf!` at matching tiny sizes (n=2..16): OpenBLAS (via
+`LinearAlgebra.BLAS`/LAPACK/`libblastrampoline`) costs **1.3x–1.5x more per call** than
+PureBLAS's native kernel at this scale (e.g. n=16: 957ns vs 621ns). A fragmented
+partition amplifies that per-call gap into an aggregate one large enough to tip the
+OpenBLAS arm under CHOLMOD's own OpenBLAS-based total, while PureBLAS's lower fixed
+cost absorbs the same fragmentation fine (PS+PureBLAS still wins at n=64, 1.10x-1.17x).
+Not yet confirmed: CHOLMOD's own supernode count on this matrix, to state precisely how
+much more fragmented PureSparse's partition is by comparison — the missing link for a
+fully closed explanation, left as an open follow-up rather than asserted.)
 
 Changed: `src/numeric/llt.jl`, `src/numeric/ldlt.jl`, `src/types.jl` (new `Workspace.ir`/
 `rs` buffers). Branch `perf-parity-galen`, commit `82b9350` on top of `412b1d8`, merged
