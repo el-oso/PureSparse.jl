@@ -10,6 +10,7 @@ import LinearAlgebra  # NOT `using` — our own `cholesky`/`cholesky!`/`ldlt`/`l
                        # here would silently replace it the moment PureSparse loads.
 using SparseArrays
 using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
+using Preferences: Preferences
 
 include("tuning.jl")
 include("types.jl")
@@ -24,6 +25,8 @@ include("numeric/ldlt.jl")
 include("numeric/solve.jl")
 include("simplicial/updown.jl")
 include("refine.jl")
+include("dropin_toggle.jl")   # activate!/deactivate! — always available, see tuning.jl's DROPIN_ACTIVE
+DROPIN_ACTIVE && include("dropin.jl")
 include("contracts.jl")
 
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, issuccess
@@ -31,5 +34,7 @@ export simplicial, updowndate!
 export solve!, solve_L!, solve_D!, solve_Lt!, refine!
 export AbstractOrdering, AMDOrdering, NaturalOrdering, GivenOrdering
 export Symbolic, SupernodalFactor, LDLFactor, SimplicialLDLFactor, FactorStats
+export activate!, deactivate!
+DROPIN_ACTIVE && export sparse_L
 
 end # module PureSparse

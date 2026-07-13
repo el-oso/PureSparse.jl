@@ -6,6 +6,69 @@ Fable (v1) → adversarially reviewed by Opus (2 BLOCKERs, 7 DEFECTs found, all 
 corrected by Fable (v2, current). Clean-room policy: `docs/design.md` §11 — CHOLMOD
 source must never be read, only published papers.
 
+**Milestone order (user-approved reorder, 2026-07-13): M1 → M2 → M4 → M3.** M3 (GPU,
+CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDIA GPU
+(confirmed via `nvidia-smi`/`lspci`: integrated AMD graphics only), so CUDA.jl work
+here would be unverifiable guessing, not "don't guess, check" engineering. M4
+(drop-in) doesn't need GPU hardware and is next.
+
+## M4 progress — drop-in (`activate!`/`deactivate!`) LANDED for `cholesky` (2026-07-13)
+
+`src/dropin_toggle.jl` (always loaded): `activate!()`/`deactivate!()` set the
+`dropin_active` Preference. `src/dropin.jl` (only `include`d when `DROPIN_ACTIVE` —
+`src/tuning.jl` — is `true`): extends `LinearAlgebra.cholesky` for
+`SparseMatrixCSC`/`Symmetric`/`Hermitian` real (non-complex) input, matching CHOLMOD's
+own kwarg surface (`shift`, `check`, `perm`) and adding stdlib-surface parity on the
+returned `SupernodalFactor`: `.p` (permutation, `getproperty` override), `.L` (sparse
+extraction via the new `sparse_L`), `logdet`, `det`. Int32 indices already worked for
+free (M1's generic-over-`Ti` design). `ldlt` drop-in and `LDLFactor`/
+`SimplicialLDLFactor` property parity are NOT done this pass — documented as a
+follow-up, not silently skipped.
+
+**Why this can't be a same-session runtime toggle (worked through explicitly, not
+assumed):** PureBLAS's own `activate()`/`deactivate()` forwards through
+`libblastrampoline`, a C-ABI indirection layer BLAS calls already go through, which
+supports true runtime hot-swapping. Julia's pure-dispatch method table has no
+equivalent — once a method with a given signature is defined, the OLD method for that
+exact signature is gone, not shadowed (verified: `Base.invoke` can't reach it either,
+since there's nothing left to invoke). Making the override unconditionally defined and
+branching on a runtime `Ref{Bool}` inside it was considered and rejected: the override
+would already exist the moment PureSparse loads, which is exactly what CLAUDE.md's
+`import LinearAlgebra` comment (M1) says not to do, even if it's a functional no-op
+when "inactive." The only way the override genuinely doesn't exist until opted in,
+without runtime `eval`/`invokelatest` (forbidden, CLAUDE.md requirement 4, needed for
+`juliac --trim`), is gating the `include` itself on a compile-time Preference —
+`activate!()`/`deactivate!()` therefore require a Julia restart, an honest consequence
+of the dispatch model, not a corner cut.
+
+**Real, documented deviation from CHOLMOD's exact `perm=` contract (found during
+testing, not assumed away):** CHOLMOD guarantees `F.p == perm` exactly when `perm` is
+given (verified directly: `F.p == myperm` for a reversed test permutation). PureSparse
+cannot offer that — `symbolic()` always composes ANY ordering with a postorder
+relabeling step, required for supernode detection to see contiguous children
+(design.md §3.2/§3.4) — so `perm=` sets the elimination order but `F.p` may not equal
+it exactly. The factorization is still correct for whatever `F.p` ends up being
+(verified: `L·Lᵀ ≈ A[F.p,F.p]` still holds to 1e-9 rel. under a forced `perm`); only
+code literally asserting `F.p == perm` would observe the difference. Documented in
+`dropin.jl`'s docstring, not silently papered over.
+
+**Verified (2026-07-13):** `test/dropin_tests.jl`, 2 items. The real one spawns an
+ISOLATED subprocess with its own temp `--project` (own `LocalPreferences.toml` setting
+`dropin_active=true` — writing to `test/`'s own `LocalPreferences.toml` directly would
+contaminate every OTHER test item's precompiled state, since Preferences are
+project-scoped) that exercises the actual stdlib entry point
+(`LinearAlgebra.cholesky`, not `PureSparse.cholesky`) end-to-end: bare
+`SparseMatrixCSC` and `Symmetric` input, solve residual, `.L`/`.p` extraction vs a
+dense oracle, `logdet`/`det` vs `LinearAlgebra.cholesky` on the dense reconstruction,
+`shift`, `perm` (checked for the weaker-but-correct property above), `check=true`
+throwing `PosDefException` on non-SPD and `check=false` not throwing, Int32 indices —
+subprocess exit code 0 is the pass signal (any `@assert` failure exits nonzero). A
+second item confirms the OPPOSITE: in the normal (non-dropin) test environment,
+`DROPIN_ACTIVE == false`, `dropin.jl`'s symbols are undefined, and
+`LinearAlgebra.cholesky` has exactly its original 1 method for `SparseMatrixCSC` — i.e.
+this file's mere presence doesn't leak activation into the rest of the suite. Full
+suite still green after adding this (see the commit for the exact count).
+
 ## Current headline numbers (2026-07-13, post M1-task-7 zero-alloc fix, re-measured — not stale)
 
 Both gates re-run after the zero-alloc hardening below (a real hot-path change, so

@@ -78,3 +78,23 @@ const GPU_FLOP_THRESHOLD = @load_preference("gpu_flop_threshold", 2e9)::Float64
 # benchmark pass. Exceeding a column's slack is not an error: `updowndate!` returns
 # `:refactor_required` (design.md §7's documented overflow contract).
 const SIMPLICIAL_GROW = @load_preference("simplicial_grow", 1.5)::Float64
+
+# Drop-in activation (design.md §10 M4): whether `src/dropin.jl` — which extends
+# `LinearAlgebra.cholesky`/`ldlt` for `SparseMatrixCSC`, a genuine stdlib method-table
+# overwrite — is even `include`d. This MUST be a compile-time Preference (not a runtime
+# `Ref{Bool}` toggle checked inside an unconditionally-defined method): Julia's method
+# table has no "temporarily shadow a method" primitive, and defining the override
+# unconditionally then branching on a runtime flag INSIDE it would still constitute
+# "silently extending stdlib the moment PureSparse loads" (CLAUDE.md's explicit
+# concern, `PureSparse.jl`'s `import LinearAlgebra` comment) even when the flag is off
+# — the override would already exist, just be a no-op. Making the `include` itself
+# conditional on a compile-time const is the only way the override genuinely doesn't
+# exist until opted in, and it is what keeps this trim-compatible (no runtime
+# `eval`/`invokelatest`, CLAUDE.md requirement 4) — the tradeoff, unlike PureBLAS's
+# `activate()`/`deactivate()` (which forwards through `libblastrampoline`, a C-ABI
+# indirection layer BLAS calls already go through and that supports true runtime
+# hot-swapping), is that PureSparse's `activate!()`/`deactivate!()` (`dropin_toggle.jl`)
+# set this Preference and require a Julia restart to take effect — an honest
+# consequence of pure-Julia multiple dispatch having no equivalent trampoline layer,
+# not a corner cut.
+const DROPIN_ACTIVE = @load_preference("dropin_active", false)::Bool

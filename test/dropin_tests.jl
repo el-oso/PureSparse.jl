@@ -1,0 +1,126 @@
+# M4 drop-in (design.md §10). `DROPIN_ACTIVE` is a compile-time Preference-backed
+# const (tuning.jl) — it can't be flipped inside the already-running test process the
+# way a runtime flag could (that's the whole point: the override genuinely doesn't
+# exist until opted in, no `eval`, CLAUDE.md requirement 4). So this test item spawns
+# an ISOLATED subprocess with its own temp `--project` (own `LocalPreferences.toml`
+# setting `dropin_active = true`, entirely separate from `test/`'s own environment —
+# writing to `test/LocalPreferences.toml` directly would contaminate every OTHER test
+# item's precompiled state, since Preferences are project-scoped) and checks that the
+# subprocess script — which exercises the real stdlib entry points, not PureSparse's
+# own API — exits 0.
+
+@testitem "M4 drop-in: activate!'d LinearAlgebra.cholesky matches stdlib surface (subprocess)" begin
+    using Pkg
+
+    pkgroot = pkgdir(PureSparse)
+    envdir = mktempdir()
+    try
+        write(joinpath(envdir, "LocalPreferences.toml"), """
+        [PureSparse]
+        dropin_active = true
+        """)
+
+        script = joinpath(envdir, "run.jl")
+        write(script, """
+        using Pkg
+        Pkg.activate(@__DIR__)
+        Pkg.develop(path=raw"$pkgroot")
+        Pkg.add(["LinearAlgebra", "SparseArrays", "Random"])
+        Pkg.instantiate()
+
+        using PureSparse, LinearAlgebra, SparseArrays, Random
+
+        @assert PureSparse.DROPIN_ACTIVE "dropin_active Preference did not take effect"
+
+        rng = MersenneTwister(11)
+        n = 25
+        Ir = Int[]; Jc = Int[]; V = Float64[]
+        rowsum = zeros(n)
+        for j in 1:n, i in (j + 1):n
+            rand(rng) < 0.2 || continue
+            v = randn(rng)
+            push!(Ir, i); push!(Jc, j); push!(V, v)
+            rowsum[i] += abs(v); rowsum[j] += abs(v)
+        end
+        for j in 1:n
+            push!(Ir, j); push!(Jc, j); push!(V, rowsum[j] + 1.0)
+        end
+        A = sparse(Ir, Jc, V, n, n)
+        Afull = sparse(Symmetric(A, :L))
+
+        # Bare SparseMatrixCSC entry point (not PureSparse.cholesky — the STDLIB name,
+        # which only resolves to PureSparse's algorithm because dropin_active flipped
+        # the method table; this is the actual M4 gate, not a PureSparse-API check).
+        F = LinearAlgebra.cholesky(Afull)
+        @assert typeof(F) <: PureSparse.SupernodalFactor
+        @assert PureSparse.issuccess(F)
+
+        b = randn(rng, n)
+        x = F \\ b
+        Ad = Matrix(Symmetric(A, :L))
+        @assert norm(Ad * x - b) / (norm(Ad) * norm(x) + eps()) < 1e-8
+
+        L = Matrix(F.L)
+        p = F.p
+        PAP = Ad[p, p]
+        @assert norm(L * L' - PAP) / norm(PAP) < 1e-9
+
+        @assert isapprox(logdet(F), logdet(LinearAlgebra.cholesky(PAP)); rtol=1e-10)
+        @assert isapprox(det(F), det(Ad); rtol=1e-6)
+
+        # shift
+        Fs = LinearAlgebra.cholesky(Afull; shift=3.0)
+        xs = Fs \\ b
+        @assert norm((Ad + 3.0I) * xs - b) / (norm(Ad) * norm(xs) + eps()) < 1e-8
+
+        # perm: still a correct factorization for whatever F.p ends up being
+        myperm = collect(n:-1:1)
+        Fp = LinearAlgebra.cholesky(Afull; perm=myperm)
+        pp = Fp.p
+        @assert sort(pp) == collect(1:n)
+        Lp = Matrix(Fp.L)
+        @assert norm(Lp * Lp' - Ad[pp, pp]) / norm(Ad[pp, pp]) < 1e-9
+
+        # check=true throws, check=false doesn't
+        Abad = sparse(Diagonal(fill(-1.0, 4)))
+        threw = try
+            LinearAlgebra.cholesky(Abad)
+            false
+        catch e
+            e isa PosDefException
+        end
+        @assert threw
+        Fbad = LinearAlgebra.cholesky(Abad; check = false)
+        @assert !PureSparse.issuccess(Fbad)
+
+        # Int32 indices
+        A32 = SparseMatrixCSC{Float64,Int32}(Afull)
+        F32 = LinearAlgebra.cholesky(A32)
+        @assert PureSparse.issuccess(F32)
+
+        # activate!/deactivate! exist and don't throw (restart-required to actually take
+        # effect — see tuning.jl's DROPIN_ACTIVE comment; not re-checked live here)
+        PureSparse.deactivate!()
+        PureSparse.activate!()
+
+        println("DROPIN_SUBPROCESS_OK")
+        """)
+
+        julia_exe = joinpath(Sys.BINDIR, Base.julia_exename())
+        cmd = ignorestatus(`$julia_exe --project=$envdir $script`)
+        proc = Base.run(pipeline(cmd; stdout = Base.stdout, stderr = Base.stderr))
+        @test proc.exitcode == 0
+    finally
+        rm(envdir; recursive = true, force = true)
+    end
+end
+
+@testitem "M4 drop-in: inactive by default in the normal test environment" begin
+    using LinearAlgebra, SparseArrays
+    # test/'s own environment never sets dropin_active, so this file's presence alone
+    # must not affect PureSparse's default (inactive) state or LinearAlgebra's own
+    # cholesky method table.
+    @test PureSparse.DROPIN_ACTIVE == false
+    @test !isdefined(PureSparse, :sparse_L)
+    @test length(methods(LinearAlgebra.cholesky, (SparseMatrixCSC{Float64,Int},))) == 1
+end
