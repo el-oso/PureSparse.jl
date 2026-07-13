@@ -6,6 +6,101 @@ Fable (v1) → adversarially reviewed by Opus (2 BLOCKERs, 7 DEFECTs found, all 
 corrected by Fable (v2, current). Clean-room policy: `docs/design.md` §11 — CHOLMOD
 source must never be read, only published papers.
 
+## M2 progress — simplicial rank-1/rank-k update/downdate LANDED (2026-07-13)
+
+`src/simplicial/updown.jl` (new, design §1.3's planned location) + the
+`SimplicialLDLFactor{T,Ti}` type in `src/types.jl` implement design §7:
+`G = simplicial(F::LDLFactor; grow)` (one-time allocating conversion),
+`updowndate!(G, w, ±1)` rank-1 Davis–Hager update/downdate (zero allocations, O(changed
+nnz) factor work), `updowndate!(G, W::AbstractMatrix, ±1)` rank-k as sequenced rank-1
+(design §7's explicit v1 scope — the 2001 batched variant deliberately NOT implemented),
+and the full simplicial split-solve set (`solve!`/`solve_L!`/`solve_D!`/`solve_Lt!`/`\`
+as new methods on the EXISTING exported functions, design §6/§0 N7 — plain CSC column
+loops, no PureBLAS). Provenance: everything algorithmic is Davis & Hager 1999
+(`refs/linear_algebra/modify_sparse_cholesky.pdf`, read directly): the numeric
+recurrence is their Algorithm 5 verbatim (§5.1 p.617, sparse Method C1 modified; the
+paper notes it is diagonal-scaling-equivalent to Pan's stable orthogonal method — this
+is design §7's "hyperbolic/stable recurrences"); the etree-path restriction is Theorem
+5.2 (downdate: pattern of `v = L⁻¹w` = path `P(k)`, `k = min support(w)`, their eq.
+(5.1)) and Corollary 5.3 (update: path `P̄(k)` in the new tree); pattern growth and
+parent rewiring are Theorem 4.1 + Algorithm 3 (`π̄(j) = min L̄ⱼ \ {j}`), generalized to
+arbitrary-`w` downdates via §6's Algorithm 6a merge phase.
+
+**Verified (2026-07-13):** 10 new ReTestItems in `test/simplicial_tests.jl` (1470
+assertions), full suite **15197/15197 passing** (13727 pre-existing, `llt.jl`/`ldlt.jl`/
+`symbolic/*`/`ordering/*` untouched). Coverage: (a) conversion reconstructs
+`Pᵀ·L·D·Lᵀ·P ≈ K` at 1e-12 rel. and `G.d == F.d` bitwise, pattern
+sorted/unique/in-capacity with `parent == min(pattern)` asserted per column; (b) update
+vs. TWO independent oracles — reconstruction ≈ `K + wwᵀ` AND agreement with a
+from-scratch `ldlt(K + wwᵀ)` refactorization (fresh symbolic, fully independent code
+path) — measured ≤ 2.8e-16 rel. on random SPD up to n=90 (gate 1e-12), plus an SQD
+`[H+wwᵀ Aᵀ; A −C]` case with inertia (25,15) asserted preserved through the update;
+(c) update-then-downdate round-trip returns the original `L`/`d` within the design M2
+target `100·eps·n` (measured ~1.4e-16 rel., i.e. orders below the gate) with the
+workspace-zeroing invariant `all(iszero, G.wval)` asserted after every walk; (d)
+rank-k wrapper produces BITWISE-identical `L`/`d` to manually sequenced rank-1 calls
+and matches `K + WWᵀ` at 1e-12; (e) downdate instability: `I₄ − 4e₂e₂ᵀ` and a random
+SPD matrix downdated past its smallest eigenvalue both return `:not_definite` with
+`ok=false`/`fail_col` set, while a same-direction SAFE downdate succeeds at 1e-11 —
+and the SQD flavor (UPDATE against a negative pivot, `diag(1,−1) + 4e₂e₂ᵀ`) is caught
+by the same `ᾱ ≤ 0` recurrence signal; (f) pattern growth: `grow = 0` (zero slack)
+returns `:refactor_required` and refuses reuse, the identical update under default
+slack succeeds at 1e-14; (g) post-update residual `‖(K+wwᵀ)x−b‖/(‖K‖‖x‖) < 1e-12`
+through the simplicial solves ONLY (supernodal factor left stale), incl. multi-RHS and
+split-solve composition; (h) `@allocated updowndate! == 0` for both signs after warmup.
+
+**Judgment calls (design ambiguities resolved, documented in-code too):**
+- **Return-code shape:** `updowndate!` returns a `Symbol` — `:ok` /
+  `:refactor_required` (design §7's overflow contract) / `:not_definite` — AND sets
+  `G.ok = false` + `G.stats.fail_col` on failure (the design's "reported through
+  `F.ok`/stats" discipline); a failed factor throws `ArgumentError` on further
+  `updowndate!` calls. Failure leaves earlier path columns modified (documented):
+  the caller must refactor anyway, and keeping single-pass merge+numerics is what
+  makes the success path allocation-free.
+- **Definiteness detection is the recurrence's `ᾱ ≤ 0`**, checked BEFORE the pivot is
+  committed (Alg 5: `d̄ⱼ = (ᾱ/α)dⱼ` with `α > 0` invariant), not an after-the-fact
+  sign inspection. For SQD factors the same predicate refuses any inertia-changing
+  modification, including updates against negative pivots — so the guard is
+  σ-independent, not downdate-only.
+- **Storage layout:** strictly-lower per-column CSC (`colptr` fixed slot ranges +
+  `colnnz` used-length, implicit unit diagonal, `d` separate) with per-column slack
+  `min(n−j, max(len, ceil(grow·(len+1))))`; `grow` is the new `simplicial_grow`
+  Preference (default 1.5 — own free choice, derivation in `tuning.jl`; the paper §7
+  sizes columns from a known worst-case factor instead, which a general update stream
+  doesn't have). `wval`/`wpat` scatter workspaces live in the struct; `wval` is kept
+  all-zero BETWEEN calls by re-zeroing exactly the touched entries during/after the
+  walk (no O(n) `fill!` per call).
+- **Pattern extraction keeps the supernodal superset** (amalgamation padding rides
+  along as exact zeros — they provably stay exactly 0.0 in floating point). Chosen
+  because the padded pattern is CLOSED under the paper's eq. (3.1) parent-containment
+  (in-block: slices nest trivially; across supernodes: the §4.3/§9.1 superset
+  invariant), which is all the walk needs; the true per-column pattern is not
+  recoverable from the factor alone without A. Consequence: `G.parent` is the etree
+  of the STORED pattern (possibly a refinement of `sym.parent`) and is maintained by
+  `updowndate!` as patterns grow; padded path columns are harmless `wⱼ = 0` no-ops
+  (paper §5.2).
+- **Downdates never shrink patterns** — the paper's multiset symbolic-downdate
+  machinery (Algorithms 2/4, §6 Algorithm 6b entry removal) is deliberately skipped;
+  entries that become numerically zero stay stored. A closed superset is always
+  numerically safe, and this halves the symbolic code. Both update AND downdate run
+  the same 6a-style support merge (an arbitrary-`w` downdate can add fill — the 1999
+  single-path Theorem 5.2 assumes `w` is a column of `A`; §6 is the general case).
+- **`w` is taken in ORIGINAL row order** (like `ldlt`'s `signs`) and permuted
+  internally; the O(n) input scan for a dense `w` is unavoidable and documented (the
+  O(changed nnz) claim is about factor-modification work).
+- **Wide-support updates legitimately overflow default slack:** the 6a merge phase
+  adds `support(w)` to every path column, so a dense-ish `w` against 1.5× slack
+  correctly returns `:refactor_required` (observed in testing — not a bug; the
+  recurrence itself measured ≤ 2.8e-16 wherever storage sufficed). Oracle test items
+  therefore build with `grow = n` (never-overflow) while the slack policy has its own
+  dedicated items at `grow = 0`/default.
+
+**Deliberately out of scope here (still-open M2 items):** `refine!`; the direct
+simplicial factorization path for small/very-sparse problems (design §1.2 mentions it;
+only the `LDLFactor` conversion is scheduled); the 2001 batched multiple-rank
+algorithm (listed extension); a `SparseVector` fast path for the input scan;
+update/downdate benchmark-gate additions.
+
 ## M2 progress — supernodal LDLᵀ/SQD LANDED (tasks 1–3, 2026-07-13)
 
 `src/numeric/ldlt.jl` implements the design §5.1 supernodal LDLᵀ for symmetric
@@ -355,10 +450,15 @@ matches construction; update/downdate round-trip ≤ 100·eps·n; zero-alloc `ld
 2. LDL descendant updates (L·D-scaled gemm path, chunked over `Workspace.cd`) + base
    case covers the panel rows (no separate trsm stage). *(DONE 2026-07-13)*
 3. Signed regularization + inertia stats + `signs` plumbing. *(DONE 2026-07-13)*
-4. Simplicial storage + conversion (`simplicial(F)`).
-5. Rank-1 update/downdate (Davis–Hager Method C) incl. pattern growth.
+4. Simplicial storage + conversion (`simplicial(F)`). *(DONE 2026-07-13 — see
+   "M2 progress — simplicial rank-1/rank-k update/downdate")*
+5. Rank-1 update/downdate (Davis–Hager Method C) incl. pattern growth. *(DONE
+   2026-07-13 — round-trip measured ~1.4e-16 rel., far inside the 100·eps·n gate)*
 6. Rank-k (successive single-rank first, then multiple-rank optimization).
-7. Refinement helpers + simplicial split solves.
+   *(successive single-rank DONE 2026-07-13 per design §7 v1 scope; the 2001 batched
+   multiple-rank variant remains a listed extension, not scheduled)*
+7. Refinement helpers + simplicial split solves. *(split solves DONE 2026-07-13;
+   `refine!` still open)*
 8. IPM guide docs.
 
 ### M3 — GPU (CUDA weakdep extension, in-package)

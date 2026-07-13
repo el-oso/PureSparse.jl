@@ -22,11 +22,13 @@ include("symbolic/driver.jl")
 include("numeric/llt.jl")
 include("numeric/ldlt.jl")
 include("numeric/solve.jl")
+include("simplicial/updown.jl")
 include("contracts.jl")
 
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, issuccess
+export simplicial, updowndate!
 export solve!, solve_L!, solve_D!, solve_Lt!
 export AbstractOrdering, AMDOrdering, NaturalOrdering, GivenOrdering
-export Symbolic, SupernodalFactor, LDLFactor, FactorStats
+export Symbolic, SupernodalFactor, LDLFactor, SimplicialLDLFactor, FactorStats
 
 end # module PureSparse

@@ -65,3 +65,16 @@ const LDLT_DELTA = @load_preference("ldlt_delta", 1e-12)::Float64
 
 # Per-supernode flop threshold above which the GPU path engages (design.md §8, M3).
 const GPU_FLOP_THRESHOLD = @load_preference("gpu_flop_threshold", 2e9)::Float64
+
+# Per-column slack grow factor for simplicial storage (design.md §7: "simplicial()
+# allocates each column with slack (grow-factor Preference)"). Column j gets
+# `min(n - j, max(len_j, ceil(grow * (len_j + 1))))` row slots for `len_j` initial
+# entries — the `+ 1` counts the implicit unit diagonal so that empty/short columns
+# (exactly where an update's new fill lands first, since fill enters at the low end of
+# the etree path) still receive slack instead of `ceil(grow * 0) = 0`. The 1.5 default
+# is our own elbow-room starting point (Davis–Hager 1999 §7 sizes columns from a known
+# worst-case factor instead, which we don't have for a general update stream); no
+# external-implementation provenance, free tunable, to be calibrated in the M2
+# benchmark pass. Exceeding a column's slack is not an error: `updowndate!` returns
+# `:refactor_required` (design.md §7's documented overflow contract).
+const SIMPLICIAL_GROW = @load_preference("simplicial_grow", 1.5)::Float64

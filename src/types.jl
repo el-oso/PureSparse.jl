@@ -131,6 +131,55 @@ mutable struct LDLFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
 end
 
 """
+    SimplicialLDLFactor{T,Ti} <: AbstractSparseFactor{T}
+
+Simplicial (one-column-at-a-time) unit-lower LDLᵀ factor — the representation the
+Davis–Hager rank-1 update/downdate operates on (design.md §1.2/§7; Davis & Hager,
+*Modifying a Sparse Cholesky Factorization*, SIAM J. Matrix Anal. Appl. 20(3), 1999).
+Produced by [`simplicial`](@ref)`(F::LDLFactor)`; modified in place by
+[`updowndate!`](@ref); solved by the same exported split solves as the supernodal
+factors (design.md §6/§0 N7).
+
+Storage layout (everything in FACTOR order, i.e. permuted by `sym.perm`):
+
+- Column `j` of `L` owns the fixed slot range `colptr[j] : colptr[j+1]-1` in
+  `rowval`/`nzval`, of which the first `colnnz[j]` slots hold its current
+  **strictly-lower** pattern (sorted, ascending) and values; the diagonal of `L` is an
+  implicit `1` and is never stored. The remaining slots are *slack*: `updowndate!`
+  grows a column's pattern in place (paper §4.1 Case 1 / §6, Algorithm 6a — an update
+  can add fill along the etree path) without any reallocation; a column whose growth
+  would exceed its slack makes `updowndate!` return `:refactor_required` instead
+  (design.md §7). Slack is sized by the `simplicial_grow` Preference (see `tuning.jl`).
+- `d` is the diagonal of `D` (1×1 pivots, may be negative for SQD factors).
+- `parent[j] = min(pattern of column j)` (`0` at a root) — the elimination tree **of
+  the stored pattern** (Davis–Hager §2: `π(j) = min Lⱼ \\ {j}`). The stored pattern is
+  the supernodal one including amalgamation padding, a closed superset of the true
+  L-pattern (see [`simplicial`](@ref)'s provenance note), so this parent map can be a
+  refinement of `sym.parent`; `updowndate!` keeps it consistent as patterns grow
+  (paper Algorithm 3: `π̄(j) = min L̄ⱼ \\ {j}`).
+- `wval`/`wpat` are preallocated `updowndate!` workspace (scattered `w` values and its
+  sorted support). `wval` is kept all-zero between calls so no O(n) clearing is ever
+  needed — `updowndate!` re-zeroes exactly the entries it touched (O(changed nnz)).
+- `ok` is `false` after a failed `updowndate!` (`:refactor_required` or
+  `:not_definite`) — the numeric contents are then partially modified and the factor
+  must be rebuilt via a fresh `ldlt`/`simplicial`. `stats.fail_col` records the
+  factor-order column at which the failure was detected.
+"""
+mutable struct SimplicialLDLFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
+    sym::Symbolic{Ti}              # shared symbolic (perm/iperm/n); parent below is the factor's own
+    colptr::Vector{Ti}             # column j owns slots colptr[j]:colptr[j+1]-1, length n+1
+    colnnz::Vector{Ti}             # slots of column j currently in use, length n
+    rowval::Vector{Ti}             # strictly-lower row indices, sorted per column
+    nzval::Vector{T}               # matching L values (unit diagonal implicit)
+    d::Vector{T}                   # diagonal of D, factor order, length n
+    parent::Vector{Ti}             # etree of the STORED pattern: min of column pattern, 0 = root
+    wval::Vector{T}                # updowndate! workspace: scattered w, all-zero between calls
+    wpat::Vector{Ti}               # updowndate! workspace: sorted support of w, length n
+    stats::FactorStats
+    ok::Bool
+end
+
+"""
     issuccess(F::AbstractSparseFactor) -> Bool
 
 Whether the last `cholesky!`/`ldlt!` call on `F` succeeded (design.md §4.3 step 3, §5.1 —
