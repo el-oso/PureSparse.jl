@@ -8,6 +8,7 @@ include("tuning.jl")
 include("types.jl")
 include("ordering/interface.jl")
 include("symbolic/etree.jl")
+include("symbolic/counts.jl")
 include("contracts.jl")
 
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, solve!, issuccess
