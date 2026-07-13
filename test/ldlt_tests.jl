@@ -171,6 +171,48 @@ end
     @test (Ff.stats.n_pos, Ff.stats.n_neg) == (2, 1)
 end
 
+@testitem "ldlt!: width-1/2 diagonal-block fast path matches the general ger! path" setup = [LDLTHelpers] begin
+    # Mirror of llt.jl's fast-path regression guard (n=64 OB-arm perf fix). Width-1
+    # already made zero kernel calls before this fix (documented no-op mirror in
+    # ldlt.jl); width-2 replaces its single ger! trailing-update call with an inline
+    # muladd. Pin correctness on a matrix with the SAME width-[1,2] supernode
+    # partition as llt_tests.jl's Aiso case, plus a dedicated check that signed
+    # regularization correctly propagates through the inlined width-2 trailing
+    # update (the fast path uses `dj` AFTER regularization, not the original pivot —
+    # this is the one place a naive port could silently use the wrong value).
+    using Random, LinearAlgebra, SparseArrays
+
+    # (a) same widths=[1,2] partition as llt_tests.jl's Aiso, free signs.
+    A1 = sparse([1, 2, 2], [1, 1, 2], [1.0, 0.3, 2.0], 2, 2)
+    Aiso = blockdiag(sparse([1.0;;]), A1)
+    Fiso = PureSparse.ldlt(Aiso)
+    @test PureSparse.issuccess(Fiso)
+    L = dense_unit_L(Fiso)
+    R = L * Diagonal(Fiso.d) * L'
+    @test relerr(R, permuted_dense(Fiso, Aiso)) < 1.0e-10
+
+    # (b) width-2 regularization propagation: K = [[-2,1],[1,3]] under signs=[+1,+1]
+    # forces d1 from -2 to +2; the trailing update for column 2 must use the
+    # REGULARIZED d1=2 (not the original -2) to compute d2. Hand-derived: L21 =
+    # 1/2 = 0.5, d2 = 3 - 2*0.5^2 = 2.5, and L*D*L' must reconstruct the REGULARIZED
+    # matrix [[2,1],[1,3]], not the original K. Order pinned via GivenOrdering so
+    # AMD can't swap which column processes first (it does, on this tiny 2x2 input,
+    # which would otherwise silently invalidate the hand-derived values below).
+    K = sparse([1, 2, 2], [1, 1, 2], [-2.0, 1.0, 3.0], 2, 2)
+    nat_order = PureSparse.GivenOrdering([1, 2])
+    @assert PureSparse.symbolic(K; ordering = nat_order).nsuper == 1   # one width-2 supernode
+    F = PureSparse.ldlt(K; signs = [1, 1], ordering = nat_order)
+    @test PureSparse.issuccess(F)
+    @test F.stats.n_perturbed == 1
+    d = F.d[Int.(F.sym.iperm)]
+    @test d ≈ [2.0, 2.5]
+    Lb = dense_unit_L(F)
+    Rb = Lb * Diagonal(F.d) * Lb'
+    Kreg = sparse([1, 2, 2], [1, 1, 2], [2.0, 1.0, 3.0], 2, 2)
+    @test relerr(Rb, permuted_dense(F, Kreg)) < 1.0e-10
+    @test relerr(Rb, permuted_dense(F, K)) > 0.1   # not the unregularized matrix
+end
+
 @testitem "ldlt: solve! residual gate on SQD systems + multi-RHS" setup = [LDLTHelpers] begin
     using Random, LinearAlgebra, SparseArrays
     rng = MersenneTwister(74)

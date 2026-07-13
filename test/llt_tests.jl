@@ -141,6 +141,56 @@ end
     @test F.stats.fail_col >= 1
 end
 
+@testitem "cholesky!: width-1/2 diagonal-block fast path matches the general trsm!/potrf! path" setup = [LLTHelpers] begin
+    # Regression guard for the inline kernel-call bypass (n=64 OB-arm perf fix): a
+    # supernode of width 1 or 2 skips potrf!/trsm! entirely and does the arithmetic
+    # directly (see llt.jl's "factor diagonal block" / "panel solve" steps). Pin
+    # correctness against the dense oracle on matrices specifically chosen to force
+    # width-1/2 supernodes, including the EXACT n=64 sweep matrix that originally
+    # exposed the OB-arm dip (benchmark/size_sweep.jl's MersenneTwister(2026)
+    # sequence, reproduced here so a future refactor can't silently regress the case
+    # this fix targets).
+    using Random, LinearAlgebra, SparseArrays
+
+    # (a) exact n=64 sweep matrix: 16 supernodes, 9 of them width 1-3 (6 structurally
+    # isolated columns with zero fill, per ROADMAP's root-cause writeup).
+    A64 = let rng64 = MersenneTwister(2026), A = nothing
+        for n in (2, 4, 8, 16, 32, 64)
+            A = random_spd_matrix(rng64, n, 0.05)
+        end
+        A
+    end
+    F64 = PureSparse.cholesky(A64)
+    @test PureSparse.issuccess(F64)
+    L64 = dense_L(F64)
+    PAP64 = permuted_dense(F64, A64)
+    @test relerr(L64 * L64', PAP64) < 1.0e-10
+
+    # (b) block-diag of an isolated width-1 column (diag entry with no off-diagonal
+    # fill at all -- the structurally-unmergeable case from the n=64 matrix) with an
+    # unrelated 2-column block -- verified via symbolic() to produce widths [1, 2],
+    # exercising BOTH fast-path widths in one factorization.
+    A1 = sparse([1, 2, 2], [1, 1, 2], [1.0, 0.3, 2.0], 2, 2)
+    Aiso = blockdiag(sparse([1.0;;]), A1)
+    @assert [s2 - s1 for (s1, s2) in zip(PureSparse.symbolic(Aiso).super, PureSparse.symbolic(Aiso).super[2:end])] == [1, 2]
+    Fiso = PureSparse.cholesky(Aiso)
+    @test PureSparse.issuccess(Fiso)
+    Liso = dense_L(Fiso)
+    @test relerr(Liso * Liso', permuted_dense(Fiso, Aiso)) < 1.0e-10
+
+    # (c) failure signaling still correct through both fast-path widths.
+    Aneg1 = sparse(Diagonal([-1.0]))
+    @test !PureSparse.issuccess(PureSparse.cholesky(Aneg1))
+    # width-2, negative SECOND pivot (Schur complement goes negative: d2 = 0.5 - 2^2/4 < 0)
+    Aneg2b = sparse([1, 2, 2], [1, 1, 2], [4.0, 2.0, 0.5], 2, 2)
+    Fneg2b = PureSparse.cholesky(Aneg2b)
+    @test !PureSparse.issuccess(Fneg2b)
+    # width-2, negative FIRST pivot
+    Aneg2a = sparse([1, 2, 2], [1, 1, 2], [-4.0, 2.0, 5.0], 2, 2)
+    Fneg2a = PureSparse.cholesky(Aneg2a)
+    @test !PureSparse.issuccess(Fneg2a)
+end
+
 @testitem "solve!: A*x ≈ b residual gate" setup = [LLTHelpers] begin
     using Random, LinearAlgebra, SparseArrays
     rng = MersenneTwister(64)
