@@ -159,12 +159,93 @@
         Dlp = Diagonal(Flp.d)
         @assert norm(Llp * Dlp * Llp' - Kd[plp, plp]) / norm(Kd[plp, plp]) < 1e-9
 
+        # --- F.U extraction (convention verified against real stdlib/CHOLMOD output,
+        # see dropin.jl's getproperty docstring): U = Lᵀ, materialized SparseMatrixCSC ---
+        U = F.U
+        @assert U isa SparseMatrixCSC
+        @assert Matrix(U) == L'
+        @assert norm(Matrix(U)' * Matrix(U) - PAP) / norm(PAP) < 1e-9
+        Ul = Matrix(FL.U)
+        @assert Ul == Ll'
+        @assert all(Ul[i, i] == 1 for i in 1:nl)   # unit-upper for LDLᵀ, like CHOLMOD's own .U
+        # stdlib-name issuccess (LinearAlgebra.issuccess is a DIFFERENT function from
+        # PureSparse's exported issuccess — the drop-in must extend the stdlib one too)
+        @assert LinearAlgebra.issuccess(F) && LinearAlgebra.issuccess(FL)
+
+        # --- SimplicialLDLFactor property parity: .p/.L/.U reflect the LIVE state,
+        # i.e. AFTER updowndate! mutates the factor in place ---
+        G = PureSparse.simplicial(FL; grow = Float64(nl))
+        @assert G.p == FL.p
+        Lg = Matrix(G.L)
+        @assert norm(Lg * Diagonal(G.d) * Lg' - PKPl) / norm(PKPl) < 1e-9
+        w = zeros(nl); w[1] = 0.5; w[4] = -0.25   # H-block (positive) support: keeps SQD
+        @assert PureSparse.updowndate!(G, w, +1) === :ok
+        Kmod = Kd + w * w'
+        Lg2 = Matrix(G.L)                          # re-extracted AFTER the update
+        pg = G.p
+        @assert norm(Lg2 * Diagonal(G.d) * Lg2' - Kmod[pg, pg]) / norm(Kmod) < 1e-9
+        @assert istril(G.L) && all(==(1.0), diag(Matrix(G.L)))
+        @assert Matrix(G.U) == Lg2'
+        @assert LinearAlgebra.issuccess(G)
+
         # activate!/deactivate! exist and don't throw (restart-required to actually take
         # effect — see tuning.jl's DROPIN_ACTIVE comment; not re-checked live here)
         PureSparse.deactivate!()
         PureSparse.activate!()
 
         println("DROPIN_SUBPROCESS_OK")
+        """)
+
+        julia_exe = joinpath(Sys.BINDIR, Base.julia_exename())
+        cmd = ignorestatus(`$julia_exe --project=$envdir $script`)
+        proc = Base.run(pipeline(cmd; stdout = Base.stdout, stderr = Base.stderr))
+        @test proc.exitcode == 0
+    finally
+        rm(envdir; recursive = true, force = true)
+    end
+end
+
+@testitem "M4 gate: downstream-consumer smoke suite passes unmodified with dropin active (subprocess)" begin
+    # design.md §10 M4 gate, first clause: "with dropin active, a downstream
+    # SparseArrays-dependent smoke test suite passes unmodified." The suite is
+    # test/downstream_smoke.jl — stdlib names only, zero PureSparse knowledge in its
+    # body (see its header; it also passes verbatim against plain CHOLMOD, which is
+    # what makes it a genuine downstream stand-in). Same isolated-subprocess-with-own-
+    # Preferences pattern as the testitem above; PureSparse appears ONLY in this
+    # runner's setup preamble (loading the package is what installs the override),
+    # never in the smoke file itself.
+    using Pkg
+
+    pkgroot = pkgdir(PureSparse)
+    smoke = joinpath(pkgroot, "test", "downstream_smoke.jl")
+    envdir = mktempdir()
+    try
+        write(joinpath(envdir, "LocalPreferences.toml"), """
+        [PureSparse]
+        dropin_active = true
+        """)
+
+        script = joinpath(envdir, "run.jl")
+        write(script, """
+        using Pkg
+        Pkg.activate(@__DIR__)
+        Pkg.develop(path=raw"$pkgroot")
+        Pkg.add(["LinearAlgebra", "SparseArrays", "Random", "Test"])
+        Pkg.instantiate()
+
+        # Setup preamble: load PureSparse (installs the drop-in) and PROVE the smoke
+        # below will exercise PureSparse, not CHOLMOD — without this guard a silently
+        # inactive drop-in would make the whole testitem vacuous. `import`, not
+        # `using`: a downstream module never has PureSparse's exports in its own
+        # namespace, and a bare `using` here would make the smoke's unqualified
+        # `cholesky`/`ldlt` ambiguous (caught by running this, not assumed).
+        import PureSparse
+        using LinearAlgebra, SparseArrays
+        @assert PureSparse.DROPIN_ACTIVE "dropin_active Preference did not take effect"
+        @assert LinearAlgebra.cholesky(sparse(1.0I, 2, 2)) isa PureSparse.SupernodalFactor
+
+        include(raw"$smoke")   # unmodified; its body never mentions PureSparse
+        println("DOWNSTREAM_SMOKE_OK")
         """)
 
         julia_exe = joinpath(Sys.BINDIR, Base.julia_exename())

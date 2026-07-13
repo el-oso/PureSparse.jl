@@ -30,8 +30,9 @@ own, non-drop-in `cholesky` never throws — this wrapper adds the throw only to
 stdlib's documented behavior). Returns a [`SupernodalFactor`](@ref), NOT a
 `CHOLMOD.Factor` — but one that supports the common surface downstream code expects:
 `\\`, `issuccess`, `.p` (permutation), `.L` (sparse, factor-ordered, matching
-`L·Lᵀ ≈ P·A·Pᵀ` — CHOLMOD's own convention, verified directly), `logdet`, `det` (all
-added by this file).
+`L·Lᵀ ≈ P·A·Pᵀ` — CHOLMOD's own convention, verified directly), `.U` (`= Lᵀ`, see the
+`getproperty` docstring below for the verified convention), `logdet`, `det` (all added
+by this file).
 
 **Known, documented deviation from CHOLMOD's exact `perm=` contract** (verified by
 direct comparison, not assumed): CHOLMOD guarantees `F.p == perm` exactly when `perm`
@@ -91,36 +92,65 @@ function LinearAlgebra.ldlt(A::_RealSparseArg{T}; check::Bool = true,
     return F
 end
 
-# --- stdlib surface parity on the returned SupernodalFactor/LDLFactor ---
+# --- stdlib surface parity on the returned factors (all three types — the
+# SimplicialLDLFactor produced by `simplicial`/mutated by `updowndate!` gets the same
+# `.p`/`.L`/`.U` surface, reflecting its CURRENT post-update state, since `sparse_L`
+# below reads its live `colnnz`/`rowval`/`nzval`, not a snapshot) ---
 
-const _DropinFactor{T,Ti} = Union{SupernodalFactor{T,Ti},LDLFactor{T,Ti}}
+const _DropinFactor{T,Ti} =
+    Union{SupernodalFactor{T,Ti},LDLFactor{T,Ti},SimplicialLDLFactor{T,Ti}}
 
 """
     F.p
+    F.U
 
-Fill-reducing permutation (factor order — `perm[k]` = original index at new position
-`k`), matching `CHOLMOD.Factor`'s own `.p` convention exactly (`L·Lᵀ ≈ (P·A·Pᵀ)` for
-`p = F.p`, verified directly against CHOLMOD's output). Alias for `F.sym.perm`, added
-via `getproperty` so existing internal field access (`F.sym`, `F.x`, `F.panels`, ...)
-is untouched — this only ADDS `:p`/`:L`, everything else falls through to `getfield`.
+`F.p`: fill-reducing permutation (factor order — `perm[k]` = original index at new
+position `k`), matching `CHOLMOD.Factor`'s own `.p` convention exactly (`L·Lᵀ ≈
+(P·A·Pᵀ)` for `p = F.p`, verified directly against CHOLMOD's output). Alias for
+`F.sym.perm`.
+
+`F.U`: the upper factor, `U = Lᵀ` (`P·A·Pᵀ ≈ Uᵀ·U` for LLᵀ; unit-upper for the LDLᵀ
+types). Convention verified against actual stdlib output, not assumed:
+`LinearAlgebra.cholesky` on a dense `Symmetric` gives `F.U == F.L'` with `A ≈ U'·U`;
+CHOLMOD's sparse LLᵀ factor's `.U` solves as `L'` (`F.U \\ b == L' \\ b`, and `F.U'`
+is its `:L` component); CHOLMOD's LDLᵀ factor also exposes `.U`, behaving as the
+transpose of its unit-lower `L` (checked via solves against `tril(LD,-1)+I`). One
+deliberate deviation in TYPE only: CHOLMOD returns a lazy `FactorComponent` whose `.U`
+cannot even be materialized (`sparse(F.U)`/`Matrix(F.U)` both throw in stdlib 1.12.6,
+observed directly) — we return a materialized `SparseMatrixCSC`, the same mathematical
+object, strictly more usable (we already do the same for `.L`).
+
+Added via `getproperty` so existing internal field access (`F.sym`, `F.x`, `F.d`, ...)
+is untouched — this only ADDS `:p`/`:L`/`:U`, everything else falls through to
+`getfield`.
 """
 function Base.getproperty(F::_DropinFactor, s::Symbol)
     s === :p && return getfield(F, :sym).perm
     s === :L && return sparse_L(F)
+    s === :U && return copy(transpose(sparse_L(F)))
     return getfield(F, s)
 end
-Base.propertynames(F::_DropinFactor) = (fieldnames(typeof(F))..., :p, :L)
+Base.propertynames(F::_DropinFactor) = (fieldnames(typeof(F))..., :p, :L, :U)
+
+# Downstream code reaching a factor through the stdlib names calls the STDLIB
+# `issuccess` (`using LinearAlgebra`), which is a different function from PureSparse's
+# own exported `issuccess` (`import LinearAlgebra` in PureSparse.jl keeps them
+# deliberately separate pre-dropin). Found by the downstream-consumer smoke test
+# (design.md §10 M4 gate), not assumed: without this method, stdlib-idiomatic
+# `issuccess(cholesky(A; check=false))` is a MethodError under the drop-in.
+LinearAlgebra.issuccess(F::AbstractSparseFactor) = issuccess(F)
 
 """
-    sparse_L(F::Union{SupernodalFactor,LDLFactor}) -> SparseMatrixCSC
+    sparse_L(F::Union{SupernodalFactor,LDLFactor,SimplicialLDLFactor}) -> SparseMatrixCSC
 
 Materialize the factor's `L` (lower-triangular, factor-ordered — unit-diagonal for an
-[`LDLFactor`](@ref), true diagonal for a [`SupernodalFactor`](@ref); both are read
-directly from panel storage, which already stores a literal `1` on the LDLᵀ diagonal —
-see `numeric/ldlt.jl`'s base-case loop) as a `SparseMatrixCSC`. Allocates — this is a
-one-time extraction, not a hot-path operation; also reachable as `F.L`.
+[`LDLFactor`](@ref)/[`SimplicialLDLFactor`](@ref), true diagonal for a
+[`SupernodalFactor`](@ref); the supernodal types are read directly from panel storage,
+which already stores a literal `1` on the LDLᵀ diagonal — see `numeric/ldlt.jl`'s
+base-case loop) as a `SparseMatrixCSC`. Allocates — this is a one-time extraction, not
+a hot-path operation; also reachable as `F.L`.
 """
-function sparse_L(F::_DropinFactor{T,Ti}) where {T,Ti<:Integer}
+function sparse_L(F::Union{SupernodalFactor{T,Ti},LDLFactor{T,Ti}}) where {T,Ti<:Integer}
     sym = F.sym
     n = sym.n
     I = Ti[]; J = Ti[]; V = T[]
@@ -137,6 +167,38 @@ function sparse_L(F::_DropinFactor{T,Ti}) where {T,Ti<:Integer}
         end
     end
     return sparse(I, J, V, n, n)
+end
+
+# SimplicialLDLFactor stores a padded/slack CSC (types.jl): column `j` owns slots
+# `colptr[j]:colptr[j+1]-1` but only the first `colnnz[j]` are LIVE (sorted,
+# strictly-lower); the rest is slack for in-place `updowndate!` growth, not data. The
+# unit diagonal is implicit and made explicit here (matching the supernodal LDLFactor's
+# extracted `L`, whose panels store literal 1s). Columns are already sorted, so the CSC
+# is built directly — no COO round-trip. Reads the LIVE arrays, so the result reflects
+# any `updowndate!` calls made since `simplicial(F)`.
+function sparse_L(G::SimplicialLDLFactor{T,Ti}) where {T,Ti<:Integer}
+    n = getfield(G, :sym).n
+    gcolptr = getfield(G, :colptr); gcolnnz = getfield(G, :colnnz)
+    growval = getfield(G, :rowval); gnzval = getfield(G, :nzval)
+    colptr = Vector{Ti}(undef, n + 1)
+    colptr[1] = one(Ti)
+    @inbounds for j in 1:n
+        colptr[j + 1] = colptr[j] + gcolnnz[j] + one(Ti)   # + explicit unit diagonal
+    end
+    nnzL = Int(colptr[n + 1]) - 1
+    rowval = Vector{Ti}(undef, nnzL)
+    nzval = Vector{T}(undef, nnzL)
+    @inbounds for j in 1:n
+        p = Int(colptr[j])
+        rowval[p] = Ti(j)
+        nzval[p] = one(T)
+        s0 = Int(gcolptr[j]) - 1
+        for k in 1:Int(gcolnnz[j])       # live slots only — slack beyond colnnz[j] is unused
+            rowval[p + k] = growval[s0 + k]
+            nzval[p + k] = gnzval[s0 + k]
+        end
+    end
+    return SparseMatrixCSC{T,Ti}(n, n, colptr, rowval, nzval)
 end
 
 """

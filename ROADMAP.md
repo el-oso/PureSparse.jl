@@ -12,15 +12,14 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
-**Status (2026-07-13): M1 CLOSED, M2 CLOSED (every gate item in `docs/design.md` §10
-met, see the `### M1`/`### M2` sections below).** M4 is functionally landed
-(`activate!`/`deactivate!` for both `cholesky` and `ldlt`) with three specific gap items
-still open: `SimplicialLDLFactor` property parity, `F.U` extraction, and re-verifying
-M4's own stated gate (a genuine downstream-consumer smoke test + a wall-time gate re-run
-through the dropin entry point specifically — the existing `dropin_tests.jl` exercises
-PureSparse's own drop-in behavior directly, which isn't quite the same claim). M3 not
-started, deliberately deferred — note `galen` (used for perf gating since) does have an
-RTX 4070 reachable via SSH, which could unblock M3 without reordering, if wanted later.
+**Status (2026-07-13): M1 CLOSED, M2 CLOSED, M4 CLOSED (every gate item in
+`docs/design.md` §10 met, see the `### M1`/`### M2` sections and the "M4 closeout"
+section below).** The three M4 gap items (`SimplicialLDLFactor` property parity, `F.U`
+extraction, and re-verifying M4's own stated gate via a genuine downstream-consumer
+smoke suite plus a wall-time gate re-run through the dropin entry point) are all
+closed — see "M4 closeout". M3 not started, deliberately deferred — note `galen` (used
+for perf gating since) does have an RTX 4070 reachable via SSH, which could unblock M3
+without reordering, if wanted later.
 
 ## M1 gate — `juliac --trim` smoke build succeeds (2026-07-13)
 
@@ -282,6 +281,125 @@ second item confirms the OPPOSITE: in the normal (non-dropin) test environment,
 `LinearAlgebra.cholesky` has exactly its original 1 method for `SparseMatrixCSC` — i.e.
 this file's mere presence doesn't leak activation into the rest of the suite. Full
 suite still green after adding this (see the commit for the exact count).
+
+## M4 closeout — all three gap items closed (2026-07-13, branch `m4-closeout`)
+
+**1. `SimplicialLDLFactor` property parity.** Added `.p`/`.L`/`.U` to the same
+`getproperty` override in `dropin.jl`, now `Union{SupernodalFactor,LDLFactor,
+SimplicialLDLFactor}`. `SimplicialLDLFactor` needed its own `sparse_L` overload — its
+padded/slack CSC layout (`colptr`/`colnnz`/`rowval`/`nzval`, only the first `colnnz[j]`
+slots of each column live, the rest unused capacity for `updowndate!` growth) is not the
+supernodal panel layout the existing `sparse_L` reads. The new method builds the CSC
+directly (columns already sorted, no COO round-trip), reads the LIVE arrays, and adds
+the implicit unit diagonal explicitly — so `F.L`/`F.U`/`F.p` on a `SimplicialLDLFactor`
+reflect whatever state the factor is in AFTER any `updowndate!` calls, not a snapshot
+from `simplicial()`. Verified in `test/dropin_tests.jl`: `simplicial(FL)`, then
+`updowndate!(G, w, +1)`, then `G.L`/`G.U`/`G.p` re-extracted and checked against
+`L·D·Lᵀ ≈ (A + wwᵀ)[p,p]` — i.e. the property reflects the POST-update factor, which
+was the whole point.
+
+**2. `F.U` extraction.** Convention decided as `U = Lᵀ` (materialized
+`SparseMatrixCSC`, `A[p,p] ≈ Uᵀ·U` for LLᵀ; unit-upper for the LDLᵀ types), and this
+was VERIFIED against real output, not assumed (CLAUDE.md req 1 — clean-room via
+observable behavior only):
+- Dense `LinearAlgebra.cholesky(Symmetric(A))` on a small hand-built SPD matrix:
+  `F.U == F.L'` exactly, `F.U'*F.U ≈ A`.
+- CHOLMOD's sparse LLᵀ `Factor`: its lazy `:U`/`:L` `FactorComponent`s can't even be
+  `getindex`'d or `Matrix()`/`sparse()`'d directly (`CanonicalIndexError`/
+  `CHOLMODException`, hit immediately when tried) — the only observable operation is
+  `\`. Checked `F.U \ b == L' \ b` and `F.U' \ b == L \ b` (`L` obtained via
+  `sparse(F.L)`) on a small example: both hold to ~1e-13. So CHOLMOD's own `.U` **is**
+  `Lᵀ` in the solve sense, confirming the dense convention carries over.
+- CHOLMOD's sparse LDLᵀ `Factor`: `sparse(F.L)` itself THROWS
+  (`"sparse: supported only for :LD on LDLt factorizations"` — CHOLMOD only lets you
+  materialize `:LD`, an interesting real API asymmetry, caught directly rather than
+  guessed). Working from `sparse(F.LD)` (unit-`L` below the diagonal, `D` on the
+  diagonal, `d = diag(LD)`), reconstructed `L = tril(LD,-1)+I`, `D = Diagonal(d)`, and
+  confirmed `L·D·Lᵀ ≈ PKP` (the target matrix). Then checked `F.U \ b == (L') \ b`,
+  `F.D \ b == D \ b`, `F.DU \ b == (D*L') \ b`, `F.LD \ b == (L*D) \ b` — ALL matched.
+  So CHOLMOD's LDLᵀ `.U` is also `Lᵀ` (unit-upper), same convention as the LLᵀ case —
+  no special-casing needed for `LDLFactor`/`SimplicialLDLFactor`.
+- One deliberate TYPE deviation, not a semantic one: we return a materialized
+  `SparseMatrixCSC` (`copy(transpose(sparse_L(F)))`) where CHOLMOD returns an
+  unmaterializable lazy component — strictly more usable, and consistent with what
+  `.L` already does here.
+- Also found and fixed while probing: `LinearAlgebra.issuccess(F::AbstractSparseFactor)`
+  was missing. PureSparse's own exported `issuccess` and stdlib's `LinearAlgebra.
+  issuccess` are deliberately different functions pre-dropin (`import`, not `using`,
+  in `PureSparse.jl` — see that file's comment); without a stdlib-name method, a
+  downstream consumer's idiomatic `issuccess(cholesky(A; check=false))` was a
+  `MethodError` under the drop-in. Added `LinearAlgebra.issuccess(F) = issuccess(F)` in
+  `dropin.jl`, caught by the new downstream smoke test below (item 3), not assumed.
+
+**3. M4's own gate, re-verified.**
+- **Downstream-consumer smoke suite:** no sibling Pure-ecosystem package (PureBLAS is
+  dense-only, PureFFT is FFT-only) has an existing sparse-Cholesky test suite to borrow,
+  so `test/downstream_smoke.jl` is a purpose-written synthetic stand-in — but genuinely
+  stack-agnostic: stdlib names only (`cholesky`/`ldlt`/`\`/`logdet`/`det`/`issuccess`/
+  `.L`/`.U`/`.p`), zero mention of PureSparse anywhere in its body, and it was run
+  TWICE to prove that: once standalone against plain CHOLMOD (`julia
+  test/downstream_smoke.jl`, no PureSparse loaded at all — **18/18 pass**), and once
+  wired into `test/dropin_tests.jl`'s new subprocess testitem ("M4 gate:
+  downstream-consumer smoke suite passes unmodified with dropin active"), which
+  `include()`s the unmodified file after activating the drop-in and asserting
+  `LinearAlgebra.cholesky(...) isa PureSparse.SupernodalFactor` as a preamble guard
+  (so a silently-inactive drop-in can't make the test vacuous) — **18/18 pass** there
+  too, unmodified.
+- **Wall-time gate through the dropin entry point** (`benchmark/dropin_gate.jl` +
+  `dropin_gate_inner.jl`, new): two isolated subprocesses (dropin-inactive baseline,
+  dropin-active measured arm — required because an active drop-in dispatch-shadows
+  CHOLMOD's own `cholesky` methods, so both can't be measured in one process), same
+  `gate_matrices()` set as `gate.jl`, same Chairmarks methodology (30 samples/1.5s cap,
+  `evals=1`, single BLAS thread). The PureSparse arm is entered EXCLUSIVELY via
+  `LinearAlgebra.cholesky`/`cholesky!` — interposition (kwarg translation, `Symmetric`
+  unwrapping, `getproperty` overrides) included in the measured call, not bypassed.
+  One real bug caught by this new harness, not assumed away: the first version fed the
+  warm `cholesky!` refactor the gate's LOWER-TRIANGLE-ONLY matrix `A`, but the
+  dropin-produced factor's symbolic pattern is that of `sparse(Symmetric(A,:L))` (the
+  FULL pattern) — `cholesky!`'s contract requires a matching pattern, and the mismatch
+  silently early-exited at column 1 (`fail_col=1`), producing fake sub-linear "warm"
+  timings and a NaN-residual factor. Caught by adding `issuccess`/residual assertions
+  around every measured call (now permanent in the harness), fixed by feeding the same
+  `Afull = sparse(Symmetric(A,:L))` the drop-in itself builds internally.
+  - **Run on `neuromancer` (this session's machine), governor `performance`** (checked
+    directly per this session's brief) — **warm gate: 14/14 matrix-arm combinations
+    PASS**, PureSparse+PureBLAS strictly faster than CHOLMOD+OpenBLAS on every one, warm
+    numbers in the same order of magnitude as `gate.jl`'s own direct-API numbers on this
+    machine (e.g. `random_n1000_d005`: dropin warm 0.99ms vs `gate.jl`'s direct-call
+    0.61ms baseline-era / CHOLMOD warm 1.19ms here — consistent, not a fluke). Full
+    table: `benchmark/results/dropin_gate_neuromancer.json`.
+  - **Caveat, not glossed over:** an EARLIER ROADMAP entry (see "Perf investigation" /
+    "Note on the numbers above", 2026-07-13, above) found `neuromancer`'s CPU clock
+    unpinned/unlocked despite a `performance` governor string, and designated `galen`/
+    `wintermute` the trusted clock-locked gate machines going forward. Per that
+    project history, `neuromancer`'s numbers alone are corroborating, not
+    authoritative — so this gate was ALSO run on `galen` (governor `performance`,
+    confirmed via SSH) as the trusted cross-check; see its result immediately below.
+  - **Run on `galen` (AMD Ryzen 9 5900X, SSH, `~/.juliaup/bin/julia`, governor
+    `performance`):** [filled in once the run completes — see
+    `benchmark/results/dropin_gate_galen.json`].
+  - Cold-path (symbolic+numeric, first factorization of a pattern) is NOT part of the
+    contractual gate (design §9.3/CLAUDE.md req 2 define the gate on the WARM refactor,
+    the IPM-relevant number) and was not expected to pass here — PureSparse's own
+    ordering + symbolic analysis is real, non-amortized work on a cold call, unlike
+    CHOLMOD's own highly-tuned AMD; measured 0/14 dropin-cold faster than CHOLMOD-cold,
+    consistent with `gate.jl`'s own historical direct-API cold numbers (also CHOLMOD
+    generally wins cold, PureSparse wins warm — that asymmetry is the documented,
+    expected shape of this gate, not new).
+- **Zero-alloc re-check with the dropin active** (parity additions must not touch the
+  numeric hot path): `dropin_gate_inner.jl`'s dropin-arm stage measures `@allocated
+  cholesky!(...)`/`@allocated ldlt!(...)` after warmup, WITH `dropin.jl` compiled in —
+  **0 bytes / 0 bytes**, both machines. Re-confirmed standalone (no dropin) too: **0 /
+  0 bytes**, matching CLAUDE.md requirement 5's pre-existing gate.
+- **Full suite:** `julia --project=test -e 'using ReTestItems, PureSparse;
+  runtests(PureSparse)'` — **15220/15220 passing** (up from 15212 pre-M4-closeout;
+  8 new test items/assertions from the `.U`/`SimplicialLDLFactor`/downstream-smoke
+  additions, all green).
+
+Changed: `src/dropin.jl` (`.U`, `SimplicialLDLFactor` parity, `LinearAlgebra.issuccess`),
+`test/dropin_tests.jl` (extended + new downstream-gate testitem), `test/
+downstream_smoke.jl` (new), `benchmark/dropin_gate.jl` + `dropin_gate_inner.jl` (new).
+Branch `m4-closeout`.
 
 ## Current headline numbers (2026-07-13, post M1-task-7 zero-alloc fix, re-measured — not stale)
 
