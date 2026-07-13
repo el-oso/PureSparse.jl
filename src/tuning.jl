@@ -19,8 +19,13 @@ using Preferences: @load_preference
 # recalibrated per matrix class in M1's benchmark pass (ROADMAP.md M1 task 8) — no
 # correctness weight attaches to the exact numbers, only to satisfying the §3.4 superset
 # invariant (checked independently in tests).
-const AMALG_COLS = @load_preference("amalg_cols", (8, 32, 128))::NTuple{3,Int}
-const AMALG_ZMAX = @load_preference("amalg_zmax", (0.9, 0.15, 0.03))::NTuple{3,Float64}
+
+# `@load_preference` returns a plain `Vector` for a TOML array (Preferences.jl has no
+# tuple representation), so an `::NTuple{3,T}` typeassert on the raw result throws the
+# moment anyone actually overrides these via Preferences — `Tuple(...)` converts either
+# the Vector default or a loaded Vector override uniformly.
+const AMALG_COLS = Tuple(@load_preference("amalg_cols", [8, 32, 128]))::NTuple{3,Int}
+const AMALG_ZMAX = Tuple(@load_preference("amalg_zmax", [0.9, 0.15, 0.03]))::NTuple{3,Float64}
 
 # AMD dense-row multiplier (design.md §2.2 pt 6). Attribution: the AMD *package's*
 # documented user-guide default (`AMD_DENSE = 10`), not the 1996 paper's algorithm text

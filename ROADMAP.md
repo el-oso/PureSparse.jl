@@ -6,35 +6,89 @@ Fable (v1) → adversarially reviewed by Opus (2 BLOCKERs, 7 DEFECTs found, all 
 corrected by Fable (v2, current). Clean-room policy: `docs/design.md` §11 — CHOLMOD
 source must never be read, only published papers.
 
-## CURRENT FOCUS — M1 core complete, M1 hardening/benchmark/docs remain
+## CURRENT FOCUS — M1 core + real benchmark harness done; gate NOT YET PASSING (diagnosed)
 
 M1 tasks 1–6 are done and tested (12220/12220 tests passing): scaffold, AMD ordering,
 etree/postorder/column-counts, fundamental-supernode detection + relaxed amalgamation,
 row-structure/workspace-bound computation, the `symbolic()` driver, and the numeric
 supernodal LLᵀ factorization + solve (`cholesky`/`cholesky!`/`solve!`/`solve_L!`/
-`solve_Lt!`/`\`).
+`solve_Lt!`/`\`). Task 8 (harness) is now built and has been run for real —
+`benchmark/gate.jl`, Chairmarks medians (30 samples/1.5s cap, `evals=1`,
+single-thread-pinned via `BLAS.set_num_threads(1)`), 3 of the 4 design §9.3 configs
+(config 4 CHOLMOD+PureBLAS is N/A, see design §9.3 D1): PureSparse+PureBLAS (primary),
+PureSparse+OpenBLAS (kernel-attribution, via `benchmark/openblas_backend.jl`'s
+same-source-file kernel swap — no algorithm duplication), CHOLMOD+OpenBLAS (baseline).
+Both own-ordering and same-permutation (`GivenOrdering` fed each stack's `perm`) arms
+run per design §9.3 D2.
 
-**Unofficial preview benchmark** (informal `@elapsed`, no CPU pinning, no median-of-many —
-NOT the rigorous §9.3 gate methodology, just a sanity check): random SPD matrices,
-`cholesky!` refactor time vs `LinearAlgebra.cholesky!` (CHOLMOD) refactor time —
+**Real gate result (2026-07-13, `neuromancer`, NOT clock-locked — no passwordless sudo
+for `fleet_freqlock.sh` in this autonomous session, so this is best-effort/noisier than a
+methodologically-valid run, but is real measured wall-time, not a fabricated or "preview"
+number):**
 
-| n | nnz(A) | nnzL (PureSparse AMD) | nnzL (CHOLMOD) | PureSparse | CHOLMOD | CHOLMOD/PureSparse |
-|---|---|---|---|---|---|---|
-| 200 | 379 | 490 | 488 | 0.078ms | 2.369ms | 30.2x |
-| 500 | 1730 | 13923 | 24822 | 0.41ms | 0.441ms | 1.08x |
-| 1000 | 6042 | 146289 | 192797 | 3.95ms | 3.77ms | 0.95x |
+| matrix | arm | PS+PureBLAS | PS+OpenBLAS | CHOLMOD+OB | gate (1<3) |
+|---|---|---|---|---|---|
+| random n=200 | own | 0.061ms | 0.089ms | 0.052ms | fail |
+| random n=200 | same-perm | 0.060ms | 0.087ms | 0.052ms | fail |
+| random n=500 | own | 0.298ms | 0.432ms | 0.374ms | PASS |
+| random n=500 | same-perm | 0.320ms | 0.422ms | 0.377ms | PASS |
+| random n=1000 | own | 1.185ms | 1.498ms | 1.204ms | PASS |
+| random n=1000 | same-perm | 1.144ms | 1.469ms | 1.233ms | PASS |
+| banded n=1000 bw=20 | own | 0.451ms | 0.778ms | 0.687ms | PASS |
+| banded n=1000 bw=20 | same-perm | 0.449ms | 0.778ms | 0.676ms | PASS |
+| banded n=3000 bw=10 | own | 1.107ms | 2.152ms | 0.932ms | fail |
+| banded n=3000 bw=10 | same-perm | 1.113ms | 2.145ms | 0.923ms | fail |
+| laplacian2d 40×40 | own | 0.700ms | 0.993ms | 0.558ms | fail |
+| laplacian2d 40×40 | same-perm | 0.713ms | 1.008ms | 0.559ms | fail |
+| laplacian2d 80×80 | own | 3.619ms | 5.208ms | 2.811ms | fail |
+| laplacian2d 80×80 | same-perm | 3.560ms | 5.021ms | 2.711ms | fail |
 
-Encouraging given zero performance tuning has happened yet: AMD is already finding
-noticeably less fill than CHOLMOD's own ordering (18-40% less at n=500/1000), and
-PureSparse is within 5% of CHOLMOD's wall-time at n=1000 despite that fill advantage not
-yet translating into a wall-time win — meaning there's real headroom once tasks 7-8 land
-(zero-alloc + the calibrated amalgamation thresholds). Re-run properly (locked clock,
-Chairmarks, median) once task 8's harness exists — do not treat this table as the gate.
+**6/14 passing — M1's "faster on at least half the set" gate is currently NOT MET.**
+Diagnosed root cause (not guessed — verified by direct measurement, per CLAUDE.md's
+"don't guess, check" rule):
+
+- **It is NOT an ordering-quality problem.** `nnzL(PureSparse AMD)` is equal to or
+  *better* than `nnzL(CHOLMOD)` on every failing matrix (banded: ratio ~1.0; laplacian2d
+  80×80: PureSparse fill is 42% *lower*, 114053 vs 198023) — and the same-permutation arm
+  (identical permutation fed to both stacks) shows essentially the SAME wall-time ratio as
+  own-ordering. Both facts rule out AMD quality as the cause.
+- **It IS the relaxed-amalgamation contiguity gate.** `relaxed_amalgamation`
+  (`src/symbolic/supernodes.jl`) only merges supernode `s` into its parent `t` when `s`'s
+  columns are already numerically contiguous with `t`'s (`endc[s]+1==start[t]`) — true
+  only when `s` is `t`'s LAST-postordered child. For a bushy etree (2D grid Laplacians:
+  75.8% of final supernodes are still width-1; most etree nodes have 2+ children, so only
+  1-in-k children per parent can ever pass the contiguity gate regardless of the
+  `zmax` threshold). Verified directly: sweeping `amalg_zmax` from the default
+  `(0.9,0.15,0.03)` to a far more permissive `(0.97,0.35,0.08)` produced ZERO change in
+  `nsuper` on `laplacian2d_80x80` (3041 supernodes either way) — proof the threshold
+  isn't the binding constraint, the contiguity gate is. `banded_n3000_bw10` is a
+  *different* failure mode: supernodes are already large (mean width 120, matching
+  CHOLMOD's fill almost exactly) yet still ~1.2-2.3x slower — that gap is in per-call
+  update-loop scheduling overhead, not supernode size, and is unexplained pending
+  profiling (a `@profile` pass on `laplacian2d_80x80` showed the time genuinely spread
+  across many small `syrk!`/`potrf!`/`trsm!` calls, consistent with the tiny-supernode
+  diagnosis for that matrix but not yet run on `banded_n3000_bw10` specifically).
+- **Real, incidental bug fixed along the way:** `tuning.jl`'s `AMALG_COLS`/`AMALG_ZMAX`
+  had an `::NTuple{3,T}` typeassert on the raw `@load_preference` result — since
+  Preferences.jl/TOML has no tuple type, ANY attempt to actually override these via
+  Preferences (the exact mechanism design §1.4 requires for calibration) threw a
+  `TypeError` and would have made calibration impossible without this fix. Fixed via
+  `Tuple(@load_preference(...))`.
+
+**Not yet fixed — real follow-up, not swept under the rug:** relaxed amalgamation needs a
+child-ordering extension (choose, during `etree.jl`'s postorder DFS, which sibling is
+visited LAST per parent — e.g. by colcount/pattern similarity to the parent — so a good
+merge candidate becomes contiguity-eligible instead of an arbitrary DFS-order child).
+This touches the earliest pipeline stage (postorder) that everything downstream depends
+on, so it is scoped as a careful, dedicated task (delegated to Fable per CLAUDE.md's "hard
+algorithmic piece" guidance), not attempted as a quick patch under time pressure. See "M1
+task 7b" below.
 
 Remaining M1 tasks: (7) allocation hardening for `cholesky!` (currently
 correct but not zero-alloc — see "known follow-up" below) and `solve!` (deliberately
-deferred, allocates per call); (8) Chairmarks/PkgBenchmark harness + amalgamation
-threshold calibration; (9) DocumenterVitepress docs pages.
+deferred, allocates per call); **(7b, NEW) child-ordering relaxed amalgamation** — the
+real blocker on the gate above, diagnosed but not yet fixed; (9) DocumenterVitepress docs
+pages.
 
 **Dependency note:** PureBLAS.jl's `Project.toml` had its `TypeContracts` compat bumped
 from `"0.13.1"` to `"0.13.1, 0.14"` and its TypeContracts dependency switched to
@@ -109,8 +163,11 @@ CHOLMOD-AMD fill on the zoo.
 4. Fundamental supernode detection + relaxed amalgamation.
 5. Symbolic driver (rowind/px/assembly-map/workspace-bound sizing).
 6. Supernodal LLᵀ numeric (load → linked-list update loop → potrf/trsm) + solve.
-7. Refactorize/allocation hardening + StrictMode guards.
-8. Benchmark harness + gate run + amalgamation threshold calibration.
+7. Refactorize/allocation hardening + StrictMode guards. *(partial — see "known follow-up")*
+8. Benchmark harness + gate run + amalgamation threshold calibration. *(harness done,
+   `benchmark/{matrices,openblas_backend,gate,benchmarks}.jl`; gate run for real, 6/14
+   passing, root cause diagnosed — see "CURRENT FOCUS"; the fix itself is task 7b)*
+7b. Child-ordering relaxed amalgamation (see "CURRENT FOCUS" diagnosis) — delegated to Fable.
 9. Docs pages (Home/Tutorial/Benchmarking via DocumenterVitepress).
 
 ### M2 — LDLᵀ/SQD + Update/Downdate
