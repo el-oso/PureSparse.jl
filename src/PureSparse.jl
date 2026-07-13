@@ -23,7 +23,10 @@ include("numeric/llt.jl")
 include("numeric/solve.jl")
 include("contracts.jl")
 
-export symbolic, cholesky, cholesky!, ldlt, ldlt!, solve!, solve_L!, solve_Lt!, issuccess
+export symbolic, cholesky, cholesky!, solve!, solve_L!, solve_Lt!, issuccess
+# `ldlt`/`ldlt!` (design.md §5, M2 — SQD/LDLᵀ) are not implemented yet; re-add to this
+# export list when numeric/ldlt.jl lands rather than exporting a name that throws
+# UndefVarError today.
 export AbstractOrdering, AMDOrdering, NaturalOrdering, GivenOrdering
 export Symbolic, SupernodalFactor, LDLFactor, FactorStats
 
