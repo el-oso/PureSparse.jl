@@ -1,7 +1,7 @@
 @testsetup module SupernodeHelpers
 using Random
 using PureSparse
-export postordered_pipeline, random_upper_csc2
+export postordered_pipeline, random_upper_csc2, true_column_patterns
 
 function random_upper_csc2(rng, n::Int, density::Float64)
     adj = [Set{Int}() for _ in 1:n]
@@ -25,14 +25,40 @@ function random_upper_csc2(rng, n::Int, density::Float64)
 end
 
 # Full pipeline through postordering, matching how `symbolic()` will eventually drive it:
-# etree -> postorder -> relabel -> re-etree -> colcounts.
+# etree -> postorder -> relabel -> re-etree -> colcounts. Returns the POSTORDERED pattern
+# too (needed by supernode_rowind).
 function postordered_pipeline(n, colptr, rowval)
     parent0 = PureSparse.etree(n, colptr, rowval)
     post, postinv = PureSparse.postorder(n, parent0)
     cp2, rv2 = PureSparse.relabel_pattern(n, colptr, rowval, postinv)
     parent = PureSparse.etree(n, cp2, rv2)
     colcount = PureSparse.column_counts(n, cp2, rv2, parent)
-    return parent, colcount
+    return parent, colcount, cp2, rv2
+end
+
+# Brute-force TRUE per-column L-pattern via the same elimination game as
+# EtreeOracle/CountsOracle: eliminate columns 1..n in order, track fill-in explicitly;
+# true_column_patterns[j] = the exact set of rows i>j with L[i,j] != 0 at the moment
+# column j is eliminated (independent of the Gilbert-Ng-Peyton / supernode-merging
+# machinery under test — this is the ground truth the superset invariant is checked
+# against, design.md §3.4/§9.1 point 3).
+function true_column_patterns(n::Int, colptr::Vector{Int}, rowval::Vector{Int})
+    adj = [Set{Int}() for _ in 1:n]
+    for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        i = rowval[p]
+        push!(adj[i], j)
+        push!(adj[j], i)
+    end
+    patterns = Vector{Set{Int}}(undef, n)
+    for k in 1:n
+        nbrs = Set(i for i in adj[k] if i > k)
+        patterns[k] = nbrs
+        for a in nbrs, b in nbrs
+            a == b && continue
+            push!(adj[a], b)
+        end
+    end
+    return patterns
 end
 end
 
@@ -41,7 +67,7 @@ end
     rng = MersenneTwister(21)
     for n in (1, 2, 5, 10, 30, 60), density in (0.0, 0.05, 0.2, 0.5)
         colptr, rowval = random_upper_csc2(rng, n, density)
-        parent, colcount = postordered_pipeline(n, colptr, rowval)
+        parent, colcount, _, _ = postordered_pipeline(n, colptr, rowval)
         nsuper, super = PureSparse.fundamental_supernodes(n, parent, colcount)
         @test length(super) == nsuper + 1
         @test super[1] == 1
@@ -96,7 +122,7 @@ end
     rng = MersenneTwister(22)
     for n in (2, 5, 10, 30, 60), density in (0.05, 0.2, 0.5)
         colptr, rowval = random_upper_csc2(rng, n, density)
-        parent, colcount = postordered_pipeline(n, colptr, rowval)
+        parent, colcount, _, _ = postordered_pipeline(n, colptr, rowval)
         nsuper, super = PureSparse.fundamental_supernodes(n, parent, colcount)
         snode_of, sparent = PureSparse.supernode_tree(n, nsuper, super, parent)
 
@@ -124,7 +150,7 @@ end
     rng = MersenneTwister(23)
     for n in (1, 2, 5, 10, 30, 80), density in (0.0, 0.03, 0.1, 0.3)
         colptr, rowval = random_upper_csc2(rng, n, density)
-        parent, colcount = postordered_pipeline(n, colptr, rowval)
+        parent, colcount, _, _ = postordered_pipeline(n, colptr, rowval)
         nsuper, super = PureSparse.fundamental_supernodes(n, parent, colcount)
         nsuper2, super2 = PureSparse.relaxed_amalgamation(n, nsuper, super, parent, colcount)
 
@@ -149,7 +175,7 @@ end
     # vs. survived untouched (nothing to check for those).
     for n in (20, 50, 100), density in (0.02, 0.08, 0.2)
         colptr, rowval = random_upper_csc2(rng, n, density)
-        parent, colcount = postordered_pipeline(n, colptr, rowval)
+        parent, colcount, _, _ = postordered_pipeline(n, colptr, rowval)
         nsuper, super = PureSparse.fundamental_supernodes(n, parent, colcount)
         nsuper2, super2 = PureSparse.relaxed_amalgamation(n, nsuper, super, parent, colcount)
         fundamental_starts = Set(super)
@@ -200,4 +226,68 @@ end
     nsuper0, super0 = PureSparse.fundamental_supernodes(0, p0, c0)
     @test nsuper0 == 0
     @test super0 == [1]
+end
+
+@testitem "supernode_rowind: superset invariant (design §3.4/§9.1 point 3)" setup = [SupernodeHelpers] begin
+    using Random
+    rng = MersenneTwister(31)
+    for n in (1, 2, 5, 10, 30, 60), density in (0.0, 0.03, 0.1, 0.3, 0.6)
+        colptr0, rowval0 = random_upper_csc2(rng, n, density)
+        parent, colcount, cp, rv = postordered_pipeline(n, colptr0, rowval0)
+        truth = true_column_patterns(n, cp, rv)
+
+        for (nsuper, super) in (
+            PureSparse.fundamental_supernodes(n, parent, colcount),
+            PureSparse.relaxed_amalgamation(n, PureSparse.fundamental_supernodes(n, parent, colcount)..., parent, colcount),
+        )
+            rowind_ptr, rowind, snode_of, sparent, muz, mer = PureSparse.supernode_rowind(
+                n, cp, rv, parent, nsuper, super)
+
+            # rowind_ptr/rowind form a valid CSC-style structure of the right total size.
+            @test rowind_ptr[1] == 1
+            @test rowind_ptr[nsuper + 1] == length(rowind) + 1
+            @test issorted(rowind_ptr)
+
+            for s in 1:nsuper
+                j0, j1 = super[s], super[s + 1] - 1
+                rows_s = Set(rowind[rowind_ptr[s]:(rowind_ptr[s + 1] - 1)])
+                @test issorted(rowind[rowind_ptr[s]:(rowind_ptr[s + 1] - 1)])
+                @test allunique(rowind[rowind_ptr[s]:(rowind_ptr[s + 1] - 1)])
+                # s's own columns are all present (diagonal block).
+                for j in j0:j1
+                    @test j in rows_s
+                end
+                # SUPERSET INVARIANT: for every column j in s, rowind[s] restricted to
+                # rows >= j is a superset of column j's TRUE L-pattern.
+                for j in j0:j1
+                    true_below = truth[j]  # rows i>j with L[i,j] != 0
+                    @test true_below ⊆ rows_s
+                end
+            end
+            @test muz >= 0
+            @test mer >= 0
+        end
+    end
+end
+
+@testitem "supernode_rowind workspace bounds are internally consistent" setup = [SupernodeHelpers] begin
+    using Random
+    rng = MersenneTwister(32)
+    for n in (10, 30, 60), density in (0.03, 0.1, 0.3)
+        colptr0, rowval0 = random_upper_csc2(rng, n, density)
+        parent, colcount, cp, rv = postordered_pipeline(n, colptr0, rowval0)
+        nsuper, super = PureSparse.fundamental_supernodes(n, parent, colcount)
+        rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows =
+            PureSparse.supernode_rowind(n, cp, rv, parent, nsuper, super)
+
+        # max_extend_rows independently recomputed from the partition directly.
+        expected_extend = 0
+        for s in 1:nsuper
+            nrow = Int(rowind_ptr[s + 1] - rowind_ptr[s])
+            ncol = Int(super[s + 1] - super[s])
+            expected_extend = max(expected_extend, nrow - ncol)
+        end
+        @test max_extend_rows == expected_extend
+        @test max_update_size >= 0
+    end
 end

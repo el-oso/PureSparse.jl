@@ -7,6 +7,7 @@ using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!
 include("tuning.jl")
 include("types.jl")
 include("ordering/interface.jl")
+include("ordering/amd.jl")
 include("symbolic/etree.jl")
 include("symbolic/counts.jl")
 include("symbolic/supernodes.jl")
