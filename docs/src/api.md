@@ -22,6 +22,8 @@ PureSparse.GivenOrdering
 ```@docs
 PureSparse.cholesky
 PureSparse.cholesky!
+PureSparse.ldlt
+PureSparse.ldlt!
 PureSparse.SupernodalFactor
 PureSparse.LDLFactor
 PureSparse.FactorStats
@@ -33,5 +35,6 @@ PureSparse.issuccess
 ```@docs
 PureSparse.solve!
 PureSparse.solve_L!
+PureSparse.solve_D!
 PureSparse.solve_Lt!
 ```

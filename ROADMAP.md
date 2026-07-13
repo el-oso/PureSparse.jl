@@ -6,6 +6,65 @@ Fable (v1) → adversarially reviewed by Opus (2 BLOCKERs, 7 DEFECTs found, all 
 corrected by Fable (v2, current). Clean-room policy: `docs/design.md` §11 — CHOLMOD
 source must never be read, only published papers.
 
+## M2 progress — supernodal LDLᵀ/SQD LANDED (tasks 1–3, 2026-07-13)
+
+`src/numeric/ldlt.jl` implements the design §5.1 supernodal LDLᵀ for symmetric
+quasi-definite systems: `ldlt(sym, A; signs)` / `ldlt(A; signs | n_pos/n_neg, ordering)`
+/ `ldlt!(F, A)`, mirroring `cholesky`/`cholesky!`'s structure exactly (same relmap
+linked-list left-looking schedule, same `_panelview`/`GC.@preserve` discipline — no
+`reshape(view(...))` compile-tax reintroduction). `solve.jl` gained `solve_D!` and a
+three-stage `solve!(x, F::LDLFactor, b)`; the L/Lᵀ sweeps were unified over
+`Union{SupernodalFactor,LDLFactor}` (`_PanelFactor` + `_diagchar`, trsm `diag='U'` for
+unit-lower LDLᵀ panels) rather than duplicated. `LDLFactor` gained the same built-once
+`panels` wrapper cache as `SupernodalFactor`. Provenance: base-case unit-LDLᵀ
+right-looking column loop is Golub & Van Loan's symmetric-indefinite-without-pivoting
+(generic NLA, no CHOLMOD content); SQD strong factorizability is Vanderbei 1995; the
+forced-sign fixed-pivot regularization is the QDLDL (Stellato et al., OSQP) / Clarabel
+scheme per design §5.1/§0 D3 — deliberately NOT MA57 Bunch–Kaufman (CLAUDE.md req 8).
+
+**Verified (2026-07-13):** 8 new ReTestItems in `test/ldlt_tests.jl`, 173 assertions;
+full suite **13727/13727 passing** (13554 pre-existing — `llt.jl`/`symbolic/*`/
+`ordering/*` untouched — plus the new items). Coverage: (a) dense-oracle reconstruction
+`L·D·Lᵀ ≈ P·K·Pᵀ` at rel. 1e-9 AND elementwise `L`/`d` agreement at 1e-8 with a
+from-scratch dense no-pivot unit-LDLᵀ oracle, on random `[H Aᵀ; A −C]` KKT matrices up
+to n=75 (with `n_perturbed == 0` asserted, so regularization wasn't papering over
+anything); (b) BigFloat oracle at 1e-12 on small SQD; (c) inertia `(n_pos,n_neg,n_zero)`
+exactly matches construction on every SQD case (Vanderbei: inertia of SQD =
+(n₊,n₋,0)); (d) wrong-sign pivot forced (diag(2,−3,5) under signs=+++: `n_perturbed==1`,
+`max_perturbation==6`, reconstructs the REGULARIZED diag(2,3,5) at 1e-12 and differs
+from A by design), zero pivot forced up to the δ floor and classified `n_zero`; (e)
+solve residual `‖Kx−b‖/(‖K‖‖x‖) < 1e-8` incl. multi-RHS; (f) `ldlt!` refactorize on the
+same pattern (D scales, unit-L bit-stable at 1e-12 under value scaling).
+
+**Judgment calls (design ambiguities resolved, documented in-code too):**
+- **`signs` convention:** always in `A`'s ORIGINAL column order; `ldlt` permutes them
+  internally through `sym.perm`. This makes the `ldlt(A; n_pos, n_neg)` convenience
+  (n_pos leading `+1`s, n_neg trailing `−1`s — the `[H Aᵀ; A −C]` layout) compose
+  cleanly with AMD, because the caller never sees factor ordering. The task-description
+  alternative ("signs in the factor's permuted order") would NOT compose with AMD and
+  was rejected; the constructor was kept, not dropped.
+- **`Workspace.cd` sizing gap in design §5.1:** the "one extra buffer of
+  `max_update_size` column-scaled values" does NOT bound the scaled copy `|R1|×ncol_d`
+  (a wide descendant with a short update block exceeds `max|R|·|R1|`). Rather than
+  touching `symbolic`'s workspace bounds (off-limits for this additive task), the
+  update gemm is chunked over descendant columns with width `max_update_size ÷ |R1|`
+  (≥ `|R|` always, so one chunk in the common case; provably ≥ 1).
+- **Plain `gemm!` for the whole `|R|×|R1|` update block** (design §5.1 gives latitude):
+  its top `|R1|×|R1|` part is symmetric and a symmetric-aware rank-k-with-D kernel
+  would halve that part's flops — documented efficiency opportunity in ldlt.jl's
+  header, deferred to the M2 benchmark pass.
+- **Free constants the design leaves open:** zero-pivot classification ζ = `eps(T)`
+  (machine epsilon relative to running max|d| — standard "numerically zero at scale"
+  cut); δ's ‖A‖-scale = max|assembled tril entry| (free inside the load loop). Both are
+  our own choices, no external provenance. `signs[j] == 0` (scaffolded "free" value in
+  types.jl) enforces the magnitude floor only, never a sign flip.
+
+**Deliberately out of scope here (still-open M2 items):** zero-alloc `ldlt!` (same
+category as M1 task 7's remaining `cholesky!`/`solve!` allocations — `ldlt!` shares the
+per-call `_panelview(cbuf,...)` update-buffer allocation and now a `cdbuf` one, plus
+`solve!`'s permuted-RHS scratch); simplicial storage/conversion; Davis–Hager
+update/downdate; `refine!`; SQD benchmark-gate additions; IPM guide docs.
+
 ## CURRENT FOCUS — M1 core + real benchmark harness done; wall-time gate PASSING (11/14)
 
 M1 tasks 1–6 are done and tested (13554/13554 tests passing): scaffold, AMD ordering,
@@ -290,9 +349,12 @@ split solves for all three factor types, IPM guide docs, SQD benchmark additions
 matches construction; update/downdate round-trip ≤ 100·eps·n; zero-alloc `ldlt!`.
 
 **Tasks:**
-1. `ldlt_block!` base case + dense unit tests vs `bunchkaufman`.
-2. LDL descendant updates (syr2k-with-D path) + panel solve.
-3. Signed regularization + inertia stats + `signs` plumbing.
+1. `ldlt` base case + dense unit tests vs a from-scratch no-pivot dense oracle. *(DONE
+   2026-07-13 — oracle is a from-scratch fixed-order unit-LDLᵀ, not `bunchkaufman`,
+   whose Bunch–Kaufman pivoting makes its L/D incomparable to ours; see "M2 progress")*
+2. LDL descendant updates (L·D-scaled gemm path, chunked over `Workspace.cd`) + base
+   case covers the panel rows (no separate trsm stage). *(DONE 2026-07-13)*
+3. Signed regularization + inertia stats + `signs` plumbing. *(DONE 2026-07-13)*
 4. Simplicial storage + conversion (`simplicial(F)`).
 5. Rank-1 update/downdate (Davis–Hager Method C) incl. pattern growth.
 6. Rank-k (successive single-rank first, then multiple-rank optimization).

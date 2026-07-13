@@ -9,7 +9,7 @@ import LinearAlgebra  # NOT `using` — our own `cholesky`/`cholesky!`/`ldlt`/`l
                        # exists (unwrapped, not just Symmetric-wrapped) and a bare `using`
                        # here would silently replace it the moment PureSparse loads.
 using SparseArrays
-using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!
+using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!, gemv!
 
 include("tuning.jl")
 include("types.jl")
@@ -20,13 +20,12 @@ include("symbolic/counts.jl")
 include("symbolic/supernodes.jl")
 include("symbolic/driver.jl")
 include("numeric/llt.jl")
+include("numeric/ldlt.jl")
 include("numeric/solve.jl")
 include("contracts.jl")
 
-export symbolic, cholesky, cholesky!, solve!, solve_L!, solve_Lt!, issuccess
-# `ldlt`/`ldlt!` (design.md §5, M2 — SQD/LDLᵀ) are not implemented yet; re-add to this
-# export list when numeric/ldlt.jl lands rather than exporting a name that throws
-# UndefVarError today.
+export symbolic, cholesky, cholesky!, ldlt, ldlt!, issuccess
+export solve!, solve_L!, solve_D!, solve_Lt!
 export AbstractOrdering, AMDOrdering, NaturalOrdering, GivenOrdering
 export Symbolic, SupernodalFactor, LDLFactor, FactorStats
 

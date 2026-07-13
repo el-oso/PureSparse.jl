@@ -122,6 +122,7 @@ panel) plus a separate diagonal `d` and the caller's expected pivot `signs`.
 mutable struct LDLFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
     sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
     x::Vector{T}
+    panels::Vector{Matrix{T}}      # built-once panel wrappers, same caching as SupernodalFactor.panels
     d::Vector{T}                   # diagonal of D, permuted, length n
     signs::Vector{Int8}            # expected pivot signs (+1/-1/0=free), permuted, length n
     ws::Workspace{T,Ti}
