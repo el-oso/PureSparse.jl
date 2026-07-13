@@ -90,3 +90,53 @@ function gate_matrices()
         ("laplacian2d_80x80", laplacian2d(80, 80)),
     ]
 end
+
+"""
+    random_sqd_kkt(npos, nneg, density; rng) -> SparseMatrixCSC
+
+Random symmetric quasi-definite KKT matrix `[H Aᵀ; A −C]` with `H` (`npos × npos`) and
+`C` (`nneg × nneg`) diagonally-dominant SPD and a random sparse coupling block `A` —
+the M2 SQD gate class (design.md §9.4's synthetic-KKT set), models an interior-point
+iterate's KKT system. Same construction as `test/ldlt_tests.jl`'s
+`LDLTHelpers.random_sqd_kkt`. Vanderbei 1995: strongly factorizable, inertia exactly
+`(npos, nneg, 0)`.
+"""
+function random_sqd_kkt(npos::Int, nneg::Int, density::Float64; rng::AbstractRNG = Random.default_rng())
+    n = npos + nneg
+    I = Int[]; J = Int[]; V = Float64[]
+    rowsum = zeros(n)
+    addsym!(i, j, v) = (push!(I, i); push!(J, j); push!(V, v);
+        i != j && (push!(I, j); push!(J, i); push!(V, v));
+        rowsum[i] += abs(v); i != j && (rowsum[j] += abs(v)))
+    for j in 1:npos, i in (j + 1):npos
+        rand(rng) < density && addsym!(i, j, randn(rng))
+    end
+    for j in 1:nneg, i in (j + 1):nneg
+        rand(rng) < density && addsym!(npos + i, npos + j, randn(rng))
+    end
+    for j in 1:npos, i in 1:nneg
+        rand(rng) < density && addsym!(npos + i, j, randn(rng))
+    end
+    for j in 1:n
+        v = (rowsum[j] + 1.0) * (j <= npos ? 1.0 : -1.0)
+        push!(I, j); push!(J, j); push!(V, v)
+    end
+    return sparse(I, J, V, n, n)
+end
+
+"""
+    sqd_gate_matrices()
+
+The M2 SQD gate matrix set (design.md §9.4): named `(label, A, n_pos, n_neg)` tuples —
+`n_pos`/`n_neg` are needed by [`PureSparse.ldlt`](@ref)'s convenience constructor and by
+CHOLMOD's own `perm=`/inertia-free sparse `ldlt`.
+"""
+function sqd_gate_matrices()
+    rng = MersenneTwister(2026)
+    return [
+        ("sqd_n200_d02", random_sqd_kkt(120, 80, 0.02; rng), 120, 80),
+        ("sqd_n500_d01", random_sqd_kkt(300, 200, 0.01; rng), 300, 200),
+        ("sqd_n1000_d005", random_sqd_kkt(600, 400, 0.005; rng), 600, 400),
+        ("sqd_n2000_d002", random_sqd_kkt(1200, 800, 0.002; rng), 1200, 800),
+    ]
+end

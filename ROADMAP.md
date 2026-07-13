@@ -136,11 +136,51 @@ entries; full `makedocs`+vitepress build verified succeeding end-to-end (one dea
 `@ref` link caught and fixed the same way as M1's — `AbstractSparseFactor` needed a
 docstring before it could be `@ref`'d).
 
-**M2 status: tasks 1–7 of design §10's M2 list are now done** (LDLᵀ core, update/downdate,
-simplicial split solves, `refine!`). Remaining: task 8 (dedicated SQD benchmark-gate
-additions — `benchmark/gate.jl` currently only exercises the M1 LLᵀ path) and the
-smaller deliberately-out-of-scope items listed above (2001 batched rank-k, standalone
-simplicial factorization path, `SparseVector` fast path).
+## M2 progress — task 8 SQD/LDLT benchmark gate LANDED, PASSES CLEANLY (2026-07-13)
+
+`benchmark/matrices.jl` gained `random_sqd_kkt(npos, nneg, density; rng)` (same
+construction as `test/ldlt_tests.jl`'s helper) and `sqd_gate_matrices()` (4 sizes,
+n=200 to n=2000). `benchmark/openblas_backend.jl`'s `OpenBLASBackend` module gained
+`ger!` (needed by `ldlt.jl`'s hand-rolled base case) and `PureSparseOB` now also
+re-`include`s `numeric/ldlt.jl` verbatim (same kernel-swap pattern as the M1 `llt.jl`
+arm — verified bitwise-identical `d` between the PureBLAS and OpenBLAS arms on a smoke
+test before the full run). New `benchmark/gate_ldlt.jl` mirrors `gate.jl`'s exact 3-arm
+structure (own-ordering + same-permutation) with CHOLMOD's sparse `ldlt` (via
+`SparseArrays`) as the baseline — verified directly beforehand that it accepts SQD
+input without complaint and shares `cholesky`'s `.p`/`perm=` interface (one wrinkle:
+CHOLMOD only supports extracting the `:LD` component from an LDLt factor, not `:L` —
+`nnz(sparse(Fc.LD))`, not `Fc.L`, caught by an actual `CHOLMODException` on the first
+smoke-test run, not guessed).
+
+**Real gate result (2026-07-13, `neuromancer`, unlocked clock — same caveat as the M1
+gate): 8/8 matrix-arm combinations PASS**, with `n_perturbed == 0` on every case
+(synthetic SQD construction is well-conditioned, so this is a clean apples-to-apples
+comparison, not one masked by regularization):
+
+| matrix | arm | PS+PureBLAS | PS+OpenBLAS | CHOLMOD+OB | speedup |
+|---|---|---|---|---|---|
+| sqd n=200 | own | 0.044ms | 0.052ms | 0.072ms | 1.6x |
+| sqd n=200 | same-perm | 0.047ms | 0.054ms | 0.072ms | 1.5x |
+| sqd n=500 | own | 0.319ms | 0.345ms | 0.884ms | 2.8x |
+| sqd n=500 | same-perm | 0.316ms | 0.337ms | 0.935ms | 3.0x |
+| sqd n=1000 | own | 1.264ms | 1.305ms | 5.040ms | 4.0x |
+| sqd n=1000 | same-perm | 1.269ms | 1.297ms | 5.146ms | 4.1x |
+| sqd n=2000 | own | 3.736ms | 3.812ms | 18.19ms | 4.9x |
+| sqd n=2000 | same-perm | 3.882ms | 4.006ms | 17.95ms | 4.6x |
+
+The margin GROWS with size (1.5x at n=200 → ~4.9x at n=2000) — unlike the M1 LLᵀ gate
+(11/14, some matrix classes still close/failing), the LDLᵀ path clears CHOLMOD's sparse
+`ldlt` comfortably and consistently across the whole tested range, both own-ordering and
+same-permutation. Not yet explained WHY the margin is this much larger than the LLᵀ
+case (plausible hypothesis: CHOLMOD's sparse `ldlt` may take a less-optimized code path
+than its `cholesky` internally, or the synthetic SQD block structure amalgamates more
+favorably — NOT verified, flagged honestly as an open question rather than asserted).
+
+**M2 status: all 8 tasks of design §10's M2 list are now done** (LDLᵀ core,
+update/downdate, simplicial split solves, `refine!`, SQD benchmark gate — the gate
+passes cleanly, unlike M1's). Remaining: the smaller deliberately-out-of-scope items
+listed above (2001 batched rank-k, standalone simplicial factorization path,
+`SparseVector` fast path) — none required by the M2 gate.
 
 ## M2 progress — supernodal LDLᵀ/SQD LANDED (tasks 1–3, 2026-07-13)
 
