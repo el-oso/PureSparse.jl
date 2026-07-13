@@ -6,6 +6,56 @@ Fable (v1) → adversarially reviewed by Opus (2 BLOCKERs, 7 DEFECTs found, all 
 corrected by Fable (v2, current). Clean-room policy: `docs/design.md` §11 — CHOLMOD
 source must never be read, only published papers.
 
+## Current headline numbers (2026-07-13, post M1-task-7 zero-alloc fix, re-measured — not stale)
+
+Both gates re-run after the zero-alloc hardening below (a real hot-path change, so
+re-confirmed rather than assumed unaffected): **M1 LLᵀ gate 13/14** (up from 11/14 —
+removing `cholesky!`'s per-call allocation improved wall-time too, not just the
+allocation count: `random_n200_d02` flipped from fail to PASS on both arms; only
+`random_n1000_d005` own-arm remains a near-tie, 1.2246ms vs 1.2227ms). **M2 SQD/LDLᵀ
+gate 8/8**, numbers consistent with the original run (0.30–3.9ms PureSparse vs
+0.89–18.1ms CHOLMOD across n=200–2000). See "CURRENT FOCUS" and the M2 task 8 section
+below for the full tables and per-run caveats (unlocked clock).
+
+## M1 task 7 — zero-allocation hardening, `cholesky!` now genuinely zero-alloc (2026-07-13)
+
+`Workspace.c` (`src/types.jl`) changed from a flat `Vector{T}(max_update_size)` —
+needing a fresh `_panelview`/`unsafe_wrap` (measured 80 B/call) or `reshape` (48
+B/call) on every use, since the update block's needed shape `(ctot, k1)` varies per
+(descendant, ancestor) pair — to a single pre-allocated
+`Matrix{T}(max_extend_rows, max_extend_rows)`, used via `view(cbuf, 1:ctot, 1:k1)`:
+**measured 0 bytes**, since a `view` of an already-allocated `Matrix` costs nothing
+(same pattern the existing `Ldiag`/`Lbelow` views already relied on). Sound because
+`ctot` and `k1` are both provably `≤ max_extend_rows` for every (d,s) pair (`R1 ⊆ R ⊆`
+descendant `d`'s own below-diagonal rows, exactly what `max_extend_rows` bounds by
+definition — full derivation in `types.jl`'s `Workspace` docstring). Memory cost of
+the square buffer vs the old flat sizing: checked directly on the M1 gate matrices
+before committing to the design (1.0×–4.4×, a one-time `Workspace` cost, not a
+hot-path one) — not assumed to be cheap.
+
+**Results:** `cholesky!` **2576 → 0 bytes** (measured `@allocated == 0`); same fix
+applied to `ldlt!`'s `C` buffer, dropping it to **1120 bytes** (remaining source:
+`Workspace.cd`, the `L·D` scaled-copy buffer, whose needed shape is chunked to fit
+`max_update_size` but is NOT bounded by `max_extend_rows` the same way `c`'s is —
+`wk` can exceed `max_extend_rows` when `k1` is small, worked through explicitly, not
+assumed fixable by the same trick — left as a real, precisely-scoped follow-up, not
+attempted this pass). `solve!`'s outer permuted-RHS buffer now reuses `Workspace.rhs`
+(pre-allocated at size `n`) for the single-RHS path instead of a fresh allocation per
+call — a real improvement, not yet zero (7904 B remaining on a test case; two further
+allocation sites in `_solve_L!`/`_solve_Lt!` identified and documented in
+`src/numeric/solve.jl`'s header, not fixed this pass — re-`_panelview`ing `F.x` every
+supernode instead of reusing `F.panels[s]`, and a per-supernode `upd` buffer whose
+size isn't obviously bounded by `max_extend_rows` once `nrhs > 1`). Multi-RHS solves
+remain allocating by design (`nrhs` unbounded, can't be pre-sized).
+
+Both wall-time gates were re-run (not assumed unaffected) after this change since it
+touches the actual per-iteration numeric hot path — see "Current headline numbers"
+above; the fix improved wall-time too (M1: 11/14 → 13/14), not just the allocation
+count, consistent with reduced GC pressure on the warm-refactor path an IPM consumer
+calls every iteration. Full test suite 15202/15202 passing (one test's assertion
+tightened from the old "allocs > 0 (not yet zero), allocs < 10,000" partial-progress
+bound to the real "allocs == 0" now that it's achieved).
+
 ## M2 progress — simplicial rank-1/rank-k update/downdate LANDED (2026-07-13)
 
 `src/simplicial/updown.jl` (new, design §1.3's planned location) + the
