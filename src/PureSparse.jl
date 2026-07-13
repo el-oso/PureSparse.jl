@@ -9,6 +9,7 @@ include("types.jl")
 include("ordering/interface.jl")
 include("symbolic/etree.jl")
 include("symbolic/counts.jl")
+include("symbolic/supernodes.jl")
 include("contracts.jl")
 
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, solve!, issuccess
