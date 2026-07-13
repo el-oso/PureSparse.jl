@@ -244,6 +244,66 @@ Changed: `src/numeric/llt.jl`, `src/numeric/ldlt.jl`, `src/types.jl` (new `Works
 `rs` buffers). Branch `perf-parity-galen`, commit `82b9350` on top of `412b1d8`, merged
 to `master` via fast-forward.
 
+## Perf follow-up — small-supernode (width 1–2) kernel-call bypass (2026-07-14)
+
+Acting on the n=64 root cause above (per-call kernel overhead on structurally
+unmergeable width-1..3 supernodes, `sym.parent[j] == 0` — not an amalgamation-threshold
+problem): `cholesky!` now factors width-1 and width-2 diagonal blocks INLINE in the
+shared left-looking scheduling code instead of calling `potrf!`/`trsm!` — a 1×1
+Cholesky is `L₁₁ = √A₁₁` + a column scale by `inv(L₁₁)`, a 2×2 is the same textbook
+recurrence as PureBLAS's own generic unblocked base plus a two-term forward
+substitution per panel row (Golub & Van Loan base cases; no CHOLMOD content, no new
+BLAS/LAPACK dependency — the fast path calls NOTHING). Because it sits in the shared
+scheduler ABOVE the kernel binding, both the PureBLAS production arm and the OpenBLAS
+diagnostic arm benefit. Width ≥3 was deliberately NOT inlined (that way lies
+reimplementing dense Cholesky in `src/`, CLAUDE.md's "never reimplement dense
+kernels"; width-2 was kept because it measured as a real win — n=64 OB arm 0.914x →
+0.936x on neuromancer — and is still a 4-line recurrence).
+
+`ldlt!` mirror: its hand-rolled unit-LDLᵀ column loop already makes ZERO kernel calls
+at width 1 (`ger!` fires only for `j < nscol`; the 1/d scale is already inline), so
+the width-1 mirror is a documented no-op; the width-2 mirror inlines the loop's single
+rank-1 `ger!` (single-entry `y`) as one fused `muladd` column op. The signed-
+regularization / inertia logic (design §5.1) is untouched — verified bit-identical
+`d`, `x`, and stats (`n_pos`/`n_neg`/`n_perturbed`/`rcond_est`) vs the pre-change
+build on a 400-dof SQD KKT and the n=64 sweep matrix.
+
+**Numerical semantics:** the inline LLᵀ path is bit-identical to the textbook/LAPACK
+formulation and to PureBLAS's generic `_potf2_lower!` (`sqrt(d)` then multiply by
+`inv`), and matches the failure rule exactly (`real(d) > 0`, so NaN and ≤0 both fail →
+`F.ok = false`, `fail_col = j0`, verified for width-1 and width-2 pivots incl. the
+downdated second pivot, on both kernel arms). It is NOT bit-identical to PureBLAS's
+Float64 faer base, which itself uses the `1/√d` reciprocal formulation (diagonal
+stored as `d·(1/√d)`) — measured ≤1 ulp apart, value-dependent; the inline `sqrt(d)`
+is the correctly-rounded root, so accuracy is equal-or-better. LDLᵀ output is
+bit-identical to pre-change. Residuals ~1e-16 across SPD n=32..1000 and SQD KKT
+n=80/400, both arms. Generic over `T` (Float32 verified through the fast path;
+BigFloat crashes identically on the PRE-change build — pre-existing panel/codegen
+issue, unrelated).
+
+**Result (size_sweep, warm refactor medians, before → after, all three machines
+re-measured this pass — baselines re-run fresh, not read off old JSONs):**
+
+| n=64 arm | neuromancer | galen | wintermute |
+|---|---|---|---|
+| OB/CHOLMOD | 0.77x → **0.97x** | 0.82x → **0.99x** | 0.79x → **0.99x** |
+| PB/CHOLMOD | 1.10x → **1.33x** | 1.16x → **1.42x** | 1.00x → **1.36x** |
+
+The n=64 OB diagnostic dip is now a ~1–3% near-tie, not a 20% loss (honest number:
+still a hair under 1.0x — the remaining gap is OpenBLAS `syrk!`/`gemm!` per-call cost
+on the small staged updates, per the kernel-timing table above, which the diagonal
+fast path doesn't touch). Small sizes improved dramatically on BOTH arms since tiny
+factors are now kernel-call-free end to end (neuromancer PB/CHOLMOD: n=2 6.2→21.5x,
+n=8 2.8→13.9x, n=16 1.6→8.4x, n=32 1.7→3.4x; galen and wintermute similar). n=128–2048
+unchanged within noise on all machines (checked size-by-size — no regression from the
+two extra `nscol` branches per supernode).
+
+**Verified:** full suite **15220/15220** (56/56 items) on the changed worktree; M1 LLᵀ
+gate **14/14** and M2 SQD/LDLᵀ gate **8/8** PASS on both neuromancer and galen
+(`performance` governor); `@allocated cholesky!`/`ldlt!` still **0** on a
+fast-path-exercising matrix; `Base.return_types` still concrete for both. Branch
+`n64-smallblock-fastpath` (worktree), based on `eadd785`.
+
 ## M4 progress — drop-in LANDED for `cholesky` AND `ldlt` (2026-07-13)
 
 `src/dropin_toggle.jl` (always loaded): `activate!()`/`deactivate!()` set the

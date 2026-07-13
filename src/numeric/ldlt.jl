@@ -269,6 +269,16 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
         # Right-looking within the block (Golub & Van Loan); the rank-1 ger! covers
         # rows j+1:nsrow, i.e. the diagonal block AND the below-diagonal panel — the
         # LDLᵀ replacement for llt.jl's potrf! + trsm! pair.
+        #
+        # Mirror note for llt.jl's width-1/2 fast paths (kernel-call bypass for
+        # trivially small diagonal blocks): for nscol == 1 this loop ALREADY has that
+        # property — the only kernel call here is ger!, which fires only for
+        # j < nscol, and the 1/d column scale is already an inline scalar loop, so
+        # the width-1 case makes zero kernel calls as-is, with the signed-
+        # regularization / inertia logic (design §5.1) on its normal path; adding a
+        # separate branch would duplicate the loop body for no saved overhead. The
+        # width-2 mirror is the inline single-column trailing update inside the loop
+        # below (see its comment) — regularization itself is never bypassed.
         for j in 1:nscol
             jg = j0 + j - 1
             dj = panel[j, j]
@@ -307,10 +317,24 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
                 panel[i, j] *= invd
             end
             if j < nscol
-                lcol = view(panel, (j + 1):nsrow, j)          # L[j+1:end, j], full height
-                lrow = view(panel, (j + 1):nscol, j)          # L entries inside the diag block
-                trail = view(panel, (j + 1):nsrow, (j + 1):nscol)
-                ger!(-dj, lcol, lrow, trail)                   # A ← A - d_j·l·l_blkᵀ
+                if nscol == 2
+                    # Width-2 fast path (mirror of llt.jl's): the only rank-1 update
+                    # of a 2-column supernode has a single-entry y (L[2,1]), so the
+                    # ger! kernel call reduces to one fused column op — same
+                    # `A[i,2] += (-d₁·L[2,1])·L[i,1]` arithmetic (ger! hoists
+                    # α·y[j]; muladd matches its fused update), no kernel-call
+                    # overhead. Regularization/inertia above are untouched — this
+                    # replaces only the trailing update.
+                    c = -dj * panel[2, 1]
+                    for i in 2:nsrow
+                        panel[i, 2] = muladd(panel[i, 1], c, panel[i, 2])
+                    end
+                else
+                    lcol = view(panel, (j + 1):nsrow, j)      # L[j+1:end, j], full height
+                    lrow = view(panel, (j + 1):nscol, j)      # L entries inside the diag block
+                    trail = view(panel, (j + 1):nsrow, (j + 1):nscol)
+                    ger!(-dj, lcol, lrow, trail)               # A ← A - d_j·l·l_blkᵀ
+                end
             end
         end
 

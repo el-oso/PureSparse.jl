@@ -256,13 +256,56 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
         end
 
         # ---- 3. factor diagonal block ----
-        Ldiag = view(panel, 1:nscol, 1:nscol)
+        # Width-1 fast path: a 1×1 Cholesky is L₁₁ = √A₁₁ and the panel solve is a
+        # column scale by 1/L₁₁ (textbook base case — generic small-block algebra, no
+        # CHOLMOD content). Done inline because at fragmented transitional sizes the
+        # FIXED per-call kernel overhead (dispatch, LAPACK marshaling on the OpenBLAS
+        # diagnostic arm, PureBLAS's own dispatch) dominates the ~1 flop of real work:
+        # the n=64 sweep matrix has nine width-1..3 supernodes, and in-context timing
+        # of every real kernel call (ROADMAP "n=64" addendum) showed potrf!+trsm! call
+        # overhead — not arithmetic — as the bulk of the OB-arm gap there. Lives in the
+        # shared scheduling code, so BOTH kernel backends benefit. Semantics match
+        # potrf!'s 1×1 case exactly: pivot check `real(A₁₁) > 0` (NaN fails → not
+        # positive definite, same as LAPACK/PureBLAS), sqrt stored back; the below-
+        # diagonal scale multiplies by inv(L₁₁), same as PureBLAS trsm!'s dense-R base
+        # (`_scal_simd_ptr!(…, inv(A[j,j]))`) and reference-BLAS trsm.
         ok = true
-        try
-            potrf!(Ldiag; uplo = 'L')
-        catch e
-            e isa LinearAlgebra.PosDefException || rethrow()
-            ok = false
+        if nscol == 1
+            d1 = real(panel[1, 1])
+            if d1 > 0
+                panel[1, 1] = sqrt(d1)
+            else
+                ok = false
+            end
+        elseif nscol == 2
+            # Width-2 fast path: 2×2 lower Cholesky, same textbook recurrence as
+            # PureBLAS's generic unblocked base (`_potf2_lower!`): l11=√d1, scale by
+            # inv(l11), Hermitian downdate, l22=√d2. Failure check per pivot, same
+            # `real(d) > 0` rule (NaN fails) at either column.
+            d1 = real(panel[1, 1])
+            if d1 > 0
+                l11 = sqrt(d1)
+                panel[1, 1] = l11
+                i11 = inv(l11)
+                l21 = panel[2, 1] * i11
+                panel[2, 1] = l21
+                d2 = real(panel[2, 2]) - real(l21 * conj(l21))
+                if d2 > 0
+                    panel[2, 2] = sqrt(d2)
+                else
+                    ok = false
+                end
+            else
+                ok = false
+            end
+        else
+            Ldiag = view(panel, 1:nscol, 1:nscol)
+            try
+                potrf!(Ldiag; uplo = 'L')
+            catch e
+                e isa LinearAlgebra.PosDefException || rethrow()
+                ok = false
+            end
         end
         if !ok
             F.ok = false
@@ -279,8 +322,30 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
 
         # ---- 4. panel solve ----
         if nsrow > nscol
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-            trsm!(Lbelow, Ldiag; side = 'R', uplo = 'L', transA = 'T', diag = 'N', alpha = one(T))
+            if nscol == 1
+                # width-1 fast path (see step 3's comment): trsm! side='R' on a 1×1
+                # diagonal block is a column scale by inv(L₁₁).
+                invl = inv(panel[1, 1])
+                for i in 2:nsrow
+                    panel[i, 1] *= invl
+                end
+            elseif nscol == 2
+                # width-2 fast path: forward substitution per row against the 2×2
+                # diagonal block (B := B·inv(Ldiagᵀ), transA='T' — unconjugated
+                # coefficient, same semantics as the else-branch trsm! call).
+                i11 = inv(panel[1, 1])
+                i22 = inv(panel[2, 2])
+                l21 = panel[2, 1]
+                for i in 3:nsrow
+                    x1 = panel[i, 1] * i11
+                    panel[i, 1] = x1
+                    panel[i, 2] = muladd(x1, -l21, panel[i, 2]) * i22
+                end
+            else
+                Ldiag = view(panel, 1:nscol, 1:nscol)
+                Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+                trsm!(Lbelow, Ldiag; side = 'R', uplo = 'L', transA = 'T', diag = 'N', alpha = one(T))
+            end
 
             # ---- 5. schedule s onto its first ancestor ----
             dptr[s] = Ti(nscol + 1)
