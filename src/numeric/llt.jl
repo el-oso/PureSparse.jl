@@ -18,6 +18,22 @@
     return unsafe_wrap(Array, pointer(v, off), (nrow, ncol))
 end
 
+# Build every supernode's panel wrapper ONCE, at factor-construction time — reused across
+# every subsequent `cholesky!` call on this factor (design.md §0 follow-up: this is what
+# removes the per-call `unsafe_wrap` allocation from the hot refactorize path; only the
+# variable-shaped update-block buffer still allocates fresh per call, see `_panelview`'s
+# remaining uses in `cholesky!` below).
+function _build_panels(x::Vector{T}, sym::Symbolic{Ti}) where {T,Ti<:Integer}
+    nsuper = sym.nsuper
+    panels = Vector{Matrix{T}}(undef, nsuper)
+    @inbounds for s in 1:nsuper
+        nrow = Int(sym.rowind_ptr[s + 1] - sym.rowind_ptr[s])
+        ncol = Int(sym.super[s + 1] - sym.super[s])
+        panels[s] = _panelview(x, Int(sym.px[s]), nrow, ncol)
+    end
+    return panels
+end
+
 """
     cholesky(sym::Symbolic{Ti}, A::SparseMatrixCSC{T}) where {T,Ti} -> SupernodalFactor{T,Ti}
 
@@ -27,7 +43,9 @@ a factor obtained once from this — it never allocates.
 """
 function cholesky(sym::Symbolic{Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
     xsize = Int(sym.px[sym.nsuper + 1]) - 1
-    F = SupernodalFactor{T,Ti}(sym, Vector{T}(undef, xsize), Workspace{T,Ti}(sym), FactorStats(), true)
+    x = Vector{T}(undef, xsize)
+    panels = _build_panels(x, sym)
+    F = SupernodalFactor{T,Ti}(sym, x, panels, Workspace{T,Ti}(sym), FactorStats(), true)
     cholesky!(F, A)
     return F
 end
@@ -90,7 +108,7 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
             relmap[_row(rowind, rp0, k)] = Ti(k)
         end
 
-        panel = _panelview(x, Int(px[s]), nsrow, nscol)
+        panel = F.panels[s]
 
         # ---- 2. apply pending updates from descendants queued on head[s] ----
         d = head[s]
@@ -101,7 +119,7 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
             drp0 = Int(rowind_ptr[dInt])
             nsrow_d = Int(rowind_ptr[dInt + 1]) - drp0
             ncol_d = Int(super[dInt + 1]) - Int(super[dInt])
-            panel_d = _panelview(x, Int(px[dInt]), nsrow_d, ncol_d)
+            panel_d = F.panels[dInt]
 
             k1 = 0
             while q + k1 <= nsrow_d && _row(rowind, drp0, q + k1) <= j1

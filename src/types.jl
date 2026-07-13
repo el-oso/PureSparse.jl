@@ -100,6 +100,13 @@ by [`cholesky!`](@ref) (zero allocations after the first call).
 mutable struct SupernodalFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
     sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
     x::Vector{T}                   # dense column-major storage, one block per supernode
+    panels::Vector{Matrix{T}}      # panels[s] = unsafe_wrap(x @ px[s], nrow_s x ncol_s), built ONCE
+                                    # (design §0 follow-up: caching these — fixed shape per supernode
+                                    # across every cholesky! call on this factor, since px/rowind_ptr
+                                    # come from the unchanging Symbolic — is what makes cholesky!
+                                    # allocation-free; a fresh unsafe_wrap per call, while still far
+                                    # cheaper than the reshape(view(...)) compile-tax trap it replaced,
+                                    # still allocates a small Array header each time)
     ws::Workspace{T,Ti}
     stats::FactorStats
     ok::Bool

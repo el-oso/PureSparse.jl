@@ -72,13 +72,17 @@ factor was correct throughout via a full dense LAPACK oracle on the captured pre
 block. Fixed by skipping the diagonal block's strict-upper positions in `dense_L`.
 
 **Known follow-up (M1 task 7):** `cholesky!` is correct and mostly allocation-light
-(`_panelview`'s `unsafe_wrap` allocates a small `Array` *header*, not the underlying
-data, per panel view — not yet the zero-alloc target) but not literally zero-alloc yet;
-`solve!` allocates a permuted-RHS scratch buffer per call (documented in
-`src/numeric/solve.jl`'s header). True zero-alloc needs panel-view objects pre-cached on
-the `Workspace`/factor and reused across calls instead of re-`unsafe_wrap`ping every
-time — scoped as M1 task 7, deliberately not done as part of getting the numerics
-correct first.
+**Update:** `SupernodalFactor.panels::Vector{Matrix{T}}` now caches every supernode's
+panel wrapper ONCE at factor-construction time (`_build_panels`, `src/numeric/llt.jl`),
+reused across every `cholesky!` call instead of re-`unsafe_wrap`ping `panel`/`panel_d`
+each time — cut `cholesky!`'s per-call allocation from 7392 to 2576 bytes on a 50x50
+test case (65% reduction). The REMAINING allocation is `cholesky!`'s update-block buffer
+`C = _panelview(cbuf, 1, ctot, k1)` — its shape varies per (descendant, ancestor) pair in
+the update schedule, so it isn't a single fixed-shape wrapper the way panels are; true
+zero-alloc there needs one cached view per distinct (d,s) pair (keyed by position in the
+update schedule), not attempted yet. `solve!` still allocates a permuted-RHS scratch
+buffer per call (documented in `src/numeric/solve.jl`'s header) — same category of
+follow-up. Both remain M1 task 7, not blocking correctness.
 
 ## Milestones (design §10)
 

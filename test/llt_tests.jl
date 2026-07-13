@@ -118,15 +118,18 @@ end
     F = PureSparse.cholesky(sym, A)
     PureSparse.cholesky!(F, A)   # warm up (any first-touch allocation happens here)
     allocs = @allocated PureSparse.cholesky!(F, A)
-    # NOT zero yet: `unsafe_wrap`'s Array *header* (not the underlying data) allocates
-    # per panel view, needed to avoid a ~90s-per-kernel PureBLAS JIT compile blowup on
-    # `reshape(view(...))`'s ReshapedArray-of-SubArray type (see src/numeric/llt.jl's
-    # `_panelview` docstring). True zero-alloc needs pre-cached panel views reused across
-    # calls — M1 task list item 7 ("refactorize/allocation hardening"), a deliberately
-    # separate, later step (ROADMAP.md). This test only guards against a REGRESSION
-    # (e.g. an accidental O(n) or O(nnz) allocation), not the eventual zero target.
+    # NOT zero yet, but much reduced (7392 -> 2576 bytes on this matrix after caching
+    # F.panels, built once and reused across calls instead of re-`unsafe_wrap`ping every
+    # supernode's panel/panel_d on every call). The REMAINING allocation is the
+    # variable-shaped update-block buffer (`C = _panelview(cbuf, 1, ctot, k1)` in
+    # cholesky!'s update loop) — its (ctot,k1) shape depends on which (descendant,
+    # ancestor) pair is being processed, so it can't be cached as a single fixed-shape
+    # wrapper the way panels can without a bigger restructuring (one cached view per
+    # DISTINCT (d,s) pair in the update schedule, keyed by position — real zero-alloc,
+    # still M1 task 7, not attempted here). This test guards against a REGRESSION (e.g.
+    # an accidental O(n) or O(nnz) allocation reappearing), not the eventual zero target.
     @test allocs > 0
-    @test allocs < 50_000
+    @test allocs < 10_000
 end
 
 @testitem "cholesky!: reports non-SPD input via issuccess/F.ok" begin
