@@ -189,29 +189,56 @@ size (n=2..2048) on both clock-locked machines:**
 
 (Secondary OB/CHOLMOD diagnostic arm dips slightly under 1.0x at n=64 on both machines —
 0.81x galen, 0.76x wintermute — not part of the contractual gate, which is defined on
-the PS+PureBLAS arm. **Root cause actually measured AND quantitatively confirmed, not
-just asserted (2026-07-13):** reproduced the exact n=64 sweep matrix
-(`MersenneTwister(2026)` advanced through sizes 2..64, matching `nnzL=224`) and found
-its supernode partition still fragmented at this transitional size — 16 supernodes for
-64 columns, widths `[1,1,1,1,1,1,1,1,1,2,3,5,6,7,16,16]` (nine width-1), 9 of them also
-carrying a below-diagonal panel (`trsm!` call). Crucially, this partition is a
-symbolic-phase property, IDENTICAL in both the PureBLAS and OpenBLAS arms — it is not
-"caused by" either backend. What differs is per-call kernel cost: micro-benchmarked
-`potrf!` at exactly these 7 distinct widths (OpenBLAS via `LinearAlgebra.BLAS`/LAPACK/
-`libblastrampoline` vs PureBLAS's native kernel) and summed the delta weighted by each
-width's actual count in this partition: **1537.5 ns aggregate `potrf!`-only overhead**
-(width=1×9: 40ns×9=360ns; width=2: 40ns; width=3: 41ns; width=5: 84.5ns; width=6:
-131ns; width=7: 89ns; width=16×2: 396ns×2=792ns). The observed arm-to-arm gap at n=64
-(PS+OpenBLAS 6611ns − PS+PureBLAS 4860.5ns = 1750.5ns) is **88% explained by `potrf!`
-calls alone**, before even counting the 9 `trsm!` calls or the `syrk!`/`gemm!`
-descendant-update calls, which plausibly close the remaining ~213ns. Same fragmented
-call pattern in both arms; the backend-specific per-call cost is what tips only the
-OpenBLAS arm below CHOLMOD's own OpenBLAS-based total (PureBLAS's lower fixed cost
-absorbs the identical fragmentation fine — PS+PureBLAS still wins at n=64, 1.10x-1.17x).
-Not chased further: exact `trsm!`/`syrk!`/`gemm!` call-level deltas, and CHOLMOD's own
-supernode count on this matrix — the `potrf!`-only figure already accounts for the bulk
-of the gap, so closing the remaining ~12% would be diminishing-returns bookkeeping, not
-a new mechanism.)
+the PS+PureBLAS arm. **Root cause fully measured (2026-07-14), superseding an earlier,
+incomplete pass on this same question — see that pass's methodology mistakes below,
+since they're instructive.** Reproduced the exact n=64 sweep matrix
+(`MersenneTwister(2026)` advanced through sizes 2..64, matching `nnzL=224`): supernode
+partition still fragmented at this transitional size — 16 supernodes for 64 columns,
+widths `[1,1,1,1,1,1,1,1,1,2,3,5,6,7,16,16]` (nine width-1). This partition is a
+symbolic-phase property, IDENTICAL in both arms — not "caused by" either backend; what
+differs is per-call kernel cost.
+
+**First attempt (wrong methodology, ~88% "explained"):** micro-benchmarked `potrf!`
+alone on freshly-allocated COMPACT matrices at the 7 distinct widths present, ignoring
+that the real code calls kernels on STRIDED VIEWS into larger panel buffers (a
+below-diagonal-row-padded panel, or `Workspace.c`/`cd`'s `max_extend_rows`-sized
+scratch). Landed on 1537.5ns vs an observed 1750.5ns gap (88%) — a number that LOOKED
+convincing but was an artifact of the wrong matrix shape.
+
+**Second attempt (still incomplete, DROPPED to 74%):** redid `potrf!`+`trsm!` with the
+correct strided-view shapes (matching `_panelview`'s `unsafe_wrap` + `view(panel,
+1:ncol,1:ncol)` pattern exactly) — one case (the 16×22 supernode) even showed OpenBLAS's
+`trsm!` FASTER than PureBLAS's, contradicting the first pass's clean story. Combined
+potrf!+trsm! delta: 1295.5ns of a 1750.5ns gap (74%) — WORSE than the first attempt,
+because `syrk!`/`gemm!` (the descendant-update calls) were still entirely unmeasured.
+
+**Third attempt (real in-context instrumentation, closes it for real):** rather than
+reconstruct synthetic calls, directly timed (`time_ns()` before/after) every ACTUAL
+kernel call — all 16 `potrf!`, 9 `trsm!`, 10 `syrk!`, 1 `gemm!` — in their real memory
+locations, accumulated per kernel type across 20,000 real warm `cholesky!` calls (timer
+overhead is identical in both arms, so it cancels in the delta):
+
+| kernel | PureBLAS | OpenBLAS | delta |
+|---|---|---|---|
+| `potrf!` | 2935.5ns | 4339.4ns | 1403.8ns |
+| `trsm!` | 1648.9ns | 3072.9ns | 1424.0ns |
+| `syrk!` | 1771.6ns | 2441.7ns | 670.1ns |
+| `gemm!` | 101.6ns | 145.7ns | 44.1ns |
+| **sum** | 6457.6ns | 9999.6ns | **3542.0ns** |
+
+Cross-checked against a clean, uninstrumented re-measurement in the same session
+(6832.5ns / 9973.5ns / gap 3141.0ns): the instrumented kernel-sum delta accounts for
+**112.8%** of the clean gap — the small overshoot is ordinary run-to-run measurement
+noise at this microsecond scale (~5-15% variance observed across separate runs even on
+a clock-locked machine), not evidence of a missing factor. **`potrf!` is NOT the
+dominant contributor as first claimed — `trsm!` costs essentially the same (40%/40%),
+with `syrk!` a real third contributor (19%).** Fragmented call pattern identical in
+both arms; per-call kernel cost, summed honestly across all four kernel types rather
+than one convenient one, is what tips only the OpenBLAS arm below CHOLMOD's own
+OpenBLAS-based total (PureBLAS's lower fixed cost absorbs the identical fragmentation
+fine — PS+PureBLAS still wins at n=64, 1.10x-1.17x). CHOLMOD's own supernode count on
+this matrix was still not obtained, but is no longer needed to close the explanation —
+the in-context kernel-timing sum already accounts for the entire observed gap.)
 
 Changed: `src/numeric/llt.jl`, `src/numeric/ldlt.jl`, `src/types.jl` (new `Workspace.ir`/
 `rs` buffers). Branch `perf-parity-galen`, commit `82b9350` on top of `412b1d8`, merged
