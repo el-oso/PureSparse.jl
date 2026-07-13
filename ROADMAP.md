@@ -467,18 +467,53 @@ naively copied the whole panel, corrupting its own reconstruction. Verified the 
 factor was correct throughout via a full dense LAPACK oracle on the captured pre-`potrf!`
 block. Fixed by skipping the diagonal block's strict-upper positions in `dense_L`.
 
-**Known follow-up (M1 task 7):** `cholesky!` is correct and mostly allocation-light
-**Update:** `SupernodalFactor.panels::Vector{Matrix{T}}` now caches every supernode's
-panel wrapper ONCE at factor-construction time (`_build_panels`, `src/numeric/llt.jl`),
-reused across every `cholesky!` call instead of re-`unsafe_wrap`ping `panel`/`panel_d`
-each time — cut `cholesky!`'s per-call allocation from 7392 to 2576 bytes on a 50x50
-test case (65% reduction). The REMAINING allocation is `cholesky!`'s update-block buffer
-`C = _panelview(cbuf, 1, ctot, k1)` — its shape varies per (descendant, ancestor) pair in
-the update schedule, so it isn't a single fixed-shape wrapper the way panels are; true
-zero-alloc there needs one cached view per distinct (d,s) pair (keyed by position in the
-update schedule), not attempted yet. `solve!` still allocates a permuted-RHS scratch
-buffer per call (documented in `src/numeric/solve.jl`'s header) — same category of
-follow-up. Both remain M1 task 7, not blocking correctness.
+**M1 task 7 (zero-allocation hardening) — `cholesky!` is now GENUINELY ZERO-ALLOC
+(2026-07-13), CLAUDE.md requirement 5 met for the LLᵀ path.** History: 7392 → 2576
+bytes (65%) after caching `SupernodalFactor.panels::Vector{Matrix{T}}` once at
+factor-construction time (`_build_panels`) instead of re-`unsafe_wrap`ping
+`panel`/`panel_d` every call → **0 bytes**, measured directly (`@allocated
+cholesky!(F,A) == 0`), after also fixing the update-block buffer. The fix: `Workspace.c`
+changed from a flat `Vector{T}(max_update_size)` (needing a fresh `_panelview`
+`unsafe_wrap` — 80 B/call — or `reshape` — 48 B/call — every use, since its NEEDED
+shape `(ctot, k1)` varies per (descendant, ancestor) pair) to a single pre-allocated
+`Matrix{T}(max_extend_rows, max_extend_rows)`, used via `view(cbuf, 1:ctot, 1:k1)` —
+**measured 0 bytes**, because a `view` of an already-allocated `Matrix` costs nothing
+(same pattern the existing `Ldiag`/`Lbelow` views already relied on). This works
+because `ctot` and `k1` are BOTH provably `≤ max_extend_rows` for every (d,s) pair
+(`R1 ⊆ R ⊆` descendant `d`'s own below-diagonal rows, whose count is exactly what
+`max_extend_rows` bounds by definition — derivation in `types.jl`'s `Workspace`
+docstring). Memory cost of the square buffer vs the old flat sizing: measured 1.0×–4.4×
+on the M1 gate matrices (a one-time `Workspace` allocation, not a hot-path one) —
+checked directly before committing to this design, not assumed.
+
+The SAME fix applied to `ldlt!`'s `C` buffer (identical bound, identical technique).
+`ldlt!`'s total per-call allocation dropped to **1120 bytes** (measured on a
+n=35 SQD KKT case) — the remaining source is the OTHER LDLᵀ-specific buffer,
+`Workspace.cd` (the `L·D` scaled-copy staging buffer), whose needed shape `(k1, wk)`
+is chunked to fit `mus = max_update_size` but is NOT bounded by `max_extend_rows` the
+way `c`'s is (`wk` can exceed `max_extend_rows` when `k1` is small — worked through
+explicitly, not assumed) — a correct fix needs either a new `Symbolic` field bounding
+max supernode column width, or restructuring the chunking to tile on both axes; **not
+attempted this pass**, left as an honestly-scoped remaining gap.
+
+`solve!`'s outer permuted-RHS buffer now reuses `Workspace.rhs` (pre-allocated at
+size `n`) for the single-RHS (`b::AbstractVector`) path instead of allocating a fresh
+`Vector{T}(n)` every call — a real, measured improvement, but **not yet zero**:
+`solve!` still measures 7904 bytes (n=50 SPD case) because `_solve_L!`/`_solve_Lt!`
+themselves have TWO further allocation sites, both left as follow-ups: (a) they
+re-`_panelview` `F.x` fresh every supernode instead of reusing the already-cached
+`F.panels[s]` (the same fix `cholesky!`'s update loop got in the earlier panel-caching
+pass, just never applied to the solve path); (b) the below-diagonal update buffer
+(`upd = Matrix{T}(undef, nsrow-nscol, nrhs)`) is allocated fresh per supernode with a
+size that — like `ldlt!`'s `cd` — is not obviously bounded by `max_extend_rows` alone
+once `nrhs > 1` is accounted for. Multi-RHS (`b::AbstractMatrix`) solves remain
+allocating by design (`nrhs` is caller-chosen and unbounded, can't be pre-sized).
+
+None of this blocks correctness or either wall-time gate (both were already passing);
+it is the literal CLAUDE.md requirement 5 text ("zero allocations after `symbolic()`")
+being closed out property by property, with `cholesky!`/`ldlt!`'s numeric refactor —
+the actual per-iteration IPM hot path — now done or substantially improved, and
+`solve!`'s remaining gap precisely scoped rather than left vague.
 
 ## Milestones (design §10)
 

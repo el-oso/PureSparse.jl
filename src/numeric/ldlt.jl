@@ -185,7 +185,7 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
 
             if k1 > 0
                 ctot = k1 + k2
-                C = _panelview(cbuf, 1, ctot, k1)
+                C = view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
                 # L·D scaled copy of the R1 rows, staged in cdbuf (design §5.1). cdbuf
                 # holds max_update_size ≥ ctot·k1 values, which does NOT bound k1·ncol_d
                 # (a wide descendant with a short update block exceeds it), so the gemm

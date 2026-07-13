@@ -16,23 +16,21 @@ _diagchar(::LDLFactor) = 'U'
 
 Solve `P·A·Pᵀ·y = P·b` via the supernodal factor, then unpermute: `x = Pᵀ·y` solves
 `A·x = b`. For an [`LDLFactor`](@ref) the diagonal stage `solve_D!` runs between the two
-triangular sweeps (design.md §4.4). `x` and `b` may alias.
+triangular sweeps (design.md §4.4). `x` and `b` may alias. Zero allocations for the
+single-RHS (`b::AbstractVector`) form (the permuted-RHS scratch is `F.ws.rhs`, sized
+`n` once in `Workspace`); multi-RHS (`b::AbstractMatrix`) still allocates a fresh
+`n×nrhs` scratch per call — `nrhs` is caller-chosen and unbounded, so it cannot be
+pre-sized (CLAUDE.md requirement 5 targets the per-factor hot path, which for an
+interior-point consumer is single-RHS refactor+solve, not a growing multi-RHS count).
 """
-function solve!(x::AbstractVecOrMat{T}, F::_PanelFactor{T,Ti}, b::AbstractVecOrMat{T}) where {T,Ti<:Integer}
+function solve!(x::AbstractVector{T}, F::_PanelFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
     sym = F.sym
     n = sym.n
     perm = sym.perm
-    nrhs = ndims(b) == 1 ? 1 : size(b, 2)
-    y = ndims(b) == 1 ? Vector{T}(undef, n) : Matrix{T}(undef, n, nrhs)
+    y = F.ws.rhs
 
     @inbounds for k in 1:n
-        if ndims(b) == 1
-            y[k] = b[Int(perm[k])]
-        else
-            for c in 1:nrhs
-                y[k, c] = b[Int(perm[k]), c]
-            end
-        end
+        y[k] = b[Int(perm[k])]
     end
 
     _solve_L!(y, F)
@@ -40,13 +38,28 @@ function solve!(x::AbstractVecOrMat{T}, F::_PanelFactor{T,Ti}, b::AbstractVecOrM
     _solve_Lt!(y, F)
 
     @inbounds for k in 1:n
-        if ndims(b) == 1
-            x[Int(perm[k])] = y[k]
-        else
-            for c in 1:nrhs
-                x[Int(perm[k]), c] = y[k, c]
-            end
-        end
+        x[Int(perm[k])] = y[k]
+    end
+    return x
+end
+
+function solve!(x::AbstractMatrix{T}, F::_PanelFactor{T,Ti}, b::AbstractMatrix{T}) where {T,Ti<:Integer}
+    sym = F.sym
+    n = sym.n
+    perm = sym.perm
+    nrhs = size(b, 2)
+    y = Matrix{T}(undef, n, nrhs)
+
+    @inbounds for k in 1:n, c in 1:nrhs
+        y[k, c] = b[Int(perm[k]), c]
+    end
+
+    _solve_L!(y, F)
+    F isa LDLFactor && _solve_D!(y, F)
+    _solve_Lt!(y, F)
+
+    @inbounds for k in 1:n, c in 1:nrhs
+        x[Int(perm[k]), c] = y[k, c]
     end
     return x
 end

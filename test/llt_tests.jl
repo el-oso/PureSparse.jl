@@ -109,7 +109,7 @@ end
     @test relerr(L1, L2) > 1.0e-6   # sanity: actually refactored (different values)
 end
 
-@testitem "cholesky!: refactorize allocations are bounded (zero-alloc hardening is M1 task 7)" setup = [LLTHelpers] begin
+@testitem "cholesky!: refactorize is genuinely zero-allocation (M1 task 7, CLAUDE.md req 5)" setup = [LLTHelpers] begin
     using Random
     rng = MersenneTwister(63)
     n = 50
@@ -118,18 +118,17 @@ end
     F = PureSparse.cholesky(sym, A)
     PureSparse.cholesky!(F, A)   # warm up (any first-touch allocation happens here)
     allocs = @allocated PureSparse.cholesky!(F, A)
-    # NOT zero yet, but much reduced (7392 -> 2576 bytes on this matrix after caching
-    # F.panels, built once and reused across calls instead of re-`unsafe_wrap`ping every
-    # supernode's panel/panel_d on every call). The REMAINING allocation is the
-    # variable-shaped update-block buffer (`C = _panelview(cbuf, 1, ctot, k1)` in
-    # cholesky!'s update loop) — its (ctot,k1) shape depends on which (descendant,
-    # ancestor) pair is being processed, so it can't be cached as a single fixed-shape
-    # wrapper the way panels can without a bigger restructuring (one cached view per
-    # DISTINCT (d,s) pair in the update schedule, keyed by position — real zero-alloc,
-    # still M1 task 7, not attempted here). This test guards against a REGRESSION (e.g.
-    # an accidental O(n) or O(nnz) allocation reappearing), not the eventual zero target.
-    @test allocs > 0
-    @test allocs < 10_000
+    # History: 7392 -> 2576 bytes after caching F.panels (built once, reused across
+    # calls instead of re-`unsafe_wrap`ping every supernode's panel/panel_d every
+    # call) -> 0 after also fixing the variable-shaped update-block buffer: instead of
+    # `_panelview(cbuf, 1, ctot, k1)` (a fresh `unsafe_wrap` — small Array-header
+    # allocation — every call), `Workspace.c` is now a single pre-allocated
+    # `Matrix{T}(max_extend_rows, max_extend_rows)` and the update block is
+    # `view(cbuf, 1:ctot, 1:k1)` — zero-alloc because both ctot and k1 are provably
+    # ≤ max_extend_rows for every (descendant, ancestor) pair (types.jl's Workspace
+    # docstring has the derivation) and a `view` of an already-allocated Matrix costs
+    # nothing (measured directly: 0 bytes, vs 48 for `reshape`, 80 for `unsafe_wrap`).
+    @test allocs == 0
 end
 
 @testitem "cholesky!: reports non-SPD input via issuccess/F.ok" begin

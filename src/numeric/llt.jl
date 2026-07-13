@@ -130,7 +130,7 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
             if k1 > 0
                 L1 = view(panel_d, q:(q + k1 - 1), 1:ncol_d)
                 ctot = k1 + k2
-                C = _panelview(cbuf, 1, ctot, k1)
+                C = view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
                 C1 = view(C, 1:k1, :)
                 syrk!(C1, L1; uplo = 'L', trans = 'N', alpha = -one(T), beta = zero(T))
                 # scatter LOWER triangle of C1 only (syrk leaves the strict-upper stale)

@@ -67,24 +67,42 @@ factor sharing one `Symbolic` — sized once from `Symbolic.max_update_size`/
 `max_extend_rows` so the numeric phase never allocates (CLAUDE.md requirement 5).
 """
 struct Workspace{T,Ti<:Integer}
-    c::Vector{T}                  # update block buffer, length max_update_size
-    cd::Vector{T}                 # L*D scaled-copy buffer for LDLᵀ updates, length max_update_size
+    c::Matrix{T}                  # update block buffer, (max_extend_rows, max_extend_rows) —
+                                   # see llt.jl's `_row` comment: for any (descendant d, ancestor
+                                   # s) pair, ctot = |R| and k1 = |R1| are BOTH ≤ d's own
+                                   # below-diagonal row count ≤ max_extend_rows (R1 ⊆ R ⊆ d's
+                                   # below-diagonal rows, by construction of the update schedule,
+                                   # design §4.3/§0 B1) — so `view(c, 1:ctot, 1:k1)` is always
+                                   # in-bounds and, being a view of an already-allocated Matrix
+                                   # (not a fresh `unsafe_wrap`/`reshape`), costs zero allocation
+                                   # (measured: unsafe_wrap 80 B/call, reshape 48 B/call, view of
+                                   # a pre-existing Matrix 0 B/call). Real matrices show this is a
+                                   # modest 1.0–4.4x memory increase over the old flat
+                                   # `max_update_size` sizing (measured on the M1 gate set), a
+                                   # one-time Workspace cost, not a hot-path one.
+    cd::Vector{T}                  # L*D scaled-copy buffer for LDLᵀ updates, length max_update_size —
+                                   # STILL allocates per-call via `_panelview` (M1 task 7 follow-up,
+                                   # not covered by this pass: its (k1, wk) chunk shape isn't bounded
+                                   # by max_extend_rows the way `c`'s is — see ROADMAP.md)
     relmap::Vector{Ti}            # length n, no clearing needed between supernodes (design §4.3)
     head::Vector{Ti}              # length nsuper+1, intrusive linked-list heads (0 = empty)
     next::Vector{Ti}              # length nsuper, intrusive linked-list next pointers
     dptr::Vector{Ti}              # length nsuper, per-descendant progress cursor into rowind
-    rhs::Vector{T}                # gather/scatter workspace for solves, length max_extend_rows
+    rhs::Vector{T}                # permuted-RHS scratch for solve!, length n — zero-alloc single-
+                                   # vector solves (multi-RHS still allocates: nrhs is unbounded,
+                                   # not knowable ahead of time)
 end
 
 function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
+    mer = max(sym.max_extend_rows, 1)
     Workspace{T,Ti}(
-        Vector{T}(undef, sym.max_update_size),
+        Matrix{T}(undef, mer, mer),
         Vector{T}(undef, sym.max_update_size),
         Vector{Ti}(undef, sym.n),
         zeros(Ti, sym.nsuper + 1),
         zeros(Ti, sym.nsuper),
         Vector{Ti}(undef, sym.nsuper),
-        Vector{T}(undef, max(sym.max_extend_rows, 1)),
+        Vector{T}(undef, sym.n),
     )
 end
 
