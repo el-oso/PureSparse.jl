@@ -8,7 +8,7 @@ source must never be read, only published papers.
 
 ## CURRENT FOCUS — M1 core + real benchmark harness done; wall-time gate PASSING (11/14)
 
-M1 tasks 1–6 are done and tested (12220/12220 tests passing): scaffold, AMD ordering,
+M1 tasks 1–6 are done and tested (13554/13554 tests passing): scaffold, AMD ordering,
 etree/postorder/column-counts, fundamental-supernode detection + relaxed amalgamation,
 row-structure/workspace-bound computation, the `symbolic()` driver, and the numeric
 supernodal LLᵀ factorization + solve (`cholesky`/`cholesky!`/`solve!`/`solve_L!`/
@@ -186,13 +186,16 @@ This is a real, measured wall-time win, not a supernode-count win that didn't tr
 the padded-cell ratios above show the fixpoint's merges are legitimately more
 BLAS-3-efficient, not just fewer-and-fatter.
 
-Remaining M1 tasks: (7) allocation hardening for `cholesky!` (currently
-correct but not zero-alloc — see "known follow-up" below) and `solve!` (deliberately
-deferred, allocates per call); (9) DocumenterVitepress docs pages. Task 7b' above is
-DONE. Possible follow-up (not required by M1's gate, which is already met): investigate
-why `random_n200`/`random_n1000` own-arm sit at a noise-level tie — likely per-call
-dispatch/relmap-setup fixed cost at very small n, not a supernode-shape problem, so a fix
-(if pursued) would live in the numeric update-loop scheduling (§4.3), not amalgamation.
+**M1 status: gate met, docs done (task 9, DocumenterVitepress — `docs/{make.jl,src/*.md}`,
+Home/Guide/Benchmarking/API Reference/Provenance pages, verified building end-to-end),
+task 7b'/8 done.** Only remaining M1 item is task 7's zero-alloc remainder (below) — not
+required by the M1 gate, which is a wall-time comparison, not an allocation gate on its
+own; the allocation gate (`@allocated cholesky! == 0`) is a separate, still-open
+requirement worth finishing before M1 is fully closed out. Possible follow-up (not
+required by M1's gate, which is already met): investigate why `random_n200`/
+`random_n1000` own-arm sit at a noise-level tie — likely per-call dispatch/relmap-setup
+fixed cost at very small n, not a supernode-shape problem, so a fix (if pursued) would
+live in the numeric update-loop scheduling (§4.3), not amalgamation.
 
 **Dependency note:** PureBLAS.jl's `Project.toml` had its `TypeContracts` compat bumped
 from `"0.13.1"` to `"0.13.1, 0.14"` and its TypeContracts dependency switched to
