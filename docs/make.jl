@@ -21,6 +21,7 @@ makedocs(;
     pages = [
         "Home" => "index.md",
         "Guide" => "guide.md",
+        "Interior-Point Guide" => "ipm-guide.md",
         "Benchmarking" => "benchmarking.md",
         "API Reference" => "api.md",
         "Provenance & Licensing" => "provenance.md",

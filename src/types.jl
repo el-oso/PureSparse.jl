@@ -88,6 +88,14 @@ function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
     )
 end
 
+"""
+    AbstractSparseFactor{T}
+
+Supertype for every factor PureSparse produces (`SupernodalFactor`, `LDLFactor`,
+`SimplicialLDLFactor`) — the common surface shared across them: `sym::Symbolic`,
+`stats::FactorStats`, `ok::Bool` (queried via [`issuccess`](@ref)), and the generic
+[`solve!`](@ref)/[`refine!`](@ref) entry points.
+"""
 abstract type AbstractSparseFactor{T} end
 
 """

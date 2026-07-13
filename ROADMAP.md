@@ -95,11 +95,52 @@ split-solve composition; (h) `@allocated updowndate! == 0` for both signs after 
   therefore build with `grow = n` (never-overflow) while the slack policy has its own
   dedicated items at `grow = 0`/default.
 
-**Deliberately out of scope here (still-open M2 items):** `refine!`; the direct
-simplicial factorization path for small/very-sparse problems (design §1.2 mentions it;
-only the `LDLFactor` conversion is scheduled); the 2001 batched multiple-rank
-algorithm (listed extension); a `SparseVector` fast path for the input scan;
-update/downdate benchmark-gate additions.
+**Deliberately out of scope here (still-open M2 items):** the direct simplicial
+factorization path for small/very-sparse problems (design §1.2 mentions it; only the
+`LDLFactor` conversion is scheduled); the 2001 batched multiple-rank algorithm (listed
+extension); a `SparseVector` fast path for the input scan; update/downdate
+benchmark-gate additions.
+
+## M2 progress — `refine!` + IPM guide docs LANDED (2026-07-13)
+
+`src/refine.jl`: `refine!(x, F, A, b; iters=2)` (design §5.2) — classical
+residual-correction iterative refinement (`x = F\b`, then `iters` rounds of `x += F \
+(b - Symmetric(A,:L)·x)`), generic over any `AbstractSparseFactor` (a new small
+docstring was added to that abstract type itself — it had none before, needed once
+`refine!`'s docstring cross-referenced it via `@ref` for the docs build). Works
+unchanged for `SupernodalFactor`/`LDLFactor`/`SimplicialLDLFactor` since it only calls
+the already-generic `solve!`.
+
+**Verified (2026-07-13):** 2 new ReTestItems in `test/refine_tests.jl`; full suite
+**15203/15203 passing**. One real bug caught in the FIRST draft of the test, not in
+`refine!` itself: the original test forced a well-conditioned pivot's sign to flip
+(diag entry −3 under `signs=+1`) and asserted `refine!` would drive the residual to
+1e-10 — it instead diverged (measured 14.4, growing per iteration). Root cause,
+confirmed analytically and by direct calculation: iterative refinement's fixed-point
+map has per-entry contraction factor `|1 − K_jj/F_jj|`; forcing a sign flip on an O(1)
+pivot gives `K_jj/F_jj = -3/3 = -1`, so `|1-(-1)| = 2 > 1` — provably divergent, not a
+`refine!` defect. This is not what PureSparse's regularization produces in practice
+(`ldlt_delta` only forces pivots already near the magnitude floor); the test was
+rewritten around a realistic near-singular-pivot case (`1e-13` floored to `1e-12`,
+same sign) and the assertion changed from an unreachable machine-precision target to
+the actually-true property: monotonic geometric improvement (measured ratio 0.900 per
+iteration, matching the analytical `|1 - 0.1|` prediction to 3 decimal places).
+
+`docs/src/ipm-guide.md` (new page, wired into `docs/make.jl`): the interior-point
+workflow — `symbolic` once / `ldlt!` refactor per iteration, reading
+`FactorStats`/inertia, `refine!` when `n_perturbed > 0`, and `updowndate!` for the
+less-common structural-change case (occasional constraint add/remove), explicitly
+distinguished from the per-iteration value-only refactor. `docs/src/api.md` gained
+`AbstractSparseFactor`/`SimplicialLDLFactor`/`simplicial`/`updowndate!`/`refine!`
+entries; full `makedocs`+vitepress build verified succeeding end-to-end (one dead
+`@ref` link caught and fixed the same way as M1's — `AbstractSparseFactor` needed a
+docstring before it could be `@ref`'d).
+
+**M2 status: tasks 1–7 of design §10's M2 list are now done** (LDLᵀ core, update/downdate,
+simplicial split solves, `refine!`). Remaining: task 8 (dedicated SQD benchmark-gate
+additions — `benchmark/gate.jl` currently only exercises the M1 LLᵀ path) and the
+smaller deliberately-out-of-scope items listed above (2001 batched rank-k, standalone
+simplicial factorization path, `SparseVector` fast path).
 
 ## M2 progress — supernodal LDLᵀ/SQD LANDED (tasks 1–3, 2026-07-13)
 

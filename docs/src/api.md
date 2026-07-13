@@ -20,6 +20,7 @@ PureSparse.GivenOrdering
 ## Numeric factorization
 
 ```@docs
+PureSparse.AbstractSparseFactor
 PureSparse.cholesky
 PureSparse.cholesky!
 PureSparse.ldlt
@@ -37,4 +38,13 @@ PureSparse.solve!
 PureSparse.solve_L!
 PureSparse.solve_D!
 PureSparse.solve_Lt!
+PureSparse.refine!
+```
+
+## Update/downdate
+
+```@docs
+PureSparse.SimplicialLDLFactor
+PureSparse.simplicial
+PureSparse.updowndate!
 ```
