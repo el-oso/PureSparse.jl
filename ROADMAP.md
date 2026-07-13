@@ -93,6 +93,73 @@ SPD case, but the fix is real and correctness-verified regardless).
 Changed: `src/numeric/llt.jl` (`cholesky!`'s descendant-update loop), `src/numeric/ldlt.jl`
 (`ldlt!`'s descendant-update loop, same pattern). Branch: `perf-large-n`.
 
+**Note on the numbers above:** the `neuromancer` before/after table above (and the
+`size_sweep_neuromancer.json` it references) predates a finding that neuromancer's CPU
+clock is unpinned/unlocked — its wall-time numbers are not reliable for gate pass/fail
+and are kept here as historical context only. `galen` and `wintermute` are the
+clock-locked gate machines going forward (see the follow-up section immediately below).
+
+## Perf follow-up — galen n≥1024 residual gap closed (2026-07-13)
+
+The fix above measurably helped but did not fully close the gate on `galen` (AMD Ryzen 9
+5900X — a different microarchitecture than the machine the first fix was tuned on):
+`size_sweep.jl` on galen still showed PS+PureBLAS **losing** to CHOLMOD+OpenBLAS at
+n=1024 (0.93x) and n=2048 (0.90x), even though `neuromancer` passed at every size. Per
+the project's non-negotiable wall-time gate (CLAUDE.md rule 2) this was a live defect,
+not an acceptable tradeoff — user: *"keep pushing for parity, we cannot be below that is
+not accepted in the contract."*
+
+**Profiled on galen itself, not assumed to match neuromancer's fix.** Phase-timed
+instrumentation of `cholesky!` at n=1024/2048 showed the *staged* scatter-add path (used
+whenever a descendant's target rows aren't contiguous — the common case at these sizes)
+still spending a large fraction of wall time in `relmap[_row(rowind, ...)]`, a double
+indirection that is **identical for every column `b`** of the update block but was being
+recomputed `k1` times. Measured on galen at n=2048: ~1.5 ns/element over 7.9e6 scattered
+elements per factorization (~12 of 65 ms). A run-length histogram of the scattered
+target rows showed 66% of elements sit in maximal-consecutive runs ≥9 rows (38% in runs
+>32) — exploitable via contiguous SIMD adds, but *not* unconditionally: an
+unconditional run-based scatter was measured as a net **loss** at n=2048 (57.98 →
+59.81ms) versus the plain element-based loop, due to per-run visit overhead on short
+runs.
+
+**Fix:** two new `Workspace` buffers, `ir` (per-update hoisted target-row list, resolved
+once during the existing contiguity-check walk instead of `k1` times) and `rs` (run-start
+offsets of `ir`'s maximal consecutive runs, built in the same walk — `contig ⟺ nr==1`,
+reusing the pre-existing `ctot ≤ max_extend_rows` sizing bound). A new shared
+`_scatter_update!(panel, cbuf, ir, rs, nr, k1, ctot)` helper (kept `@noinline` —
+inlining it into the factorization loop was a measured 30–95% regression at n=16..64 on
+`wintermute`) dispatches per-update between the run-based `@simd` path (mean run length
+≥8, i.e. `ctot ≥ 8*nr`) and the element-based hoisted-index path (short runs), replacing
+the separate C1/C2 scatter loops in both `llt.jl` and `ldlt.jl` with one shared call —
+semantics unchanged (full below-diagonal block + lower-triangle-only diagonal block,
+verified by direct diff review against the pre-fix loops).
+
+**Verified independently (not just trusting the agent report):** diff-reviewed both
+files against the original scatter semantics; re-ran direct residual checks
+(`norm(A*x-b)/norm(b)`) on fresh random SPD (`cholesky`) and SQD (`ldlt`, `signs=+1`)
+matrices at n=3,17,64,300,1000 — spanning both the run-based and element-based branches
+— all ~1e-15/1e-16, matching pre-fix behavior. Full suite **15206/15206 passing**
+(neuromancer, used only as a correctness runner here, not for timing). M1 LLᵀ gate
+**14/14**, M2 SQD/LDLᵀ gate **8/8** on galen.
+
+**Gate result — PureSparse+PureBLAS now strictly beats CHOLMOD+OpenBLAS at every swept
+size (n=2..2048) on both clock-locked machines:**
+
+| n | galen PB/CHOLMOD | wintermute PB/CHOLMOD |
+|---|---|---|
+| 512 | 1.19x | 1.40x |
+| 1024 | **1.09x** (was 0.93x) | **1.24x** |
+| 2048 | **1.03x** (was 0.90x) | **1.15x** |
+
+(Secondary OB/CHOLMOD diagnostic arm dips slightly under 1.0x at n=64 on both machines —
+0.81x galen, 0.76x wintermute — a pre-existing small-n per-call-overhead effect
+unrelated to this fix and not part of the contractual gate, which is defined on the
+PS+PureBLAS arm.)
+
+Changed: `src/numeric/llt.jl`, `src/numeric/ldlt.jl`, `src/types.jl` (new `Workspace.ir`/
+`rs` buffers). Branch `perf-parity-galen`, commit `82b9350` on top of `412b1d8`, merged
+to `master` via fast-forward.
+
 ## M4 progress — drop-in LANDED for `cholesky` AND `ldlt` (2026-07-13)
 
 `src/dropin_toggle.jl` (always loaded): `activate!()`/`deactivate!()` set the
