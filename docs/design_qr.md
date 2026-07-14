@@ -153,7 +153,7 @@ Honest trade-off table:
 | Axis | (a) left-looking | (b) multifrontal |
 |---|---|---|
 | Reuse of existing code | **maximal**: entire symbolic pipeline (§3) reused on a stand-in pattern; numeric loop is structurally the sibling of `llt.jl`'s left-looking scatter loop (scattered work vector + pattern-driven updates + per-column harvest), and of `simplicial/updown.jl`'s column storage discipline | symbolic layer same as (a); numeric layer is new machinery: frontal assembly, extend-add, contribution-block stack, staircase exploitation, in-front rank handling |
-| PureBLAS dependencies | **none new** (§4.6 — the per-column work is sparse-indexed level-1, which is PureSparse's own domain; PureBLAS `nrm2` used on packed segments) | **two new kernels required** (§7.2): apply-stored-block-reflectors-to-external-C (LAPACK dlarfb/dormqr role) and a generic-`T` `geqrf!` fallback — both verified missing from PureBLAS today (§7.2) |
+| PureBLAS dependencies | **none new** (§4.6 — the per-column work is sparse-indexed level-1, which is PureSparse's own domain; PureBLAS `nrm2` used on packed segments) | **one adaptation + one gap** (§7.2): apply-stored-block-reflectors-to-external-C (LAPACK dlarfb/dormqr role) already exists correct-but-private/SVD-specific as `svd.jl`'s `_apply_reflectors_left!` and needs generalizing to a QR-appropriate minimal workspace (smaller task than writing it from scratch); a generic-`T` `geqrf!` fallback is still a real gap (§4.6) |
 | Zero-alloc-after-symbolic | natural (exact V/R sizing from symbolic, §3.4; no dynamic structures) | needs a preallocated contribution-block arena sized by a symbolic stack simulation (SPQR paper §2.3/§3.1 describes exactly this simulation; doable, more machinery) |
 | Flop rate | BLAS-1/2-grade; wins when fronts are small / R very sparse (SPQR paper §1: row/column methods "are very competitive when R remains very sparse") | BLAS-3; SPQR reaches a substantial fraction of dense-DGEQRF speed (paper §5.5: 2.49 vs 2.67 GFlops single-core) |
 | Rank handling | drop-with-reported-error (§5) — simple, zero-alloc | Heath-per-front, exact, contribution block can grow (SPQR §3.2 + Theorem 1) |
@@ -636,21 +636,37 @@ Preallocated once per factor from `QRSymbolic` sizes: `x::Vector{T}` (m, zero-ke
 `max_rrow`), `pack::Vector{T}` (`max_vcol`, §4.4), `rcursor::Vector{Ti}` (n, per-row
 append cursors into `rcolind`/`rval`), `rhs::Vector{T}` (m, solve scratch — §6).
 
-### 4.6 PureBLAS dependency check — result (checked against PureBLAS source, 2026-07-14)
+### 4.6 PureBLAS dependency check — result (checked against PureBLAS source, 2026-07-14;
+corrected 2026-07-14 after an independent re-check caught a coverage gap in the first
+pass — see the note at the end of this section)
 
-Verified by reading `/home/el_oso/Documents/claude/PureBLAS.jl/src/qr.jl` and
-`cabi_lapack.jl` directly:
+Verified by reading `/home/el_oso/Documents/claude/PureBLAS.jl/src/qr.jl`,
+`cabi_lapack.jl`, **and `svd.jl`** directly:
 
 - PureBLAS **has** dense QR: `geqrf!(A, tau)` — blocked compact-WY (dlarft/dlarfb-style
   T-matrix construction + `gemm!`/`trmm!` trailing update) over a tuned unblocked panel
   (`qr_unblocked!`, faer-port, fused rank-2 apply), for **Float64** and **BlasComplex**.
   This is the proven-fast path (BlazingPorts-derived, gated on galen).
-- PureBLAS **lacks**, as of today: **(a)** any apply-stored-reflectors-to-an-external-
-  matrix kernel (the LAPACK dlarf/dlarfb/dormqr role — its larft/larfb logic exists only
-  inlined inside `geqrf!`'s own trailing update, not callable on a separate C);
-  **(b)** a generic `T<:Real` fallback for `geqrf!`/`qr_unblocked!`
-  (`cabi_lapack.jl:14`: "getrf!/geqrf!/gesvd! are Float64-only kernels"; `qr.jl:7`:
-  "Float64-only … ponytail: generic/AD QR deferred").
+- PureBLAS **also has** the apply-stored-reflectors-to-an-external-matrix algorithm (the
+  LAPACK dlarf/dlarfb/dormqr role): `svd.jl`'s `_apply_reflectors_left!` (line ~641),
+  used internally for SVD's bidiagonalization back-transform. Read in full — it is the
+  real thing, correctly implemented: blocked compact-WY (dlarft-style T construction
+  from `G = VᵀV`, then `C -= V·(T·(Vᵀ·C))`) driven by PureBLAS's own `gemm!`, Float64.
+  **But it is not directly usable for QR as-is:** it is `_`-prefixed/unexported, and its
+  scratch (`T`/`G`/`W`/`Yb`) comes from a hardwired `SVDWorkspace{Float64}` — a much
+  larger struct carrying unrelated SVD-bidiagonalization fields, not a QR-appropriate
+  minimal workspace.
+- PureBLAS **still lacks**, as of today: a generic `T<:Real` fallback for
+  `geqrf!`/`qr_unblocked!` (`cabi_lapack.jl:14`: "getrf!/geqrf!/gesvd! are Float64-only
+  kernels"; `qr.jl:7`: "Float64-only … ponytail: generic/AD QR deferred") — this gap
+  stands as originally found.
+- **Correction note:** the first pass of this check read only `qr.jl`/`cabi_lapack.jl`
+  and concluded no apply-to-external-C kernel existed anywhere in PureBLAS, which was
+  false and was caught by an independent re-check reading `svd.jl`. Left as a visible
+  correction here (rather than silently rewritten) per this project's discipline of not
+  papering over a checking gap — the practical M5b scope conclusion (§7.2) changes as a
+  result: adapting proven-working code is a smaller, lower-risk task than deriving
+  compact-WY apply from scratch, and P1 below is rescoped accordingly.
 - **M5a needs neither.** The left-looking method has no dense panels: its per-column
   work is sparse-indexed level-1 on scattered/packed vectors, which is sparse-domain
   code and belongs in `src/` by the same boundary that puts `updown.jl`'s column loops
@@ -826,16 +842,26 @@ arena, zero-alloc numeric (paper §3.2: fronts factorized in postorder, contribu
 blocks on a stack; §4: "all workspace … allocated before" the parallel phase — same
 discipline, minus the parallelism).
 
-### 7.2 PureBLAS prerequisites (from §4.6's verified gaps)
+### 7.2 PureBLAS prerequisites (from §4.6's verified findings)
 
-- **P1 `larfb`-role kernel:** apply a stored block of reflectors (V panel + tau/T) to
-  an external matrix C, compact-WY (`C -= V·(Tᵀ·(Vᵀ·C))` — the identical triple
-  PureBLAS's `geqrf!` already performs internally on its own trailing block; the task
-  is exposing it for caller-provided V/T/C with caller-provided workspace). Float64
-  fast path + generic fallback.
+- **P1 `larfb`-role kernel — generalize, not derive.** §4.6 found the compact-WY
+  apply-stored-reflectors-to-external-C algorithm **already exists and is proven
+  correct** in PureBLAS: `svd.jl`'s `_apply_reflectors_left!` (`C -= V·(T·(Vᵀ·C))` via
+  `gemm!`, used in production for SVD's bidiagonalization back-transform). The task is
+  therefore **adapting known-working code, not deriving compact-WY math from scratch**:
+  generalize/export that pattern into a QR-appropriate kernel taking caller-provided
+  V/tau/C and a minimal caller-provided workspace (`T`/`G`/`W` scratch sized to the
+  block, not the full `SVDWorkspace{Float64}` the SVD call site carries — QR's fronts
+  need none of SVD's unrelated bidiagonalization fields). This is a meaningfully
+  smaller, lower-risk task than the "build it" framing this section originally carried
+  (correction recorded in §4.6) — real work (extracting a private/workspace-coupled
+  routine into a public, minimally-scoped one, plus its own test/gate pass in
+  PureBLAS), but not new numerical-algorithm risk. Float64 fast path (this adaptation)
+  + the separate generic fallback below.
 - **P2 generic `geqrf!`:** a `T<:Real` generic unblocked path (potrf! precedent in the
   same file family), so PureSparse's front loop stays one generic implementation
-  (CLAUDE.md req 3).
+  (CLAUDE.md req 3). This gap is real and unchanged by the P1 correction — no existing
+  PureBLAS code covers it (§4.6).
 
 Both land in PureBLAS with its own gates (OpenBLAS-parity per its CLAUDE.md), before
 M5b's numeric work starts.
@@ -1017,8 +1043,9 @@ it, M5b is not built (recorded as such); otherwise M5b is mandatory scope.
 13. Docs (least-squares guide, API reference, benchmark page from saved JSON).
 
 **M5b (conditional) task list:**
-- P1. PureBLAS: block-reflector apply kernel (larfb-role, §7.2) — in PureBLAS, with its
-  own OpenBLAS-parity gate.
+- P1. PureBLAS: generalize `svd.jl`'s `_apply_reflectors_left!` (existing, proven,
+  SVD-workspace-coupled) into a public, minimal-workspace block-reflector apply kernel
+  (larfb-role, §7.2) — in PureBLAS, with its own OpenBLAS-parity gate.
 - P2. PureBLAS: generic-`T` `geqrf!` fallback (§7.2).
 - 14. M5b design addendum (front assembly/stack simulation details; §7.1 scope) —
   reviewed before code, like this document.
@@ -1068,7 +1095,7 @@ wrapper or library source).
 | Solve formulas (LS/basic/min-norm) | SPQR paper §3.3; George–Heath–Ng 1984 via survey §7.2 |
 | Alternatives guidance (§1.2) | survey §7.5 (normal equations / augmented system / Peters–Wilkinson) |
 | Fronts-from-supernodes, staircase, stack | SPQR paper §2.3/§3.1–3.2 |
-| Dense QR kernels (M5b) | PureBLAS `geqrf!` (verified present, §4.6); P1/P2 additions specified §7.2 |
+| Dense QR kernels (M5b) | PureBLAS `geqrf!` (verified present, §4.6); block-reflector apply: `svd.jl`'s `_apply_reflectors_left!` (verified present and correct, §4.6 — P1 generalizes it, not a from-scratch derivation, §7.2); generic-`T` `geqrf!` fallback: verified absent, P2 is new work (§7.2) |
 
 Local reference archive (gitignored): `refs/linear_algebra/QR/` holds the five primary
 PDFs cited throughout: `davis2011_spqr_toms.pdf`,
