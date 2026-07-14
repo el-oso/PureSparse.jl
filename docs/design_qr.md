@@ -1348,9 +1348,10 @@ results→JSON, plots from JSON; PkgBenchmark self-regression). Configurations:
 | # | Factorization | Notes |
 |---|---|---|
 | 1 | PureSparse QR (M5a; M5b when built) | primary |
-| 2 | SuiteSparseQR via `SparseArrays.qr` (stock) | baseline |
+| 2 | SuiteSparseQR via `SparseArrays.qr` (stock) | baseline (the gate, see below) |
 | 3 | 1 vs 2 under identical column permutation (both directions, §9.2) | part of the gate, not supplementary (design.md D2 discipline) |
 | 4 | PureSparse `cholesky(AᵀA)` normal equations | context arm (not a gate): quantifies the §1.2 guidance |
+| 5 | `faer`'s sparse QR (Rust, MIT-licensed, §11) | context arm (not a gate, coordinator-directed addition): a second, independently-engineered reference point beyond CHOLMOD's lineage. Mirrors `BlazingPorts.jl`'s existing dense-kernel probe harness (`bench/rust_compare`: a small `#[no_mangle]` Rust cdylib shim + `ccall` from the Julia benchmark process, single-threaded, same-process interleaved timing) — extend that shim with a `faer_sparse_qr` entry point rather than building new FFI plumbing from scratch. Reported alongside configs 1/2/4 on every gate matrix; not part of the pass/fail inequality below (faer is not the CHOLMOD-equivalent this milestone targets, and its ordering/threshold choices differ enough that a head-to-head gate would conflate ordering quality with kernel throughput exactly as design.md D2 warns against) — but a loss against it is a signal worth investigating, not ignoring. |
 
 **Gate (M5 closeout, non-negotiable, wall-time):** on each gate matrix,
 `median_seconds(PureSparse qr(A)+solve, cold) < median_seconds(SparseArrays.qr(A)+solve,
