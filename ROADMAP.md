@@ -12,21 +12,30 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
-**2026-07-14 renumber: M5 = sparse QR (next milestone), GPU renumbered M3 → M6.**
-Design: [`docs/design_qr.md`](docs/design_qr.md) — **v1 Fable draft, awaiting the
-adversarial review pass** (same v1→review→v2 process as `docs/design.md`; the draft's
-§0 lists the review hotspots H1–H6). Older "M3 (GPU)" references below read as M6; the
-`### M3` milestone section's content is unchanged. Summary of the draft's key
-decisions: left-looking column Householder v1 (M5a) with a gate-triggered multifrontal
-escalation (M5b); COLAMD ordering from the primary 2004 paper
-(`refs/linear_algebra/QR/davis_gilbert_larimore_ng_2004_colamd.pdf`, read in full) plus
-Larimore's 1998 UF thesis as the implementation-depth reference
-(`refs/linear_algebra/QR/larimore_1998_colamd_thesis.pdf` — spot-checked in the draft,
-full ch. 3–4 read scheduled with the implementation task); star-matrix
-AᵀA-free symbolic reusing the existing etree/counts pipeline; Heath-test rank detection
-with Foster–Davis-style dead-column dropping; PureBLAS check result — M5a needs no new
-PureBLAS kernels, M5b requires a larfb-role apply kernel + generic geqrf! (both
-verified missing, scheduled as M5b tasks P1/P2).
+**2026-07-14: M5 = sparse QR (next milestone, design CLOSED, implementation
+starting), GPU renumbered M3 → M6.** Design: [`docs/design_qr.md`](docs/design_qr.md)
+v2 — Fable v1 draft → **two fully independent adversarial reviews** (Opus:
+[`docs/design_qr_review.md`](docs/design_qr_review.md), 1 BLOCKER/5 DEFECTs/6 NITs;
+a second Fable pass blind to Opus's findings:
+[`docs/design_qr_review_fable.md`](docs/design_qr_review_fable.md), 3 BLOCKERs/9
+DEFECTs/8 NITs) → Fable v2 fixing every finding from both (§0 changelog traces each
+fix by ID). The two highest-severity findings (the `vcount` off-by-one and the
+`beta=2/(vᵀv)` division-by-zero) were independently re-derived and confirmed, not just
+relayed. v2 also cross-checks its three BLOCKER fixes against `faer` (Rust, MIT
+licensed — a new, narrowly-scoped permitted-source category distinct from the absolute
+CHOLMOD/SuiteSparse GPL prohibition, §11). Older "M3 (GPU)" references below read as
+M6; the `### M3` milestone section's content is unchanged. Key decisions: left-looking
+column Householder v1 (M5a) with a gate-triggered multifrontal escalation (M5b);
+COLAMD ordering from the primary 2004 paper
+(`refs/linear_algebra/QR/davis_gilbert_larimore_ng_2004_colamd.pdf`) plus Larimore's
+1998 UF thesis as the implementation-depth reference
+(`refs/linear_algebra/QR/larimore_1998_colamd_thesis.pdf`, full ch. 3–4 read verified
+in review); star-matrix AᵀA-free symbolic reusing the existing etree/counts pipeline;
+Heath-test rank detection with Foster–Davis-style dead-column dropping; PureBLAS check
+result — M5a needs no new PureBLAS kernels, M5b requires a larfb-role apply kernel
+(both `Q·C` and `Qᵀ·C` directions, D8) + generic `geqrf!` (M5b tasks P1/P2).
+Implementation task list: `docs/design_qr.md` §10 (13-task M5a list, task 1 starting
+now).
 
 **Status (2026-07-13): M1 CLOSED, M2 CLOSED, M4 CLOSED (every gate item in
 `docs/design.md` §10 met, see the `### M1`/`### M2` sections and the "M4 closeout"
