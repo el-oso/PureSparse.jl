@@ -1,6 +1,6 @@
-# Sparse QR symbolic analysis, design_qr.md §3 (M5a task 4: star pattern builder).
-# Drives the EXISTING etree.jl/counts.jl functions unchanged — no reimplementation
-# (design_qr.md §1.5's module-layout note).
+# Sparse QR symbolic analysis, design_qr.md §3 (M5a tasks 4-6: star pattern builder,
+# V/R row structure, and the full driver). Drives the EXISTING etree.jl/counts.jl
+# functions unchanged — no reimplementation (design_qr.md §1.5's module-layout note).
 
 """
     row_leftcol(m, n, colptr, rowval, ciperm) -> (rowptr, rowidx, leftcol)
@@ -234,4 +234,78 @@ function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti
         empty!(Sk)                                # early free; k is never revisited
     end
     return rperm, riperm, mb, vptr, vrowind, pivotslot, vcount
+end
+
+"""
+    symbolic_qr(A::SparseMatrixCSC; ordering::AbstractOrdering) -> QRSymbolic
+
+Full symbolic analysis pipeline for sparse QR (design_qr.md §2-§3): column ordering →
+star pattern (§3.2, H1) → postorder → R structure (§3.3) → V/row structure (§3.4, H2).
+No amalgamation priority is needed (M5a has no supernodes/fronts, design_qr.md §3.2),
+so a single default `postorder` pass suffices — unlike [`symbolic`](@ref)'s two-pass
+merge-aware version. Column-singleton pre-elimination (§2.3, `n1 > 0`) is not yet
+implemented (M5a task 9); `n1` is always `0` here and `m == mb` whenever `A` has no
+fully-null rows.
+
+No default `ordering` yet — the design's stated default is `COLAMDOrdering()`
+(§2.1), landing in a later task; callers must pass one explicitly for now (e.g.
+`AMDOrdering()`, already implemented, §2.2.6).
+"""
+function symbolic_qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering) where {T,Ti<:Integer}
+    m, n = size(A)
+    fcperm = order_columns(ordering, m, n, A.colptr, A.rowval)
+    fciperm = Vector{Ti}(undef, n)
+    @inbounds for (k, p) in enumerate(fcperm)
+        fciperm[p] = Ti(k)
+    end
+
+    scolptr, srowval = star_pattern(m, n, A.colptr, A.rowval, fciperm)
+    idp = collect(Ti, 1:n)
+    ucolptr, urowval = symmetrized_upper(n, scolptr, srowval, idp, idp)
+    parent0 = etree(n, ucolptr, urowval)
+    post, postinv = postorder(n, parent0)
+    sptr, sind = relabel_pattern(n, ucolptr, urowval, postinv)
+    parent = etree(n, sptr, sind)
+    rcount = column_counts(n, sptr, sind, parent)
+
+    cperm = Vector{Ti}(undef, n)
+    @inbounds for orig in 1:n
+        cperm[postinv[fciperm[orig]]] = Ti(orig)
+    end
+    ciperm = Vector{Ti}(undef, n)
+    @inbounds for (k, p) in enumerate(cperm)
+        ciperm[p] = Ti(k)
+    end
+
+    _, _, leftcol = row_leftcol(m, n, A.colptr, A.rowval, ciperm)
+    rperm0, riperm0, mb, vptr, vrowind, pivotslot, vcount =
+        qr_row_structure(m, n, parent, leftcol)
+    # QRSymbolic's rperm/riperm are FULL-space (length m) fields (design_qr.md §1.4);
+    # qr_row_structure already returns exactly that shape when n1 == 0 (no singleton
+    # rows to prepend) — direct assignment, no further translation needed yet (M5a
+    # task 9 adds the singleton-block composition on top of this).
+    rperm = rperm0
+    riperm = riperm0
+
+    rptr = Vector{Ti}(undef, n + 1)
+    rptr[1] = one(Ti)
+    @inbounds for k in 1:n
+        rptr[k + 1] = rptr[k] + rcount[k]
+    end
+    nnzR = Int(rptr[n + 1] - 1)
+    nnzV = Int(vptr[n + 1] - 1)
+    max_rrow = n == 0 ? 0 : Int(maximum(rcount))
+    max_vcol = n == 0 ? 0 : Int(maximum(vcount))
+    flops = 0.0
+    @inbounds for i in 1:n
+        flops += 4.0 * vcount[i] * (rcount[i] - 1) + 3.0 * vcount[i]
+    end
+
+    return QRSymbolic{Ti}(
+        m, n, 0, mb,
+        cperm, ciperm, rperm, riperm,
+        parent, sptr, sind,
+        rcount, rptr, vptr, vrowind, pivotslot,
+        max_rrow, max_vcol, nnzR, nnzV, flops,
+    )
 end

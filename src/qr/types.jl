@@ -36,6 +36,16 @@ struct QRSymbolic{Ti<:Integer}
     riperm::Vector{Ti}             #   block's own staircase permutation, §3.4), length m
     # --- column elimination tree of the block (postordered; BLOCK space, size n-n1) ---
     parent::Vector{Ti}             # length n-n1; 0 = root
+    # --- star matrix S's strict-upper pattern, in the FINAL postordered column space
+    # (M5a task 6 addition — not in the original design_qr.md §1.4 field list, added
+    # once the numeric loop's §4.1 step 2 turned out to need it: "for each j in
+    # pattern(S[:,k])" requires S's own pattern to seed the row-subtree ancestor climb,
+    # and nothing else in QRSymbolic determines it — rcount/rptr size R's ROW
+    # structure, an entirely different axis from "which prior columns does column k's
+    # apply step read from"). Same CSC-of-strict-upper-triangle shape `symmetrized_upper`
+    # already produces; column k's entries are exactly the seed set for T^k. ---
+    sptr::Vector{Ti}                # length n-n1+1
+    sind::Vector{Ti}                # length sptr[end]-1
     # --- factor structure (BLOCK space throughout) ---
     rcount::Vector{Ti}             # nnz of row k of R (= colcount of L(AᵀA)), length n-n1
     rptr::Vector{Ti}               # row-of-R pointers (CSC of Rᵀ), length n-n1+1
@@ -89,7 +99,13 @@ numeric phase never allocates (CLAUDE.md requirement 5; design_qr.md §4.5).
 struct QRWorkspace{T,Ti<:Integer}
     x::Vector{T}                   # length mb (physical/block row space, §3.4),
                                     #   zero-kept between columns (§4.1)
-    stamp::Vector{Ti}               # row-subtree stamp array, length max_rrow
+    stamp::Vector{Ti}               # row-subtree stamp array, indexed by BLOCK COLUMN
+                                    #   (ancestor-climb marker, §4.1 step 2 — task 6
+                                    #   correction: the design's §4.5 prose groups this
+                                    #   under "max_rrow" alongside tsub, but stamp[node]
+                                    #   is looked up by column index (1..n-n1), not by
+                                    #   position-within-T^k — sizing it max_rrow would
+                                    #   under-allocate whenever max_rrow < n-n1), length n-n1
     tsub::Vector{Ti}                # gathered/sorted T^k (row subtree), length max_rrow
     pack::Vector{T}                 # packed reflector staging buffer, length max_vcol (§4.4)
     rcursor::Vector{Ti}              # per-row append cursor into rcolind/rval, length n-n1
@@ -101,7 +117,7 @@ function QRWorkspace{T,Ti}(sym::QRSymbolic) where {T,Ti<:Integer}
     nb = length(sym.parent)        # block column count, n-n1
     QRWorkspace{T,Ti}(
         zeros(T, max(sym.mb, 1)),
-        Vector{Ti}(undef, max(sym.max_rrow, 1)),
+        zeros(Ti, nb),
         Vector{Ti}(undef, max(sym.max_rrow, 1)),
         Vector{T}(undef, max(sym.max_vcol, 1)),
         Vector{Ti}(undef, nb),

@@ -372,6 +372,14 @@ struct QRSymbolic{Ti<:Integer}
     riperm::Vector{Ti}             #   block's own staircase permutation, §3.4), length m
     # --- column elimination tree of the block (postordered; BLOCK space, size n-n1) ---
     parent::Vector{Ti}             # length n-n1; 0 = root
+    # --- star matrix S's strict-upper pattern, FINAL postordered column space (M5a
+    # task 6 addition, not in the field list above at v2 time — found missing once
+    # §4.1 step 2's implementation needed it: "for each j in pattern(S[:,k])" seeds the
+    # row-subtree ancestor climb, and nothing else here determines that set; rcount/
+    # rptr size R's ROW structure, a different axis entirely). Same
+    # strict-upper-triangle CSC shape `symmetrized_upper` produces. ---
+    sptr::Vector{Ti}                # length n-n1+1
+    sind::Vector{Ti}                # length sptr[end]-1
     # --- factor structure (BLOCK space throughout) ---
     rcount::Vector{Ti}             # nnz of row k of R (= colcount of L(AᵀA)), length n-n1
     rptr::Vector{Ti}               # row-of-R pointers (CSC of Rᵀ), length n-n1+1

@@ -9,7 +9,7 @@ import LinearAlgebra  # NOT `using` — our own `cholesky`/`cholesky!`/`ldlt`/`l
                        # exists (unwrapped, not just Symmetric-wrapped) and a bare `using`
                        # here would silently replace it the moment PureSparse loads.
 using SparseArrays
-using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
+using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!, nrm2
 using Preferences: Preferences
 
 include("tuning.jl")
@@ -23,6 +23,7 @@ include("symbolic/counts.jl")
 include("symbolic/supernodes.jl")
 include("symbolic/driver.jl")
 include("qr/symbolic.jl")
+include("qr/numeric.jl")
 include("numeric/llt.jl")
 include("numeric/ldlt.jl")
 include("numeric/solve.jl")
@@ -33,6 +34,7 @@ DROPIN_ACTIVE && include("dropin.jl")
 include("contracts.jl")
 
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, issuccess
+export symbolic_qr, qr, qr!
 export simplicial, updowndate!
 export solve!, solve_L!, solve_D!, solve_Lt!, refine!
 export AbstractOrdering, AMDOrdering, COLAMDOrdering, NaturalOrdering, GivenOrdering
