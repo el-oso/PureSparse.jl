@@ -3,6 +3,32 @@
 # algorithm (row-subtree traversal in place of the dense `for i=1:k-1` loop).
 
 """
+    _apply_reflector!(y, F, k)
+
+`y[pattern(V_k)] -= (F.beta[k] * (F.vval[V_k] ⋅ y[pattern(V_k)])) * F.vval[V_k]`, i.e.
+`y ← H_k·y` restricted to `pattern(V_k)` (`H_k = I` elsewhere since `V_k` is zero
+outside its pattern) — the sparse-indexed level-1 kernel shared by the numeric loop's
+own apply step (§4.1 step 3) and the solve phase's `apply_Q!`/`apply_Qt!` (§6.1),
+which is exactly the same operation applied in different column orders. Caller must
+check `F.beta[k] != 0` first (dead/trivial reflectors are a no-op, cheaper to skip
+entirely than to call this and multiply by zero).
+"""
+function _apply_reflector!(y::AbstractVector{T}, F::QRFactor{T,Ti}, k::Integer) where {T,Ti<:Integer}
+    sym = F.sym
+    vlo, vhi = sym.vptr[k], sym.vptr[k + 1] - 1
+    w = zero(T)
+    @inbounds for pp in vlo:vhi
+        w += F.vval[pp] * y[sym.vrowind[pp]]
+    end
+    w *= F.beta[k]
+    @inbounds for pp in vlo:vhi
+        r = sym.vrowind[pp]
+        y[r] -= w * F.vval[pp]
+    end
+    return y
+end
+
+"""
     qr(A::SparseMatrixCSC; ordering::AbstractOrdering) -> QRFactor
 
 One-shot sparse QR factorization: [`symbolic_qr`](@ref) + numeric factorization
@@ -82,18 +108,8 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}) where {T,Ti<:Integer}
         # --- Step 3: apply prior reflectors ---
         for t in 1:len
             i = tsub[t]
-            bi = F.beta[i]
-            bi == zero(T) && continue
-            vlo_i, vhi_i = sym.vptr[i], sym.vptr[i + 1] - 1
-            w = zero(T)
-            for pp in vlo_i:vhi_i
-                w += F.vval[pp] * x[sym.vrowind[pp]]
-            end
-            w *= bi
-            for pp in vlo_i:vhi_i
-                r = sym.vrowind[pp]
-                x[r] -= w * F.vval[pp]
-            end
+            F.beta[i] == zero(T) && continue
+            _apply_reflector!(x, F, i)
             piv = sym.pivotslot[i]
             c = rcursor[i]
             F.rcolind[c] = Ti(k)

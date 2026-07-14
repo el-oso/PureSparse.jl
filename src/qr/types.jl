@@ -106,7 +106,17 @@ struct QRWorkspace{T,Ti<:Integer}
                                     #   is looked up by column index (1..n-n1), not by
                                     #   position-within-T^k — sizing it max_rrow would
                                     #   under-allocate whenever max_rrow < n-n1), length n-n1
-    tsub::Vector{Ti}                # gathered/sorted T^k (row subtree), length max_rrow
+    tsub::Vector{Ti}                # gathered/sorted T^k (row subtree), length n-n1 — task
+                                    #   7 correction: `max_rrow = max(rcount)` bounds R's
+                                    #   ROW sizes (column sizes of the star matrix's implied
+                                    #   Cholesky factor), but `T^k = {i<k : R[i,k]≠0}` is a
+                                    #   COLUMN-of-R quantity (⟺ a ROW of that same Cholesky
+                                    #   factor) — a genuinely different, uncomputed bound;
+                                    #   confirmed by a real BoundsError under
+                                    #   `--check-bounds=yes` (`max_rrow` undersized `tsub`
+                                    #   on a case where |T^k| exceeded it). `|T^k| < k ≤ n-n1`
+                                    #   always holds trivially, so this is the simple correct
+                                    #   fix rather than deriving the tight row-count bound.
     pack::Vector{T}                 # packed reflector staging buffer, length max_vcol (§4.4)
     rcursor::Vector{Ti}              # per-row append cursor into rcolind/rval, length n-n1
     rhs::Vector{T}                   # solve scratch over the caller's original-shaped
@@ -118,7 +128,7 @@ function QRWorkspace{T,Ti}(sym::QRSymbolic) where {T,Ti<:Integer}
     QRWorkspace{T,Ti}(
         zeros(T, max(sym.mb, 1)),
         zeros(Ti, nb),
-        Vector{Ti}(undef, max(sym.max_rrow, 1)),
+        Vector{Ti}(undef, max(nb, 1)),
         Vector{T}(undef, max(sym.max_vcol, 1)),
         Vector{Ti}(undef, nb),
         Vector{T}(undef, sym.m),

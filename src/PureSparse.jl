@@ -24,6 +24,7 @@ include("symbolic/supernodes.jl")
 include("symbolic/driver.jl")
 include("qr/symbolic.jl")
 include("qr/numeric.jl")
+include("qr/solve.jl")
 include("numeric/llt.jl")
 include("numeric/ldlt.jl")
 include("numeric/solve.jl")
@@ -35,6 +36,7 @@ include("contracts.jl")
 
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, issuccess
 export symbolic_qr, qr, qr!
+export apply_Q!, apply_Qt!, solve_R!, solve_Rt!, solve_minnorm!
 export simplicial, updowndate!
 export solve!, solve_L!, solve_D!, solve_Lt!, refine!
 export AbstractOrdering, AMDOrdering, COLAMDOrdering, NaturalOrdering, GivenOrdering

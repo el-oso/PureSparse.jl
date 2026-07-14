@@ -891,9 +891,18 @@ exact **as performed work** when rank detection is off (the numeric loop always 
 over the full symbolic `S_i` pattern, §3.4 D6 — `vcount[i]` is an upper bound on true
 numeric support but an exact count of the flops actually spent, dead columns only
 *remove* applications; same upper-bound-on-*value*-fill, exact-on-*work* stance as SPQR
-paper §2.3). `max_rrow = max rcount` sizes the row-subtree gather buffer; `max_vcol =
-max vcount` sizes the packed reflector staging buffer (§4.5), sized to `vcount`'s
-allocation count (an upper bound on nonzeros, so never an under-allocation, §3.4 D6).
+paper §2.3). `max_vcol = max vcount` sizes the packed reflector staging buffer (§4.5),
+sized to `vcount`'s allocation count (an upper bound on nonzeros, so never an
+under-allocation, §3.4 D6). **Correction (M5a task 7):** `max_rrow = max(rcount)` does
+**not** size the row-subtree gather buffer, contrary to the claim in the rest of this
+section (and the original §4.5) — `rcount[k]` bounds R's ROW sizes (column sizes of the
+star matrix's implied Cholesky factor), while `T^k = {i<k : R[i,k]≠0}` (§4.1 step 2) is
+a COLUMN-of-R quantity — a genuinely different, uncomputed bound. Caught by a real
+`BoundsError` under `--check-bounds=yes` (`max_rrow` undersized the gather buffer on a
+case where `|T^k|` exceeded it). `max_rrow` remains a stored, meaningful diagnostic
+(`QRSymbolic.max_rrow`, still `max(rcount)`) but the implementation sizes the gather
+buffer at `n-n1` instead (`|T^k| < k ≤ n-n1` always, a simple correct bound — deriving
+the tight row-count quantity is deferred, not needed for correctness).
 
 ---
 
@@ -991,8 +1000,9 @@ correctly here, exactly as §4.1 step 3's updated comment now states.
 ### 4.5 `QRWorkspace{T,Ti}`
 
 Preallocated once per factor from `QRSymbolic` sizes: `x::Vector{T}` (length `mb`,
-physical/block row space — §1.4/§3.4 — zero-kept), `stamp::Vector{Ti}` +
-`tsub::Vector{Ti}` (row-subtree stamps and gathered/sorted T^k, `max_rrow`),
+physical/block row space — §1.4/§3.4 — zero-kept), `stamp::Vector{Ti}` (`n-n1`,
+task-6-corrected — see §3.5) + `tsub::Vector{Ti}` (row-subtree stamps and gathered/
+sorted T^k, `n-n1`, task-7-corrected — NOT `max_rrow`, see §3.5's correction note),
 `pack::Vector{T}` (`max_vcol`, §4.4), `rcursor::Vector{Ti}` (`n-n1`, per-row append
 cursors into `rcolind`/`rval`), `rhs::Vector{T}` (length `m`, full space — solve
 scratch operates on the caller's original-shaped RHS, §6).
