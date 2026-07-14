@@ -334,6 +334,25 @@ function order_columns(alg::COLAMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, 
             clen[j] = wpos - cstart[j]
         end
 
+        # ---- l_k = 0 discard branch ([P] Alg 2/3 pp. 361/365, verbatim timing:
+        # "K := {k}; if l_k = 0 then R_k := ∅; K := ∅" sits BETWEEN the set-difference
+        # pass above and the degree-summing pass below; l_k is eq. (2)'s value computed
+        # once at pivot-row formation and never modified afterward — design_qr.md §2.2
+        # pt 2, D9): a pivot row representing no non-pivotal rows is discarded entirely.
+        # Phase 2 never runs for it, {r} is never added to any C_j, and the surviving
+        # columns keep their previous scores verbatim (Algorithm 3's final loop is
+        # skipped when R_k := ∅); phase 1's prune and aggressive absorption stand, as
+        # they do in Algorithm 3. ----
+        if lr == 0
+            rowlive[r] = false
+            @inbounds for p in rstart[r]:(rstart[r] + rlen[r] - 1)
+                j = iw[p]
+                _amd_dl_insert!(dhead, dnext, dprev, score[j], j)
+                mindeg = min(mindeg, score[j])
+            end
+            continue
+        end
+
         # ---- phase 2 ([P] Alg 3 second pass; [T] §4.2.4): sum the differences into
         # d_j, prune rows absorbed later in phase 1, hash for super-column detection,
         # and further-mass-eliminate columns whose pattern collapsed onto the pivot's ----
@@ -356,7 +375,8 @@ function order_columns(alg::COLAMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, 
                 # further mass elimination ([T] §4.2.4 — column-level, distinct from
                 # phase 1's row-level aggressive absorption): C_j has no live row left,
                 # so j is indistinguishable from the pivot; order it now and shrink the
-                # pivot row's degree and represented-row count by its thickness
+                # pivot row's degree by its thickness (l_k is NOT touched — [P] eq. (2)
+                # computes it once at formation and Alg 3 never modifies it)
                 colstate[j] = _COLAMD_ORDERED
                 ncolslive -= 1
                 nactive_rem -= thick[j]
@@ -367,7 +387,6 @@ function order_columns(alg::COLAMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, 
                     v = svnext[v]
                 end
                 rdeg[r] -= thick[j]
-                nrep[r] = max(nrep[r] - thick[j], 0)
             else
                 iw[wpos_r] = j
                 wpos_r += 1
@@ -380,21 +399,12 @@ function order_columns(alg::COLAMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, 
         end
         rlen[r] = wpos_r - rstart[r]
 
-        # ---- l_k = 0 discard branch ([P] Alg 2/3 p. 361; design_qr.md §2.2 pt 2, D9):
-        # a pivot row representing no non-pivotal rows is discarded entirely — never
-        # added to any C_j, and the surviving columns keep their previous scores
-        # verbatim (Algorithm 3's final loop is skipped when R_k := ∅) ----
-        if nrep[r] == 0 || rlen[r] == 0
+        # Every column in R_r collapsed onto the pivot (further mass elimination took
+        # the s == 0 branch for all of them, so nothing was hashed and hbuckets is
+        # empty): the pivot row's pattern is empty and nothing can ever reference it —
+        # discard it, same reasoning as the rl == 0 discard at formation.
+        if rlen[r] == 0
             rowlive[r] = false
-            @inbounds for p in rstart[r]:(rstart[r] + rlen[r] - 1)
-                j = iw[p]
-                _amd_dl_insert!(dhead, dnext, dprev, score[j], j)
-                mindeg = min(mindeg, score[j])
-            end
-            for h in hbuckets
-                hhead[h] = 0
-            end
-            empty!(hbuckets)
             continue
         end
 

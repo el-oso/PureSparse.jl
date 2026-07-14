@@ -85,6 +85,18 @@ end
     @test sort(PureSparse.order_columns(alg, 1, 2, A.colptr, A.rowval)) == [1, 2]
     A = sparse([1, 1, 1, 2, 2], [1, 2, 3, 2, 3], ones(5), 2, 3)
     @test sort(PureSparse.order_columns(alg, 2, 3, A.colptr, A.rowval)) == [1, 2, 3]
+    # discard-timing regression witness ([P] Algorithm 3 p. 365: l_k is computed ONCE at
+    # pivot-row formation and the l_k = 0 check sits BETWEEN the set-difference pass and
+    # the degree-summing pass — never re-derived from later mass elimination). Rows (as
+    # column sets): r1 = {1,2}, r2 = {1,2,3}, r3 = {3,4,5,6}. Hand-traced: step-1 pivot
+    # is col 1 (score 3, ties broken by index) with l_k = 1 > 0; phase 2 further-mass-
+    # eliminates col 2, and col 3 survives with a live row. A non-paper variant that
+    # decrements l_k by the eliminated column's thickness and checks the discard after
+    # phase 2 fires it here (l_k 1 → 0), leaving col 3 with its stale score 5 and no
+    # pivot-row reference — producing [1, 2, 4, 3, 5, 6]. The paper-faithful timing
+    # keeps the pivot row, rescores col 3 to 3, and yields [1, 2, 3, 4, 5, 6].
+    A = sparse([1, 2, 1, 2, 2, 3, 3, 3, 3], [1, 1, 2, 2, 3, 3, 4, 5, 6], ones(9), 3, 6)
+    @test PureSparse.order_columns(alg, 3, 6, A.colptr, A.rowval) == [1, 2, 3, 4, 5, 6]
     # duplicated column blocks: exercises super-columns + mass elimination + l_k = 0
     B = random_rect(rng, 20, 5, 0.4)
     A = hcat(B, B, B)
@@ -97,11 +109,14 @@ end
 end
 
 @testitem "COLAMD fill is close to greedy minimum degree on tiny matrices" setup = [ATAOracle] begin
-    # Same 2x-slack-vs-greedy-mindeg discipline as amd_tests.jl's tiny-graph gate:
-    # column fill under the COLAMD permutation is elimination-game fill on
-    # pattern(AᵀA) (the star-matrix identity, design_qr.md §3.1/H1), scored with the
-    # same simulator as ata_tests.jl. Catches a badly-broken implementation, not
-    # tie-breaking differences.
+    # Tighter than amd_tests.jl's 2x-slack gate: measured on these exact seeds, natural
+    # and reverse order ALSO stay under 2x greedy, so 2x could not catch a degeneration
+    # to a trivial ordering. Column fill under the COLAMD permutation is
+    # elimination-game fill on pattern(AᵀA) (the star-matrix identity, design_qr.md
+    # §3.1/H1), scored with the same simulator as ata_tests.jl. Thresholds are
+    # measured-with-margin, not tuned-to-pass: tiny worst ratio 1.06 (gate 1.3);
+    # medium COLAMD 1.00-1.01x greedy vs natural 1.21-1.38x, so the ≤-natural
+    # assertion has a >20% margin and real teeth against a broken ordering.
     using Random
     rng = MersenneTwister(52)
     for _ in 1:120
@@ -111,16 +126,18 @@ end
         colptr2, rowval2 = PureSparse.ata_pattern(m, n, A.colptr, A.rowval)
         adj = adj_of_pattern(n, colptr2, rowval2)
         p = PureSparse.order_columns(COLAMDOrdering(), m, n, A.colptr, A.rowval)
-        @test elimination_fill_adj(n, adj, p) <= 2 * greedy_mindeg_fill(n, adj)
+        @test elimination_fill_adj(n, adj, p) <= 1.3 * greedy_mindeg_fill(n, adj)
     end
     # medium sizes, where super-columns, aggressive absorption and garbage collection
-    # are actually exercised
+    # are actually exercised — and where natural order measurably degrades, so COLAMD
+    # must beat it outright
     for (m, n, d) in ((60, 40, 0.1), (80, 60, 0.08), (50, 50, 0.15))
         A = random_rect(rng, m, n, d)
         colptr2, rowval2 = PureSparse.ata_pattern(m, n, A.colptr, A.rowval)
         adj = adj_of_pattern(n, colptr2, rowval2)
         p = PureSparse.order_columns(COLAMDOrdering(), m, n, A.colptr, A.rowval)
-        @test elimination_fill_adj(n, adj, p) <= 2 * greedy_mindeg_fill(n, adj)
+        @test elimination_fill_adj(n, adj, p) <= 1.3 * greedy_mindeg_fill(n, adj)
+        @test elimination_fill_adj(n, adj, p) <= elimination_fill_adj(n, adj, collect(1:n))
     end
 end
 
@@ -165,6 +182,13 @@ end
             p = vcat(peel, rest[p2])
             @test sort(p) == collect(1:n)
             @test nnzR_fixed(A, p) <= 1.15 * stdlib_spqr_nnzR(A)
+            # Un-peeled direct assertion: the peel leaves a squarish residual, so the
+            # comparison above never scores COLAMD on a genuinely wide input. Order the
+            # raw wide A and require it to beat natural order outright (measured
+            # margins 0.55-0.80x on these seeds) — a wide-specific ordering regression
+            # is caught here directly, not only by proxy through the peel.
+            praw = PureSparse.order_columns(COLAMDOrdering(), m, n, A.colptr, A.rowval)
+            @test nnzR_fixed(A, praw) <= nnzR_fixed(A, collect(1:n))
         end
     end
 end
