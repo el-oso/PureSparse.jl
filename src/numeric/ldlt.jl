@@ -103,6 +103,8 @@ pre-perturbation inertia (`n_pos`/`n_neg`/`n_zero`) and how much forcing occurre
 """
 function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
     sym = F.sym
+    check_refactor_shape(A, sym.n, sym.n, "ldlt!")
+    check_refactor_nnz(A, length(sym.amap), "ldlt!")
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr
@@ -352,5 +354,7 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
     stats.flops = sym.flops
     stats.rcond_est = dmax > zero(T) ? Float64(dmin / dmax) : Inf
     F.ok = true    # regularization guarantees completion (design §5.1)
+    check_finite(F.x, "ldlt!")
+    check_finite(F.d, "ldlt!")
     return F
 end

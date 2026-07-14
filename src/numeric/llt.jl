@@ -123,6 +123,8 @@ failing column in `F.stats` on a non-SPD pivot rather than throwing — callers 
 """
 function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
     sym = F.sym
+    check_refactor_shape(A, sym.n, sym.n, "cholesky!")
+    check_refactor_nnz(A, length(sym.amap), "cholesky!")
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr
@@ -358,5 +360,6 @@ function cholesky!(F::SupernodalFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti
 
     F.stats.nnzL = Int(sym.nnzL)
     F.stats.flops = sym.flops
+    check_finite(F.x, "cholesky!")
     return F
 end

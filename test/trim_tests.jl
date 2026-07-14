@@ -24,5 +24,14 @@
         PureSparse.ldlt(PureSparse.Symbolic{Int64}, SparseMatrixCSC{Float64, Int64}),
         PureSparse.ldlt!(PureSparse.LDLFactor{Float64, Int64}, SparseMatrixCSC{Float64, Int64}),
         PureSparse.solve!(Vector{Float64}, PureSparse.LDLFactor{Float64, Int64}, Vector{Float64}),
+        # QR (M5a task 10): in-place refactor (n1==0 only, §2.3) + least-squares solve.
+        # `symbolic_qr`/`qr` both take a MANDATORY `ordering` keyword (no default, §2.1
+        # — COLAMDOrdering() as the default lands in a later task) — TrimCheck's
+        # `@validate` only supports positional-argument-type roots (`validate_function`
+        # calls `Base.return_types(func, args)` with purely positional types), so those
+        # two can't be given as roots here; `qr!`/`solve!` cover the actual numeric hot
+        # path this gate exists for.
+        PureSparse.qr!(PureSparse.QRFactor{Float64, Int64}, SparseMatrixCSC{Float64, Int64}),
+        PureSparse.solve!(Vector{Float64}, PureSparse.QRFactor{Float64, Int64}, Vector{Float64}),
     )
 end

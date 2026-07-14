@@ -130,3 +130,44 @@ end
     @test xt[2] == 0.0
     @test xt[3] == 0.0
 end
+
+@testitem "solve!: genuinely zero-allocation, n1==0 (M5a task 10, CLAUDE.md req 5)" begin
+    using Random, SparseArrays
+    rng = MersenneTwister(404)
+    A = sprand(rng, 10, 6, 0.5)
+    F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)
+    b = randn(rng, 10)
+    x = zeros(6)
+    PureSparse.solve!(x, F, b)   # warm up
+    allocs = @allocated PureSparse.solve!(x, F, b)
+    @test allocs == 0
+end
+
+@testitem "solve!: genuinely zero-allocation, n1>0 (M5a task 10, CLAUDE.md req 5)" begin
+    using SparseArrays
+    # design_qr.md §2.3 shape: exactly one singleton (column 1), nb=2 remaining.
+    A = sparse([1.0 0.5 0.7; 0.0 0.9 0.3; 0.0 0.2 0.5])
+    F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)
+    @test F.sym.n1 == 1
+    b = [1.0, 2.0, 3.0]
+    x = zeros(3)
+    PureSparse.solve!(x, F, b)   # warm up
+    allocs = @allocated PureSparse.solve!(x, F, b)
+    @test allocs == 0
+end
+
+@testitem "solve_minnorm!: genuinely zero-allocation (M5a task 10, CLAUDE.md req 5)" begin
+    using Random, SparseArrays
+    rng = MersenneTwister(505)
+    A = sprand(rng, 4, 9, 0.4)
+    At = sparse(A')
+    F = PureSparse.qr(At; ordering = PureSparse.AMDOrdering(), tol = 0)
+    if F.stats.n_dead == 0   # skip the rare rank-deficient draw rather than flake
+        b = randn(rng, 4)
+        x = zeros(9)
+        PureSparse.solve_minnorm!(x, F, b)   # warm up
+        allocs = @allocated PureSparse.solve_minnorm!(x, F, b)
+        @test allocs == 0
+    end
+    @test true   # ensure the item always registers at least one assertion
+end

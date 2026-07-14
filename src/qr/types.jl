@@ -119,19 +119,32 @@ struct QRWorkspace{T,Ti<:Integer}
                                     #   fix rather than deriving the tight row-count bound.
     pack::Vector{T}                 # packed reflector staging buffer, length max_vcol (§4.4)
     rcursor::Vector{Ti}              # per-row append cursor into rcolind/rval, length n-n1
-    rhs::Vector{T}                   # solve scratch over the caller's original-shaped
-                                    #   RHS (full row space), length m
+    rblk::Vector{T}                  # length max(n-n1, 1) — solve!/solve_minnorm! scratch
+                                    #   over R's own row/column space (task 10 zero-alloc
+                                    #   fix): solve_R!/solve_Rt! both document their x/c
+                                    #   args may alias, so one buffer serves as both input
+                                    #   and output in place, replacing what were previously
+                                    #   two freshly-`Vector{T}(undef,...)`'d temporaries.
+    n1a::Vector{T}                   # length max(n1, 1) — singleton-block solve scratch
+                                    #   (x1 in solve!, c1 in solve_minnorm!)
+    n1b::Vector{T}                   # length max(n1, 1) — singleton-block solve scratch
+                                    #   (z1 in solve_minnorm!, alongside n1a as c1 — the
+                                    #   two are read/written concurrently there, so unlike
+                                    #   rblk this genuinely needs a second buffer)
 end
 
 function QRWorkspace{T,Ti}(sym::QRSymbolic) where {T,Ti<:Integer}
     nb = length(sym.parent)        # block column count, n-n1
+    n1 = sym.n1
     QRWorkspace{T,Ti}(
         zeros(T, max(sym.mb, 1)),
         zeros(Ti, nb),
         Vector{Ti}(undef, max(nb, 1)),
         Vector{T}(undef, max(sym.max_vcol, 1)),
         Vector{Ti}(undef, nb),
-        Vector{T}(undef, sym.m),
+        Vector{T}(undef, max(nb, 1)),
+        Vector{T}(undef, max(n1, 1)),
+        Vector{T}(undef, max(n1, 1)),
     )
 end
 

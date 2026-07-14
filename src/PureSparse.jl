@@ -13,6 +13,7 @@ using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!, nrm2
 using Preferences: Preferences
 
 include("tuning.jl")
+include("strict.jl")
 include("types.jl")
 include("qr/types.jl")
 include("ordering/interface.jl")

@@ -74,8 +74,35 @@ Singleton peeling defaulting to on caused a large ripple across tasks 6–8's
 pre-existing tests (many implicitly assumed `n1=0`); all traced and fixed one by one
 (either `singletons=false` where the test's intent was the core n1=0 pipeline, or an
 updated `rank+n_dead==n` invariant where the composed/default behavior was the actual
-intent). Full suite: 105/105 items, 213831/213831 assertions. Next: task 10
-(`qr!` zero-alloc/StrictMode/trim hardening).
+intent). Full suite: 105/105 items, 213831/213831 assertions.
+
+**2026-07-14 update: M5a task 10 CLOSED.** `qr!` refactor hardening (zero-alloc gate,
+StrictMode layer, trim smoke). Found the StrictMode runtime-checks layer CLAUDE.md req
+6 requires didn't exist anywhere in the codebase — not for QR, not for Cholesky/LDLᵀ
+either (`src/strict.jl` was never created despite `contracts.jl` naming it as the
+intended home). Built it project-wide rather than QR-only (user-directed scope
+decision): `src/strict.jl`, gated behind `StrictMode.checks_enabled()` (a compile-time-
+baked constant, default off, so every check folds away at zero runtime cost) —
+`check_refactor_shape`/`check_refactor_nnz` preconditions and `check_finite`
+postconditions, wired into `cholesky!`, `ldlt!`, and `qr!` alike. `solve!`/
+`solve_minnorm!`'s two remaining allocating temporaries (flagged "correctness-first;
+zero-alloc is task 10" since task 7/9) are now permanent `QRWorkspace` scratch fields
+(`rblk`/`n1a`/`n1b`), exploiting `solve_R!`/`solve_Rt!`'s documented input/output
+aliasing to need only one `nb`-length buffer instead of two. A real bug was caught by
+testing this: `_qr_compose_singletons` initially rebuilt a FRESH `QRWorkspace` for the
+composed factor (to size the new n1-scratch), which silently threw away
+`ws.rcursor`'s real populated state from A22's own factorization — replaced with
+uninitialized garbage, causing an out-of-bounds-read segfault in `solve_R!` on the
+very first n1>0 solve test; fixed by reusing `F22.ws`'s existing arrays and only
+freshly allocating the new scratch fields. Trim smoke extended (`test/trim_tests.jl`
+TrimCheck roots for `qr!`/`solve!` — `qr`/`symbolic_qr` can't be roots there, their
+`ordering` keyword has no default and TrimCheck only supports positional-type roots;
+`juliac/entry.jl` extended with a `qr`/`qr!`/`solve!` smoke pass on the same
+Laplacian) — the actual `juliac --trim` build was run end-to-end (not just TrimCheck's
+reachability analysis), 0 trim-verifier errors, executable runs and reports all five
+residuals near machine epsilon. Full suite: 113/113 items, 213851/213851 assertions.
+Next: task 11 (zoo extension + benchmark arms + gate measurement, incl. faer as a
+comparator per the user's standing request).
 
 **Status (2026-07-13): M1 CLOSED, M2 CLOSED, M4 CLOSED (every gate item in
 `docs/design.md` §10 met, see the `### M1`/`### M2` sections and the "M4 closeout"

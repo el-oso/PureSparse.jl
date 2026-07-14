@@ -127,15 +127,14 @@ function solve!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) w
         (phys > n1 && phys - n1 <= sym.mb) && (y[phys - n1] = b[p])
     end
     apply_Qt!(y, F)
-    c = Vector{T}(undef, nb)               # correctness-first; zero-alloc is task 10
+    c = F.ws.rblk                          # length nb, zero-alloc (task 10)
     @inbounds for k in 1:nb
         piv = sym.pivotslot[k]
         c[k] = piv == 0 ? zero(T) : y[piv]
     end
-    xb = Vector{T}(undef, nb)
-    solve_R!(xb, F, c)
+    solve_R!(c, F, c)                      # in place: solve_R!'s x/c args may alias
     @inbounds for k in 1:nb
-        x[sym.cperm[n1 + k]] = xb[k]
+        x[sym.cperm[n1 + k]] = c[k]
     end
 
     if n1 > 0
@@ -144,13 +143,13 @@ function solve!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) w
         # singleton columns and all of x2) are already resolved before it's used. R11/R12
         # need no Q transformation (Q=I there, §2.3/task 9 own derivation) — b1[k] is
         # simply b at the k-th singleton's ORIGINAL row, rperm[k].
-        x1 = Vector{T}(undef, n1)
+        x1 = F.ws.n1a                      # length n1, zero-alloc (task 10)
         @inbounds for k in n1:-1:1
             s = b[sym.rperm[k]]
             for p in (F.r1ptr[k] + 1):(F.r1ptr[k + 1] - 1)
                 jcol = F.r1colind[p]
                 v = F.r1val[p]
-                s -= v * (jcol <= n1 ? x1[jcol] : xb[jcol - n1])
+                s -= v * (jcol <= n1 ? x1[jcol] : c[jcol - n1])
             end
             x1[k] = s / F.r1val[F.r1ptr[k]]
         end
@@ -214,19 +213,19 @@ function solve_minnorm!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVect
     ))
     nb = length(sym.parent)
     n1 = sym.n1
-    c2 = Vector{T}(undef, nb)               # correctness-first; zero-alloc is task 10
+    c2 = F.ws.rblk                          # length nb, zero-alloc (task 10)
     @inbounds for k in 1:nb
         c2[k] = b[sym.cperm[n1 + k]]
     end
 
-    z1 = Vector{T}(undef, n1)
+    z1 = F.ws.n1b                           # length n1, zero-alloc (task 10)
     if n1 > 0
         # Rᵀz=Pᵀb, with R=[R11 R12; 0 Rblock] (§2.3/task 9): Rᵀ=[R11ᵀ 0; R12ᵀ Rblockᵀ]
         # is block lower-triangular, so z1 solves FIRST via R11ᵀz1=c1 (forward,
         # ascending — R11 is upper-triangular row-wise stored, so this is the SAME
         # forward-scatter idiom as solve_Rt!, generalized to also push R12's
         # contribution into c2 before the block's own solve_Rt! runs).
-        c1 = Vector{T}(undef, n1)
+        c1 = F.ws.n1a                       # length n1, zero-alloc (task 10)
         @inbounds for k in 1:n1
             c1[k] = b[sym.cperm[k]]
         end
@@ -246,13 +245,12 @@ function solve_minnorm!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVect
         end
     end
 
-    z2 = Vector{T}(undef, nb)
-    solve_Rt!(z2, F, c2)
+    solve_Rt!(c2, F, c2)                   # in place: solve_Rt!'s x/c args may alias
     y = F.ws.x
     fill!(y, zero(T))
     @inbounds for k in 1:nb
         piv = sym.pivotslot[k]
-        piv != 0 && (y[piv] = z2[k])
+        piv != 0 && (y[piv] = c2[k])
     end
     apply_Q!(y, F)
     @inbounds for p in 1:sym.m

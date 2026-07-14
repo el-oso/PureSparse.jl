@@ -79,6 +79,21 @@ function (@main)(argv::Vector{String})::Cint
     println(out, "ldlt      residual_inf = ", r3)
     ok &= issuccess(G) && r3 < tol
 
+    # QR (M5a task 10): the Laplacian is square/well-conditioned, so it's also a valid
+    # least-squares smoke input — `singletons=false` forces sym.n1==0 so the `qr!`
+    # refactor path below is reachable (§2.3: qr! rejects sym.n1>0 factors).
+    Fqr = qr(A; ordering = AMDOrdering(), tol = 0, singletons = false)
+    solve!(x, Fqr, b)
+    r4 = residual_inf(A, x, b)
+    println(out, "qr        residual_inf = ", r4)
+    ok &= issuccess(Fqr) && r4 < tol
+
+    qr!(Fqr, A; tol = 0)                      # analyze-once / refactorize path
+    solve!(x, Fqr, b)
+    r5 = residual_inf(A, x, b)
+    println(out, "qr!       residual_inf = ", r5)
+    ok &= issuccess(Fqr) && r5 < tol
+
     println(out, ok ? "PureSparse trim smoke: OK" : "PureSparse trim smoke: FAIL")
     return ok ? Cint(0) : Cint(1)
 end

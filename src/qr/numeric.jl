@@ -150,6 +150,7 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Rea
         "design_qr.md §2.3) — singletons are not exploited across a refactor; build a " *
         "fresh factor via qr(A2) instead of refactoring this one",
     ))
+    check_refactor_shape(A, sym.m, sym.n, "qr!")
     ws = F.ws
     nb = length(sym.parent)
     x = ws.x
@@ -268,5 +269,7 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Rea
     F.stats.n_dead = n_dead
     F.stats.dropped_norm = Float64(sqrt(dropped_sq))
     F.ok = true
+    check_finite(F.rval, "qr!")
+    check_finite(F.vval, "qr!")
     return F
 end

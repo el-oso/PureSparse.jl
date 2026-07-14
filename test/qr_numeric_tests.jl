@@ -240,3 +240,15 @@ end
     A2d = Matrix(A2)[:, F.sym.cperm]
     @test isapprox(R' * R, A2d' * A2d, atol = 1.0e-8)
 end
+
+@testitem "qr!: refactorize is genuinely zero-allocation (M5a task 10, CLAUDE.md req 5)" begin
+    using Random, SparseArrays
+    rng = MersenneTwister(303)
+    A = sprand(rng, 20, 12, 0.3)
+    F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)
+    A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .+ 1.0)
+    PureSparse.qr!(F, A2; tol = 0)   # warm up (any first-touch allocation happens here)
+    allocs = @allocated PureSparse.qr!(F, A2; tol = 0)
+    @test allocs == 0
+end
+

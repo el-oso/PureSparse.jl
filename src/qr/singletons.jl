@@ -203,8 +203,26 @@ function _qr_compose_singletons(
         F22.stats.dropped_norm,
     )
 
+    # F22.ws's rblk/n1a/n1b scratch (task 10, solve!/solve_minnorm! zero-alloc) is
+    # sized from F22's OWN symbolic, which by construction always has n1==0 (it never
+    # peeled anything itself) — the composed `sym` above is the first point n1 is
+    # actually known, so this is also the first point those two buffers can be
+    # correctly sized. F22.ws's OTHER fields must be reused, not rebuilt: `rcursor` in
+    # particular holds REAL populated state from A22's own numeric factorization (each
+    # row's actual live-entry end position) that solve_R!/solve_Rt! depend on —
+    # rebuilding a fresh QRWorkspace from `sym` would silently replace it with
+    # uninitialized garbage (confirmed: caused a real segfault via an out-of-bounds
+    # `ws.rcursor[k]`-driven loop bound in solve_R!, caught by testing this task's
+    # zero-alloc changes before committing).
+    ws = QRWorkspace{T,Ti}(
+        F22.ws.x, F22.ws.stamp, F22.ws.tsub, F22.ws.pack, F22.ws.rcursor,
+        Vector{T}(undef, max(nb, 1)),
+        Vector{T}(undef, max(n1, 1)),
+        Vector{T}(undef, max(n1, 1)),
+    )
+
     return QRFactor{T,Ti}(
         sym, F22.rcolind, F22.rval, F22.vval, F22.beta,
-        r1ptr, r1colind, r1val, F22.ws, stats, F22.ok,
+        r1ptr, r1colind, r1val, ws, stats, F22.ok,
     )
 end
