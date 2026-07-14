@@ -137,12 +137,35 @@ loss triggers M5b"), **M5b (multifrontal, §7) is now mandatory scope**, not opt
 Full report with per-matrix data: `benchmark/results/qr_gate_{galen,wintermute}.json`
 (raw), reproducible via `julia --project=benchmark benchmark/qr_gate.jl`.
 
-**Deferred, not dropped:** design §9.3's config-5 `faer` context arm (not part of the
-pass/fail gate). faer 0.24's sparse QR API (`faer::sparse::linalg::solvers::{Qr,
-SymbolicQr}`) is genuinely different from BlazingPorts.jl's existing DENSE `faer_qr`
-FFI shim (`rust_compare/rust/src/lib.rs`) — needs a new sparse-CSC-array FFI boundary,
-real follow-up work rather than something to rush into this pass. Tracked as an M5a
-task-11 follow-up, not silently dropped.
+**2026-07-14 follow-up: faer context arm (config 5) built and measured.** Added
+`faer_sparse_qr` to BlazingPorts.jl's existing `rust_compare` cdylib shim
+(`faer::sparse::linalg::solvers::Qr::sp_qr()`, MIT-licensed — read directly from the
+crate's local `~/.cargo/registry/src` checkout rather than guessed from docs, which
+turned out incomplete/version-drifted). Compiled clean on the first real attempt once
+the actual source was read. One real bug found: faer's sparse QR hard-asserts
+`nrows >= ncols` (`factorize_symbolic_qr`, confirmed in source) — it has no
+underdetermined-system support at all, and a Rust panic crossing the `extern "C"`
+boundary **aborts the whole Julia process**, not just the call (hit this directly on
+the first real gate run, `lp_slack_n300x60`, m=300<n=360 — SIGABRT). Fixed with both a
+Julia-side dimension guard before ever calling in, and a `catch_unwind` in the Rust
+shim as defense in depth. Re-ran the full gate on both galen and wintermute.
+
+**Result: faer wins exactly where its architecture predicts, and only there.**
+Stratum (iii) flop-rich: faer beats SuiteSparseQR by ~20% on average (multifrontal
+BLAS-3 fronts, its intended sweet spot). Stratum (ii): roughly at parity with SPQR on
+the grid matrices, but 25–85× SLOWER than SPQR on the narrow-banded matrix (its
+internal supernodal-vs-simplicial threshold heuristic evidently mis-picks for that
+shape — a faer characteristic, not a PureSparse concern). Stratum (i): faer pays its
+full COLAMD+symbolic overhead unconditionally on the trivial all-singleton case (no
+equivalent to §2.3's zero-cost peeling), so PureSparse beats it there by 25–30×.
+PureSparse loses to faer on strata (ii)/(iii) by roughly the same margin it loses to
+SPQR — consistent with the earlier finding that the gap is architectural (unblocked
+scalar loop vs. blocked multifrontal fronts), not a Julia-codegen deficiency: faer
+itself only wins over SPQR where its OWN blocking helps, and PureSparse's own Cholesky
+(already using PureBLAS's blocked kernels) already beats CHOLMOD+OpenBLAS on the M1
+gate — the pattern holds, QR just hasn't reached the blocked-kernel phase (M5b) yet.
+Full data: `benchmark/results/qr_gate_{galen,wintermute}.json` (`faer_cold` field);
+shim: BlazingPorts.jl commit adding `faer_sparse_qr` to `rust_compare/rust/src/lib.rs`.
 
 Next: M5b task list (design_qr.md §10 M5b, conditional list now activated) — P1/P2
 PureBLAS block-reflector kernels (`larfb`-role `C:=Q·C` extension + the new `C:=Qᵀ·C`

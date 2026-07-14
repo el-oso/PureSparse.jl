@@ -7,6 +7,15 @@
 #   1. PureSparse QR (COLAMDOrdering, the §2.1 stated default)      [primary — the gate]
 #   2. SuiteSparseQR via SparseArrays.qr (stock)                    [baseline — the gate]
 #   3. PureSparse cholesky(AᵀA) normal equations                    [context arm, §1.2]
+#   5. faer's sparse QR (Rust, MIT-licensed, via a ccall shim)       [context arm, §9.3 config 5]
+#
+# faer arm: BlazingPorts.jl's existing bench/rust_compare cdylib shim (dense faer_qr etc.)
+# extended with a genuinely new `faer_sparse_qr` entry point (faer::sparse::linalg::
+# solvers::{SymbolicQr,Qr} — a different API from the dense one) rather than new FFI
+# plumbing from scratch, per design_qr.md's own direction. Reported alongside, NOT part
+# of the pass/fail gate (design's own D2 reasoning: faer's ordering/threshold choices
+# differ, so a head-to-head gate would conflate ordering quality with kernel throughput).
+# Skipped gracefully (not a hard error) if the shared library isn't built on this host.
 #
 # Both own-ordering and same-permutation arms are measured (design.md D2 discipline,
 # design_qr.md §9.2/§9.3) — SPQR has no direct "give me this exact permutation" kwarg from
@@ -49,6 +58,23 @@ _median_time(b) = median(_times(b))
 @noinline _spqr_cold(A; ordering = SparseArrays.SPQR.ORDERING_DEFAULT) = SparseArrays.qr(A; ordering)
 @noinline _spqr_solve(F, b) = F \ b
 @noinline _ata_cholesky_cold(A) = PureSparse.cholesky(sparse(A' * A); ordering = PureSparse.AMDOrdering())
+
+const FAER_LIB = joinpath(homedir(), "Documents", "claude", "BlazingPorts.jl", "bench",
+    "rust_compare", "rust", "target", "release", "libblazing_compare.so")
+const FAER_AVAILABLE = isfile(FAER_LIB)
+FAER_AVAILABLE || @warn "faer shared library not found at $FAER_LIB — faer context arm skipped on this host" *
+    " (build via: cd \$(BlazingPorts.jl)/bench/rust_compare/rust && cargo build --release --lib)"
+
+# faer::sparse's Qr::sp_qr() (design_qr.md §9.3 config 5, via BlazingPorts.jl's rust_compare
+# shim). Julia's SparseMatrixCSC is 1-indexed; faer's raw-CSC constructor wants 0-indexed.
+@noinline function _faer_sparse_qr_cold(A::SparseMatrixCSC)
+    m, n = size(A)
+    colptr0 = Csize_t.(A.colptr .- 1)
+    rowval0 = Csize_t.(A.rowval .- 1)
+    return ccall((:faer_sparse_qr, FAER_LIB), Float64,
+        (Csize_t, Csize_t, Csize_t, Ptr{Csize_t}, Ptr{Csize_t}, Ptr{Float64}),
+        m, n, nnz(A), colptr0, rowval0, A.nzval)
+end
 
 # One (label, A, stratum) gate matrix, one arm ("own" or "same-perm"): cold PureSparse
 # QR, cold SuiteSparseQR, warm PureSparse qr! (n1==0 forced), the AᵀA context arm.
@@ -127,6 +153,26 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
         result["ps_ata_cholesky_error"] = sprint(showerror, e)
     end
 
+    # --- config 5: faer sparse QR context arm (§9.3), skipped gracefully if unbuilt ---
+    # faer's factorize_symbolic_qr hard-asserts nrows >= ncols (confirmed by reading
+    # faer 0.24.1's own source, src/sparse/linalg/qr.rs) — it does not support
+    # underdetermined systems at all, unlike PureSparse/SuiteSparseQR. Skip rather than
+    # call: a Rust panic crossing the extern "C" boundary aborts the WHOLE Julia process,
+    # not just this call (confirmed the hard way — an unguarded call on lp_slack_n300x60,
+    # m=300 < n=360, SIGABRTed the first real gate run before this guard was added).
+    if FAER_AVAILABLE && m >= n
+        try
+            b_faer = @be _faer_sparse_qr_cold($A) seconds = SECONDS samples = SAMPLES evals = 1
+            result["faer_cold"] = _median_time(b_faer)
+        catch e
+            result["faer_cold"] = nothing
+            result["faer_error"] = sprint(showerror, e)
+        end
+    else
+        result["faer_cold"] = nothing
+        FAER_AVAILABLE && (result["faer_note"] = "skipped: faer sparse QR requires nrows >= ncols")
+    end
+
     return result
 end
 
@@ -159,7 +205,7 @@ function print_verdict(payload)
     results = payload["results"]
     println("\n=== M5 sparse QR wall-time gate (design_qr.md §9.3) — cold, median seconds ===")
     println(rpad("matrix", 26), rpad("stratum", 14), rpad("arm", 10), rpad("PS qr()", 12),
-        rpad("SPQR", 12), "gate(1<2)")
+        rpad("SPQR", 12), rpad("faer", 12), "gate(1<2)")
     npass = 0; ntotal = 0
     by_stratum = Dict{String,Tuple{Int,Int}}()
     for r in results
@@ -169,10 +215,13 @@ function print_verdict(payload)
         s = r["stratum"]
         (np, nt) = get(by_stratum, s, (0, 0))
         by_stratum[s] = (np + (pass ? 1 : 0), nt + 1)
+        faer_str = isnothing(get(r, "faer_cold", nothing)) ? "n/a" :
+            string(round(r["faer_cold"] * 1000; digits = 3)) * "ms"
         println(
             rpad(r["matrix"], 26), rpad(r["stratum"], 14), rpad(r["arm"], 10),
             rpad(string(round(r["ps_cold"] * 1000; digits = 3)) * "ms", 12),
             rpad(string(round(r["spqr_cold"] * 1000; digits = 3)) * "ms", 12),
+            rpad(faer_str, 12),
             pass ? "PASS" : "fail",
         )
     end
