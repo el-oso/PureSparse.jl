@@ -34,8 +34,28 @@ in review); star-matrix AᵀA-free symbolic reusing the existing etree/counts pi
 Heath-test rank detection with Foster–Davis-style dead-column dropping; PureBLAS check
 result — M5a needs no new PureBLAS kernels, M5b requires a larfb-role apply kernel
 (both `Q·C` and `Qᵀ·C` directions, D8) + generic `geqrf!` (M5b tasks P1/P2).
-Implementation task list: `docs/design_qr.md` §10 (13-task M5a list, task 1 starting
-now).
+Implementation task list: `docs/design_qr.md` §10 (13-task M5a list).
+
+**2026-07-14 update: M5a tasks 1–8 CLOSED.** Types/tunables/contracts (1);
+`ata_pattern`+AMD-on-AᵀA ordering (2); COLAMD from the DGLN 2004 paper + Larimore
+thesis ch. 3–4, independently adversarially reviewed (0 BLOCKER/1 DEFECT/6 NIT,
+`docs/colamd_review.md`) and corrected (the `l_k=0` discard now matches paper
+Algorithm 2/3's verbatim timing) (3); star pattern builder + H1 verified 3000/3000
+trials, real dedup bug found and fixed (row-outer-loop marker-array hazard, distinct
+from `ata_pattern`'s safety) (4); V/R row structure + H2 verified, a genuine ambiguity
+in the design's own wording found and fixed (a row can legitimately terminate at a
+live root without retiring as its pivot, not just "retires or hits a dead root") (5);
+numeric left-looking loop + Householder kernel, two design gaps found (`QRSymbolic`
+was missing the star pattern's own storage needed for row-subtree seeding; `max_rrow`
+does not bound the row-subtree buffer, `n-n1` does) (6); solve phase
+(`apply_Q!`/`apply_Qt!`/`solve_R!`/`solve_Rt!`/`solve!`/`\`/`solve_minnorm!`), one
+real memory-corruption bug (an `@inbounds` overflow from the task-6 `max_rrow` gap)
+and one real indexing bug (`pivotslot[k]` vs. physical row `k` conflated at the
+solve-phase boundary) found via testing and fixed (7); rank-deficiency policy (Heath's
+threshold test + Foster–Davis dead-column drop), rank detection ON by default since
+task 7's own testing found an unguarded near-singular pivot blows `beta` up to ~1e33
+(8). Full suite: 94/94 items, 206115/206115 assertions. Next: task 9 (column-singleton
+pre-elimination, §2.3).
 
 **Status (2026-07-13): M1 CLOSED, M2 CLOSED, M4 CLOSED (every gate item in
 `docs/design.md` §10 met, see the `### M1`/`### M2` sections and the "M4 closeout"
