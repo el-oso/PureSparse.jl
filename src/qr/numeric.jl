@@ -29,14 +29,39 @@ function _apply_reflector!(y::AbstractVector{T}, F::QRFactor{T,Ti}, k::Integer) 
 end
 
 """
-    qr(A::SparseMatrixCSC; ordering::AbstractOrdering) -> QRFactor
+    _qr_threshold(A, tol) -> τ
+
+Rank-detection threshold (design_qr.md §5.1/§5.3): `τ = qr_tol_mult · max(m,n) ·
+eps(T) · max_j ‖A[:,j]‖₂` when `tol === nothing` (rank detection ON by default — the
+safe choice, since an unguarded near-singular pivot produces a `beta` that blows up
+toward `Inf`, not just a numerically-suspect answer, design_qr.md §4.4/§5.1). An
+explicit `tol` is used directly; `tol ≤ 0` disables rank detection entirely (§5.3) —
+only the B3 exact-zero guard (design_qr.md §4.4, unconditional) still applies.
+"""
+function _qr_threshold(A::SparseMatrixCSC{T}, tol) where {T<:Real}
+    isnothing(tol) || return T(tol)
+    m, n = size(A)
+    maxcolnorm = zero(T)
+    @inbounds for j in 1:n
+        s = zero(T)
+        for p in A.colptr[j]:(A.colptr[j + 1] - 1)
+            s += A.nzval[p] * A.nzval[p]
+        end
+        maxcolnorm = max(maxcolnorm, sqrt(s))
+    end
+    return T(QR_TOL_MULT) * T(max(m, n)) * eps(T) * maxcolnorm
+end
+
+"""
+    qr(A::SparseMatrixCSC; ordering::AbstractOrdering, tol=nothing) -> QRFactor
 
 One-shot sparse QR factorization: [`symbolic_qr`](@ref) + numeric factorization
 (design_qr.md §4.3). No default `ordering` yet (§2.1's stated default,
 `COLAMDOrdering()`, lands in a later task) — pass one explicitly, e.g.
-`AMDOrdering()`.
+`AMDOrdering()`. `tol` is the rank-detection threshold (§5.1/§5.3); see
+[`_qr_threshold`](@ref) for its default and the `tol ≤ 0` disable convention.
 """
-function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering) where {T,Ti<:Integer}
+function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
     sym = symbolic_qr(A; ordering)
     rcolind = Vector{Ti}(undef, sym.nnzR)
     rval = zeros(T, sym.nnzR)              # zero-initialized: dead-row slots (D9) stay
@@ -45,15 +70,16 @@ function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering) where {T,Ti<:I
     beta = zeros(T, length(sym.parent))
     ws = QRWorkspace{T,Ti}(sym)
     F = QRFactor{T,Ti}(sym, rcolind, rval, vval, beta, ws, QRStats(), true)
-    qr!(F, A)
+    qr!(F, A; tol)
     return F
 end
 
 """
-    qr!(F::QRFactor, A::SparseMatrixCSC) -> QRFactor
+    qr!(F::QRFactor, A::SparseMatrixCSC; tol=nothing) -> QRFactor
 
 Refactorize in place: `A` must share `F.sym`'s sparsity pattern (design_qr.md §4.3).
-Implements the survey §7.3 left-looking loop exactly (design_qr.md §4.1):
+Implements the survey §7.3 left-looking loop exactly (design_qr.md §4.1), with the
+Foster–Davis-style dead-column drop (§5.2) folded into steps 3/4:
 
 1. **Scatter** column `k` of `A` (rows permuted via `riperm`) into the dense work
    vector `x`.
@@ -62,12 +88,20 @@ Implements the survey §7.3 left-looking loop exactly (design_qr.md §4.1):
    node twice within the same column's climb; emit `T^k` in ascending order (prior
    reflectors do not commute).
 3. **Apply** each `i ∈ T^k` (skipping `beta[i] == 0`, dead or numerically trivial —
-   §4.4's B3 fix makes this one check cover both), then harvest `R[i,k] = x[pivotslot[i]]`
-   into row `i`'s cursor and zero that slot.
-4. **Form reflector `k`** (§4.4) from `x` on `pattern(V_k)`, including the B3
-   zero-norm guard, then zero `x` on that pattern.
+   §4.4's B3 fix makes this one check cover both). For a NUMERICALLY dead `i`
+   (`pivotslot[i] != 0` but `beta[i] == 0`), `x[pivotslot[i]]` is dropped mass, not a
+   real `R[i,k]` entry (§5.2: row `i` no longer really exists as a pivot, so whatever
+   the current column would have written against it is thrown away) — accumulated
+   into the running dropped-norm sum of squares and zeroed. A STRUCTURALLY dead `i`
+   (`pivotslot[i] == 0`, `vcount[i]==0`) has nothing to harvest or drop at all.
+   Otherwise harvest `R[i,k] = x[pivotslot[i]]` normally.
+4. **Form reflector `k`** (§4.4) from `x` on `pattern(V_k)`. `xnorm ≤ τ` (§5.1 Heath's
+   threshold test, `τ` from [`_qr_threshold`](@ref)) triggers the SAME dead-column
+   handling as the B3 exact-zero guard — the detection-time tail `xnorm` itself is
+   also dropped mass (§5.2, N2: bounded by `τ`; the LATER per-column discards in step
+   3 above are not themselves τ-bounded and are the bulk of `dropped_norm`).
 """
-function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}) where {T,Ti<:Integer}
+function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
     sym = F.sym
     ws = F.ws
     nb = length(sym.parent)
@@ -76,12 +110,15 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}) where {T,Ti<:Integer}
     tsub = ws.tsub
     pack = ws.pack
     rcursor = ws.rcursor
+    tau = _qr_threshold(A, tol)
 
     fill!(stamp, zero(Ti))
     @inbounds for k in 1:nb
         rcursor[k] = sym.rptr[k]
     end
     fill!(F.beta, zero(T))
+    n_dead = 0
+    dropped_sq = zero(T)
 
     @inbounds for k in 1:nb
         # --- Step 1: scatter ---
@@ -108,7 +145,15 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}) where {T,Ti<:Integer}
         # --- Step 3: apply prior reflectors ---
         for t in 1:len
             i = tsub[t]
-            F.beta[i] == zero(T) && continue
+            if F.beta[i] == zero(T)
+                piv = sym.pivotslot[i]
+                if piv != 0                        # numerically (not structurally) dead:
+                    v = x[piv]                      # this k's contribution to dead row i
+                    dropped_sq += v * v             # is dropped mass, §5.2
+                    x[piv] = zero(T)
+                end
+                continue
+            end
             _apply_reflector!(x, F, i)
             piv = sym.pivotslot[i]
             c = rcursor[i]
@@ -134,13 +179,15 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}) where {T,Ti<:Integer}
                 pack[t] = x[sym.vrowind[vlo + t - 1]]
             end
             xnorm = T(nrm2(view(pack, 1:vlen)))
-            if xnorm == zero(T)
-                # B3 fix: numerically-zero live pattern, unconditional on rank-detection
-                # settings (design_qr.md §4.4) — distinct from the vlen==0 structural
-                # case above (here the PATTERN is live, only the VALUES are zero).
+            if xnorm == zero(T) || (tau > zero(T) && xnorm <= tau)
+                # B3 fix (exact zero, unconditional) / §5.1 Heath threshold test
+                # (xnorm <= τ, only when rank detection is on): numerically dead,
+                # live pattern. Distinct from the vlen==0 structural case above.
                 F.rcolind[c] = Ti(k)
                 F.rval[c] = zero(T)
                 rcursor[k] = c + one(Ti)
+                dropped_sq += xnorm * xnorm          # detection-time tail, §5.2 N2
+                n_dead += 1
                 for t in 1:vlen
                     x[sym.vrowind[vlo + t - 1]] = zero(T)
                 end
@@ -170,9 +217,9 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}) where {T,Ti<:Integer}
     F.stats.nnzR = sym.nnzR
     F.stats.nnzV = sym.nnzV
     F.stats.flops = sym.flops
-    F.stats.rank = nb                      # no rank-deficiency handling yet (M5a task 8)
-    F.stats.n_dead = 0
-    F.stats.dropped_norm = 0.0
+    F.stats.rank = nb - n_dead
+    F.stats.n_dead = n_dead
+    F.stats.dropped_norm = Float64(sqrt(dropped_sq))
     F.ok = true
     return F
 end

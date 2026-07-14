@@ -76,7 +76,11 @@ end
         m = rand(rng, 1:14)
         n = rand(rng, 1:min(m, 12))
         A = random_rect_qr2(rng, m, n, rand(rng, (0.1, 0.2, 0.4, 0.6)))
-        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering())
+        # tol=0 disables M5a task 8's rank detection (§5.3): this test checks the raw
+        # numeric loop's fundamental identity, which only holds exactly when no column
+        # is dropped as rank-deficient (dropping loses information by construction,
+        # §5.2) — rank detection's own effect on RᵀR gets its own dedicated test.
+        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)
         G = gram_R(F)
         # R's columns are in FINAL PERMUTED order (design_qr.md §1.4 cperm) — row
         # permutation doesn't matter for AᵀA (cancels: (PA)ᵀ(PA) = AᵀA for any
@@ -94,7 +98,7 @@ end
         m = rand(rng, 1:14)
         n = rand(rng, 1:min(m, 12))
         A = random_rect_qr2(rng, m, n, rand(rng, (0.15, 0.3, 0.5, 0.7)))
-        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering())
+        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)  # raw identity, not rank detection
         res = reconstruct_A_from_QR(F, A)
         ismissing(res) && continue
         X, Aperm = res
@@ -112,8 +116,11 @@ end
         n = rand(rng, 1:min(m, 8))
         A = sprand(rng, m, n, 0.4)
         Abig = SparseMatrixCSC{BigFloat,Int}(A)
-        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering())
-        Fbig = PureSparse.qr(Abig; ordering = PureSparse.AMDOrdering())
+        # tol=0 in both runs: the default τ scales with eps(T), which differs
+        # astronomically between Float64 and BigFloat -- comparing the FULL
+        # (undropped) R in both is the fair, apples-to-apples precision check.
+        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)
+        Fbig = PureSparse.qr(Abig; ordering = PureSparse.AMDOrdering(), tol = 0)
         n2 = F.sym.n - F.sym.n1
         Rd = zeros(n2, n2)
         Rb = zeros(BigFloat, n2, n2)
@@ -200,9 +207,9 @@ end
     using Random, SparseArrays
     rng = MersenneTwister(202)
     A = sprand(rng, 8, 5, 0.4)
-    F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering())
+    F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)
     A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .+ 1.0)
-    PureSparse.qr!(F, A2)
+    PureSparse.qr!(F, A2; tol = 0)
     n = F.sym.n
     R = zeros(n, n)
     for k in 1:n, c in F.sym.rptr[k]:(F.ws.rcursor[k] - 1)
