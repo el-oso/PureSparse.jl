@@ -854,13 +854,24 @@ design's own.
 - **Consistency property** (tested, §9.1): for every k, applying the recurrence's set
   algebra must reproduce George–Liu–Ng 1988's row-path characterization — for every
   row r, {k : r ∈ S_k} is a contiguous ascending path in the column etree starting at
-  leftcol(r) and ending where r retires as a pivot (or at a root, structurally
-  unretired if that root is itself dead — impossible by the same pigeonhole argument
-  above, since the *last* column of any set containing r is always live enough to
-  retire it: a chain of dead columns cannot receive rows without eventually being
-  live, by the vcount recurrence). A cheap exact cross-check on every zoo matrix
-  (Fable: 1,500/1,500 trials, 0 failures), and the property the numeric loop's
-  correctness leans on.
+  leftcol(r). **Clarified during implementation (M5a task 5) — the path's terminal
+  state has TWO legitimate forms, not one:** (a) r retires as pivot at some column
+  (`pivotslot[k] == r`'s physical number), which can happen at an internal node or a
+  root; or (b) r reaches a ROOT column without being *that* root's pivot — a genuinely
+  common case whenever `mb` (live physical rows) exceeds the number of live columns
+  (the m > n overdetermined case: only one row per column can ever retire as its
+  pivot, so any row that loses that single slot to a rival with a smaller physical
+  number simply has nowhere left to go once it reaches a root, and stops there as a
+  non-pivot member of that root's `S_k`). What the pigeonhole argument actually rules
+  out is narrower than an earlier draft of this bullet stated: a path can never
+  terminate at a **dead** root (`vcount[k] == 0`) — a dead root's own `S_k` is empty,
+  so nothing (pivot or otherwise) is ever a member of it, live or dead rows reaching
+  it included; termination at a *live* root without retiring as its pivot is fine and
+  expected. Re-verified end to end (star pattern → postordered etree → `vcount`/
+  `pivotslot`/`vrowind`, both terminal forms and the dead-root exclusion), 3,000/3,000
+  random trials, 0 failures — supersedes the earlier "1,500/1,500" report, which
+  didn't test this terminal-state distinction explicitly. The property the numeric
+  loop's correctness leans on.
 
 ### 3.5 Flops and workspace bounds
 

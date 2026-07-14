@@ -3,6 +3,33 @@
 # (design_qr.md §1.5's module-layout note).
 
 """
+    row_leftcol(m, n, colptr, rowval, ciperm) -> (rowptr, rowidx, leftcol)
+
+The row-form of `A` (`rowptr`/`rowidx` = `csc_transpose`'s output, reused by
+[`star_pattern`](@ref) so the row-form is only built once) plus, for every row `r`,
+`leftcol[r]` = the PERMUTED column of `r`'s leftmost (permuted) nonzero, or `0` if row
+`r` is entirely null. This is the same quantity both [`star_pattern`](@ref) (§3.2,
+where it is called the star-center) and the V/R row-structure builder (§3.4, where it
+is called `leftcol(r)`) need — computed once here to avoid duplicating (and risking
+divergent copies of) the min-finding loop.
+"""
+function row_leftcol(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, ciperm::Vector{Ti}) where {Ti<:Integer}
+    rowptr, rowidx = csc_transpose(m, n, colptr, rowval)
+    leftcol = zeros(Ti, m)
+    @inbounds for i in 1:m
+        lo, hi = rowptr[i], rowptr[i + 1] - 1
+        lo > hi && continue                      # null row: no leftmost column
+        kmin = typemax(Ti)
+        for p in lo:hi
+            j = ciperm[rowidx[p]]
+            j < kmin && (kmin = j)
+        end
+        leftcol[i] = kmin
+    end
+    return rowptr, rowidx, leftcol
+end
+
+"""
     star_pattern(m, n, colptr, rowval, ciperm) -> (colptr2, rowval2)
 
 Build the star matrix `S` (Gilbert–Li–Ng–Peyton 2001, via the survey's §7.1
@@ -25,31 +52,26 @@ elimination tree of `A` and `column_counts(S)` = `rcount` (row sizes of `R`) —
 without ever forming `AᵀA`.
 """
 function star_pattern(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, ciperm::Vector{Ti}) where {Ti<:Integer}
-    rowptr, rowidx = csc_transpose(m, n, colptr, rowval)  # row-form: rowptr[i]:rowptr[i+1]-1 = row i's original columns, sorted
+    rowptr, rowidx, leftcol = row_leftcol(m, n, colptr, rowval, ciperm)
 
-    # Bucket rows by their star-center kmin via a head/next intrusive linked list (the
-    # same idiom `Workspace.head`/`next` uses for descendant lists, design.md §4.3) —
-    # REQUIRED, not a style choice: a single marker array tagged by `kmin` is only a
-    # valid dedup check while all rows sharing that `kmin` are processed contiguously.
-    # Rows are naturally encountered in ROW order (1:m), and unrelated rows sharing a
-    # DIFFERENT kmin can touch the same target column in between — that would silently
-    # overwrite `mark[j]`'s tag before an earlier kmin group's own dedup check runs
-    # again, producing duplicate entries. Grouping by kmin first (this bucketing pass)
-    # and then processing star-column k's entire row bucket before moving to k+1 is what
-    # keeps the "one shared marker array, no re-zeroing" idiom (`ata_pattern`'s own
-    # style) sound here — `ata_pattern` avoids the hazard for a different reason (its
-    # outer loop already IS the target column), which does not carry over to a
-    # row-outer-loop construction.
+    # Bucket rows by their star-center (= leftcol[i]) via a head/next intrusive linked
+    # list (the same idiom `Workspace.head`/`next` uses for descendant lists, design.md
+    # §4.3) — REQUIRED, not a style choice: a single marker array tagged by the star
+    # center is only a valid dedup check while all rows sharing that center are
+    # processed contiguously. Rows are naturally encountered in ROW order (1:m), and
+    # unrelated rows sharing a DIFFERENT center can touch the same target column in
+    # between — that would silently overwrite `mark[j]`'s tag before an earlier
+    # center's own dedup check runs again, producing duplicate entries. Grouping by
+    # center first (this bucketing pass) and then processing star-column k's entire row
+    # bucket before moving to k+1 is what keeps the "one shared marker array, no
+    # re-zeroing" idiom (`ata_pattern`'s own style) sound here — `ata_pattern` avoids
+    # the hazard for a different reason (its outer loop already IS the target column),
+    # which does not carry over to a row-outer-loop construction.
     head = zeros(Ti, n)
     next = zeros(Ti, m)
     @inbounds for i in 1:m
-        lo, hi = rowptr[i], rowptr[i + 1] - 1
-        lo > hi && continue                      # empty row: no star membership
-        kmin = typemax(Ti)
-        for p in lo:hi
-            j = ciperm[rowidx[p]]
-            j < kmin && (kmin = j)
-        end
+        kmin = leftcol[i]
+        kmin == 0 && continue                     # empty row: no star membership
         next[i] = head[kmin]
         head[kmin] = Ti(i)
     end
@@ -98,4 +120,118 @@ function star_pattern(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, ci
         sort!(view(rowval2, colptr2[k]:(colptr2[k + 1] - 1)))
     end
     return colptr2, rowval2
+end
+
+"""
+    qr_row_structure(m, n, parent, leftcol) -> (rperm, riperm, mb, vptr, vrowind, pivotslot, vcount)
+
+The physical row permutation, `V` column structure, and pivot-row assignment
+(design_qr.md §3.4, hotspot H2, v2 with the B1/B2 fixes). `parent` is the POSTORDERED
+column elimination tree (children always precede their parent, i.e. `parent[k] > k`
+or `parent[k] == 0`, the same convention `etree`/`postorder` produce elsewhere in this
+package); `leftcol` is [`row_leftcol`](@ref)'s per-row output (`0` for a null row).
+
+- **Row assignment.** `a[k]` = number of rows with `leftcol[r] == k`.
+- **Physical row numbering (`rperm`/`riperm`), decided independently of pivot
+  selection (B2 fix).** Assigned rows get physical numbers `1..mb` grouped by
+  ascending `leftcol` (a contiguous block per column, exactly like a CSC `colptr`
+  over `a`) then ascending original row index within each block — a simple, already-
+  sorted-by-construction canonical order, no separate sort needed. Null rows fill the
+  remaining slots `mb+1..m`, by original index. `mb = Σ a[k]` (B2: at most `mb`
+  columns can ever be live — every live column retires exactly one DISTINCT physical
+  row, and there are only `mb` of them; the `m < n` case falls out with no
+  special-casing).
+- **`vcount`** (B1 fix): `vcount[k] = a[k] + Σ_{c: parent[c]==k} max(vcount[c]-1, 0)`,
+  computed in a single ASCENDING pass over the postordered `parent` (every child's
+  contribution to its parent is folded in before that parent's own index is reached,
+  since postordering guarantees `parent[k] > k`) — the `max(·,0)` clamp is required:
+  a structurally dead child (`vcount[c]==0`, empty `S_c`) retires no pivot and must
+  contribute 0, not `vcount[c]-1 = -1` (design_qr.md §3.4's worked examples).
+- **`S_k` materialization and `pivotslot`.** For each column `k` (ascending), gather
+  the assigned physical-number block (already sorted) plus every child's non-pivot
+  survivor rows (each child's own list is complete and sorted by the time `k` is
+  reached, by the same postorder-ascending argument as `vcount`), sort once, and split
+  off the smallest physical number as `pivotslot[k]` — matching the design's
+  deterministic tie-break ("smallest physical row number"). The remaining rows are
+  passed to `parent[k]`. A structurally dead column (`vcount[k]==0`) leaves
+  `pivotslot[k] == 0` (sentinel) and contributes nothing to its parent, matching
+  `vcount`'s own clamp.
+
+**Implementation note:** this materializes each `S_k` via `sort!` on a per-column
+accumulator rather than the design's suggested O(1)-append linked-list merge of
+already-sorted lists (which would avoid the `sort!` entirely) — simpler to implement
+correctly, at a modest constant-factor cost in this cold symbolic-analysis path
+(clarity prioritized over allocation-freedom here, the same standing tradeoff already
+stated for `order`/`order_columns`, design.md §2.1). Revisit only if the M5 benchmark
+gate (§9.3) shows symbolic-phase cost actually matters.
+"""
+function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti}) where {Ti<:Integer}
+    a = zeros(Ti, n)
+    @inbounds for r in 1:m
+        k = leftcol[r]
+        k != 0 && (a[k] += one(Ti))
+    end
+    aptr = Vector{Ti}(undef, n + 1)
+    aptr[1] = one(Ti)
+    @inbounds for k in 1:n
+        aptr[k + 1] = aptr[k] + a[k]
+    end
+    mb = Int(aptr[n + 1] - 1)
+
+    rperm = Vector{Ti}(undef, m)
+    riperm = Vector{Ti}(undef, m)
+    cursor = copy(aptr)
+    nullcursor = Ti(mb + 1)
+    @inbounds for r in 1:m
+        k = leftcol[r]
+        if k == 0
+            rperm[nullcursor] = Ti(r)
+            riperm[r] = nullcursor
+            nullcursor += one(Ti)
+        else
+            p = cursor[k]
+            rperm[p] = Ti(r)
+            riperm[r] = p
+            cursor[k] += one(Ti)
+        end
+    end
+
+    vcount = copy(a)
+    @inbounds for k in 1:n
+        p = parent[k]
+        p != 0 && (vcount[p] += max(vcount[k] - one(Ti), zero(Ti)))
+    end
+    vptr = Vector{Ti}(undef, n + 1)
+    vptr[1] = one(Ti)
+    @inbounds for k in 1:n
+        vptr[k + 1] = vptr[k] + vcount[k]
+    end
+    nnzV = Int(vptr[n + 1] - 1)
+
+    accum = [Ti[] for _ in 1:n]
+    pivotslot = zeros(Ti, n)
+    vrowind = Vector{Ti}(undef, nnzV)
+    @inbounds for k in 1:n
+        Sk = accum[k]
+        for p in aptr[k]:(aptr[k + 1] - 1)
+            push!(Sk, p)
+        end
+        isempty(Sk) && continue                  # dead column: pivotslot[k] stays 0
+        sort!(Sk)
+        piv = Sk[1]
+        pivotslot[k] = piv
+        idx = vptr[k]
+        vrowind[idx] = piv
+        idx += one(Ti)
+        @inbounds for t in 2:length(Sk)
+            vrowind[idx] = Sk[t]
+            idx += one(Ti)
+        end
+        p = parent[k]
+        if p != 0 && length(Sk) > 1
+            append!(accum[p], view(Sk, 2:length(Sk)))
+        end
+        empty!(Sk)                                # early free; k is never revisited
+    end
+    return rperm, riperm, mb, vptr, vrowind, pivotslot, vcount
 end

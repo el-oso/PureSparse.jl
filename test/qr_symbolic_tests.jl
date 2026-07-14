@@ -1,6 +1,6 @@
 @testsetup module QRSymbolicOracle
 using Random, SparseArrays, PureSparse
-export random_rect_qr, ata_etree_colcount, star_etree_colcount
+export random_rect_qr, ata_etree_colcount, star_etree_colcount, full_qr_symbolic
 
 random_rect_qr(rng, m::Int, n::Int, density::Float64) = sprand(rng, m, n, density)
 
@@ -33,6 +33,39 @@ function star_etree_colcount(A::SparseMatrixCSC, perm::Vector{Int})
     parent = PureSparse.etree(n, ucolptr, urowval)
     cc = PureSparse.column_counts(n, ucolptr, urowval, parent)
     return parent, cc, scolptr, srowval
+end
+
+# Full symbolic assembly (design_qr.md §3, M5a tasks 4+5): ordering -> star pattern ->
+# postorder -> R structure (rcount) -> V structure (rperm/riperm/mb/vptr/vrowind/
+# pivotslot/vcount). Mirrors driver.jl's `symbolic()` composition but WITHOUT the
+# merge-aware two-pass postorder (design_qr.md §3.2: "No amalgamation priority needed
+# in M5a — no supernodes"), a single default postorder pass suffices.
+function full_qr_symbolic(A::SparseMatrixCSC, ordering)
+    m, n = size(A)
+    fcperm = PureSparse.order_columns(ordering, m, n, A.colptr, A.rowval)
+    fciperm = Vector{Int}(undef, n)
+    for (k, p) in enumerate(fcperm)
+        fciperm[p] = k
+    end
+    scolptr, srowval = PureSparse.star_pattern(m, n, A.colptr, A.rowval, fciperm)
+    idp = collect(1:n)
+    ucolptr, urowval = PureSparse.symmetrized_upper(n, scolptr, srowval, idp, idp)
+    parent0 = PureSparse.etree(n, ucolptr, urowval)
+    post, postinv = PureSparse.postorder(n, parent0)
+    cp2, rv2 = PureSparse.relabel_pattern(n, ucolptr, urowval, postinv)
+    parent = PureSparse.etree(n, cp2, rv2)
+    rcount = PureSparse.column_counts(n, cp2, rv2, parent)
+    cperm = Vector{Int}(undef, n)
+    for orig in 1:n
+        cperm[postinv[fciperm[orig]]] = orig
+    end
+    ciperm = Vector{Int}(undef, n)
+    for (k, p) in enumerate(cperm)
+        ciperm[p] = k
+    end
+    _, _, leftcol = PureSparse.row_leftcol(m, n, A.colptr, A.rowval, ciperm)
+    rperm, riperm, mb, vptr, vrowind, pivotslot, vcount = PureSparse.qr_row_structure(m, n, parent, leftcol)
+    return (; cperm, ciperm, parent, rcount, rperm, riperm, mb, vptr, vrowind, pivotslot, vcount, leftcol)
 end
 end
 
@@ -127,4 +160,106 @@ end
             @test !(k in seg)   # no self-loop: a row's leftmost column never lists itself
         end
     end
+end
+
+@testitem "qr_row_structure matches the design doc's three hand-worked examples" begin
+    # A = [1 1 1] (m=1,n=3): star etree is the chain 1->2->3, leftcol(row1)=1.
+    rperm, riperm, mb, vptr, vrowind, pivotslot, vcount =
+        PureSparse.qr_row_structure(1, 3, [2, 3, 0], [1])
+    @test vcount == [1, 0, 0]
+    @test pivotslot == [1, 0, 0]
+    @test mb == 1
+
+    # A = [0 1] (m=1,n=2): leftcol(row1)=2, both columns isolated (parent=[0,0]).
+    rperm2, riperm2, mb2, vptr2, vrowind2, pivotslot2, vcount2 =
+        PureSparse.qr_row_structure(1, 2, [0, 0], [2])
+    @test vcount2 == [0, 1]
+    @test pivotslot2 == [0, 1]
+    @test mb2 == 1
+
+    # A = [1 1; 0 0] (m=2,n=2): leftcol=[1,0] (row 2 null), parent=[2,0].
+    rperm3, riperm3, mb3, vptr3, vrowind3, pivotslot3, vcount3 =
+        PureSparse.qr_row_structure(2, 2, [2, 0], [1, 0])
+    @test vcount3 == [1, 0]
+    @test pivotslot3 == [1, 0]
+    @test mb3 == 1
+end
+
+@testitem "H2: row-path consistency property, full symbolic pipeline" setup = [QRSymbolicOracle] begin
+    # design_qr.md §3.4's consistency property: for every physical row p, the set of
+    # columns {k : p ∈ S_k} is a contiguous ascending path in the (postordered) column
+    # etree starting at p's leftcol, ending EITHER where p retires as pivot (at an
+    # internal node or a root) OR at a LIVE root without retiring (legitimate for the
+    # m > n case — clarified in design_qr.md during this task, see the edited §3.4
+    # bullet). The one thing that must never happen: terminating at a DEAD root.
+    using Random, SparseArrays
+    rng = MersenneTwister(77)
+    for _ in 1:3000
+        m = rand(rng, 1:16)
+        n = rand(rng, 1:16)
+        A = random_rect_qr(rng, m, n, rand(rng, (0.03, 0.08, 0.15, 0.3, 0.6)))
+        r = full_qr_symbolic(A, PureSparse.AMDOrdering())
+
+        # self-consistency: segment length == vcount[k]; pivot is first entry & the min
+        for k in 1:n
+            seg = view(r.vrowind, r.vptr[k]:(r.vptr[k + 1] - 1))
+            @test length(seg) == r.vcount[k]
+            if !isempty(seg)
+                @test seg[1] == r.pivotslot[k]
+                @test minimum(seg) == r.pivotslot[k]
+                @test allunique(seg)
+            else
+                @test r.pivotslot[k] == 0
+            end
+        end
+
+        membership = [Int[] for _ in 1:r.mb]
+        for k in 1:n, idx in r.vptr[k]:(r.vptr[k + 1] - 1)
+            push!(membership[r.vrowind[idx]], k)
+        end
+        for p in 1:r.mb
+            ks = sort(membership[p])
+            @test !isempty(ks)
+            orig_r = r.rperm[p]
+            lc = r.leftcol[orig_r]
+            @test lc != 0
+            @test ks[1] == lc
+            for t in 1:(length(ks) - 1)
+                @test r.parent[ks[t]] == ks[t + 1]
+            end
+            last_k = ks[end]
+            is_pivot_here = r.pivotslot[last_k] == p
+            is_root = r.parent[last_k] == 0
+            @test is_pivot_here || is_root
+            if is_root && !is_pivot_here
+                @test r.vcount[last_k] > 0   # never terminates at a DEAD root
+            end
+        end
+    end
+end
+
+@testitem "V-structure edge cases: fully null matrix, single dense row, all-singleton columns" setup = [QRSymbolicOracle] begin
+    using SparseArrays
+    # Fully null m x n matrix: every column dead, mb == 0.
+    A = spzeros(5, 4)
+    r = full_qr_symbolic(A, PureSparse.AMDOrdering())
+    @test r.mb == 0
+    @test all(==(0), r.vcount)
+    @test all(==(0), r.pivotslot)
+
+    # One dense row touching every column: extreme fan-out for the V-structure.
+    A2 = spzeros(3, 6)
+    A2[1, :] .= 1.0
+    A2[2, 3] = 1.0
+    A2[3, 5] = 1.0
+    A2 = sparse(A2)
+    r2 = full_qr_symbolic(A2, PureSparse.AMDOrdering())
+    @test r2.mb == 3  # 3 nonzero rows, none null
+    @test sum(r2.vcount) == sum(length(r2.vrowind[r2.vptr[k]:(r2.vptr[k + 1] - 1)]) for k in 1:6)
+
+    # Square identity-like pattern (every column its own singleton row): no V fill at all.
+    A3 = sparse(1:5, 1:5, ones(5), 5, 5)
+    r3 = full_qr_symbolic(A3, PureSparse.AMDOrdering())
+    @test r3.mb == 5
+    @test all(==(1), r3.vcount)  # each column's own single assigned row, no inheritance
 end
