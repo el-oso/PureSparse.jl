@@ -1,0 +1,252 @@
+# Multifrontal solve phase (design_qr_m5b.md §A6): replays stored front panels against
+# a shared physical-row-space work vector, postorder for Qᵀ, reverse postorder for Q.
+#
+# A panel's alive reflectors are NOT generally column-contiguous within the front (a
+# dead-skipped pivotal column breaks contiguity), so V cannot be recovered as a simple
+# view into the front rectangle — `F.elimcol` (front-local column per elimination,
+# same indexing as `F.tauv`) is used to GATHER the correct (possibly scattered)
+# columns into `ws.wy.V` fresh, exactly mirroring how factorization built it.
+
+@inline function _tauv_base(fsym::QRFrontSymbolic, f::Int)
+    base = 1
+    @inbounds for fp in 1:(f - 1)
+        base += min(Int(fsym.fmmax[fp]), n_f_of(fsym, fp))
+    end
+    return base
+end
+
+# Gather panel `pnl`'s V (mp×pb, explicit unit diagonal) into `ws.wy.V` from the
+# front's stored rectangle, using `F.elimcol`/`F.tauv` (NOT a column-range view — see
+# module header). `row0`/`mp` = the panel's row extent (as recorded by factorization).
+function _gather_panel_V!(F::QRFrontFactor{T,Ti}, f::Int, pnl::Int, row0::Int, mp::Int, tvbase::Int) where {T,Ti<:Integer}
+    fsym = F.fsym
+    ws = F.ws
+    Ff = _front_view(F, f)
+    pb = Int(F.pbs[Int(fsym.fpanelptr[f]) + pnl - 1])
+    Vv = view(ws.wy.V, 1:mp, 1:pb)
+    fill!(Vv, zero(T))
+    @inbounds for c in 1:pb
+        jj = Int(F.elimcol[tvbase + c - 1])
+        # this reflector's own local row (relative to the FRONT, 1-based) is
+        # `row0 + c - 1` (eliminations within a panel are consumed in row order,
+        # matching factorization's own k-advance) — its essential data spans
+        # Ff[row0+c-1+1 : row0+mp-1, jj] (up to the panel's own row extent).
+        krow = row0 + c - 1
+        Vv[c, c] = one(T)
+        for i in (krow + 1):(row0 + mp - 1)
+            Vv[i - row0 + 1, c] = Ff[i, jj]
+        end
+    end
+    return Vv
+end
+
+@inline function _panel_T(F::QRFrontFactor{T,Ti}, f::Int, pnl::Int) where {T,Ti<:Integer}
+    fsym = F.fsym
+    panello = Int(fsym.fpanelptr[f])
+    base = Int(fsym.ftauptr[f])
+    @inbounds for p in 1:(pnl - 1)
+        pb = Int(F.pbs[panello + p - 1])
+        base += pb * pb
+    end
+    pb = Int(F.pbs[panello + pnl - 1])
+    return reshape(view(F.ftau, base:(base + pb * pb - 1)), pb, pb)
+end
+
+"""
+    apply_Qt!(y::AbstractVector, F::QRFrontFactor) -> y
+
+`y ← Qᵀy` in place (`y` has length `F.fsym.base.mb`, physical row space): fronts in
+postorder (ascending), panels within each front forward, `trans='T'` — the mirror of
+M5a's own `apply_Qt!` but replaying STORED per-panel `V`/`T` instead of re-walking a
+row-subtree (§A6).
+"""
+function apply_Qt!(y::AbstractVector{T}, F::QRFrontFactor{T,Ti}) where {T,Ti<:Integer}
+    fsym = F.fsym
+    ws = F.ws
+    @inbounds for f in 1:fsym.nfront
+        m_f = Int(F.fm[f])
+        m_f == 0 && continue
+        frowlo = Int(fsym.frowptr2[f])
+        yqt = view(ws.yqt, 1:m_f)
+        for i in 1:m_f
+            yqt[i] = y[F.frowind[frowlo + i - 1]]
+        end
+        panello = Int(fsym.fpanelptr[f])
+        tvbase = _tauv_base(fsym, f)
+        row0 = 1
+        for pnl in 1:Int(F.fnpanel[f])
+            mp = Int(F.pnrows[panello + pnl - 1])
+            pb = Int(F.pbs[panello + pnl - 1])
+            Vp = _gather_panel_V!(F, f, pnl, row0, mp, tvbase)
+            Tv = _panel_T(F, f, pnl)
+            yb = reshape(view(yqt, row0:(row0 + mp - 1)), mp, 1)
+            wy_apply!('T', yb, Vp, Tv, ws.wy)
+            row0 += pb
+            tvbase += pb
+        end
+        for i in 1:m_f
+            y[F.frowind[frowlo + i - 1]] = yqt[i]
+        end
+    end
+    return y
+end
+
+"""
+    apply_Q!(y::AbstractVector, F::QRFrontFactor) -> y
+
+`y ← Qy` in place: fronts in REVERSE postorder, panels within each front reverse,
+`trans='N'` (§A6, the mirror of `apply_Qt!`).
+"""
+function apply_Q!(y::AbstractVector{T}, F::QRFrontFactor{T,Ti}) where {T,Ti<:Integer}
+    fsym = F.fsym
+    ws = F.ws
+    @inbounds for f in fsym.nfront:-1:1
+        m_f = Int(F.fm[f])
+        m_f == 0 && continue
+        frowlo = Int(fsym.frowptr2[f])
+        yqt = view(ws.yqt, 1:m_f)
+        for i in 1:m_f
+            yqt[i] = y[F.frowind[frowlo + i - 1]]
+        end
+        panello = Int(fsym.fpanelptr[f])
+        tvbase0 = _tauv_base(fsym, f)
+        npanel = Int(F.fnpanel[f])
+        row0s = Vector{Int}(undef, npanel + 1)
+        tvbases = Vector{Int}(undef, npanel + 1)
+        row0s[1] = 1
+        tvbases[1] = tvbase0
+        for pnl in 1:npanel
+            row0s[pnl + 1] = row0s[pnl] + Int(F.pbs[panello + pnl - 1])
+            tvbases[pnl + 1] = tvbases[pnl] + Int(F.pbs[panello + pnl - 1])
+        end
+        for pnl in npanel:-1:1
+            mp = Int(F.pnrows[panello + pnl - 1])
+            row0 = row0s[pnl]
+            Vp = _gather_panel_V!(F, f, pnl, row0, mp, tvbases[pnl])
+            Tv = _panel_T(F, f, pnl)
+            yb = reshape(view(yqt, row0:(row0 + mp - 1)), mp, 1)
+            wy_apply!('N', yb, Vp, Tv, ws.wy)
+        end
+        for i in 1:m_f
+            y[F.frowind[frowlo + i - 1]] = yqt[i]
+        end
+    end
+    return y
+end
+
+"""
+    solve_R!(x::AbstractVector, F::QRFrontFactor, c::AbstractVector) -> x
+
+`R·x = c` via back-substitution over the padded rows (design_qr_m5b.md §A6): row `k`'s
+entries are `rval[frptr[k]:frptr[k+1]-1]` against implicit columns
+`fcolind[fsnode[k]][pos(k):n_f]`; `fpivotrow[k]==0` (dead) forces `x[k]=0`, matching
+M5a's basic-solution semantics. `x`/`c` have length `n′`; may alias.
+"""
+function solve_R!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, c::AbstractVector{T}) where {T,Ti<:Integer}
+    fsym = F.fsym
+    nb = length(fsym.base.parent)
+    @inbounds for k in nb:-1:1
+        if F.fpivotrow[k] == 0
+            x[k] = zero(T)
+            continue
+        end
+        lo = Int(fsym.frptr[k])
+        diag = F.rval[lo]
+        f = fsym.fsnode[k]
+        colslo = Int(fsym.fcolptr[f])
+        n_f = n_f_of(fsym, f)
+        pos = k - Int(fsym.fsuper[f]) + 1
+        s = c[k]
+        p = lo + 1
+        for jc in (pos + 1):n_f
+            gcol = fsym.fcolind[colslo + jc - 1]
+            s -= F.rval[p] * x[gcol]
+            p += 1
+        end
+        x[k] = s / diag
+    end
+    return x
+end
+
+"""
+    solve_Rt!(x::AbstractVector, F::QRFrontFactor, c::AbstractVector) -> x
+
+`Rᵀ·x = c` via forward substitution (mirror of [`solve_R!`](@ref), design_qr_m5b.md
+§A6) — forward scatter since `R` is stored row-wise. `x`/`c` may alias.
+"""
+function solve_Rt!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, c::AbstractVector{T}) where {T,Ti<:Integer}
+    fsym = F.fsym
+    nb = length(fsym.base.parent)
+    x !== c && copyto!(x, 1, c, 1, nb)
+    @inbounds for k in 1:nb
+        if F.fpivotrow[k] == 0
+            x[k] = zero(T)
+            continue
+        end
+        lo = Int(fsym.frptr[k])
+        diag = F.rval[lo]
+        f = fsym.fsnode[k]
+        colslo = Int(fsym.fcolptr[f])
+        n_f = n_f_of(fsym, f)
+        pos = k - Int(fsym.fsuper[f]) + 1
+        xk = x[k] / diag
+        x[k] = xk
+        p = lo + 1
+        for jc in (pos + 1):n_f
+            gcol = fsym.fcolind[colslo + jc - 1]
+            x[gcol] -= F.rval[p] * xk
+            p += 1
+        end
+    end
+    return x
+end
+
+"""
+    solve!(x::AbstractVector, F::QRFrontFactor, b::AbstractVector) -> x
+
+Least-squares (`m ≥ n`) / basic (rank-deficient or `m < n`, dead columns zero) solve
+(design_qr_m5b.md §A6, mirroring M5a's own `solve!`): gather `b` into physical row
+space via `rperm`, `apply_Qt!`, `solve_R!`, scatter into `x` via `cperm`. `x`/`b` are
+full space (length `n`/`m`); the frontal path never carries singletons (`sym.n1==0`
+always, §A1.2), so unlike M5a's own `solve!` there is no singleton-block prepend.
+"""
+function solve!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
+    fsym = F.fsym
+    sym = fsym.base
+    nb = length(sym.parent)
+    y = view(F.ws.rhs, 1:sym.mb)
+    fill!(y, zero(T))
+    @inbounds for p in 1:sym.m
+        phys = sym.riperm[p]
+        phys <= sym.mb && (y[phys] = b[p])
+    end
+    apply_Qt!(y, F)
+    # gather Qᵀb into R's own (block-column) space via fpivotrow (B2's own reasoning,
+    # design_qr.md §3.4/§6.2: row k of R lives at physical row fpivotrow[k], not k)
+    cc = Vector{T}(undef, nb)   # correctness-first; zero-alloc is a follow-up (mirrors
+                                # M5a task 7/9/10's own staged discipline)
+    @inbounds for k in 1:nb
+        piv = F.fpivotrow[k]
+        cc[k] = piv == 0 ? zero(T) : y[piv]
+    end
+    solve_R!(cc, F, cc)
+    @inbounds for k in 1:nb
+        x[sym.cperm[k]] = cc[k]
+    end
+    fill!(y, zero(T))
+    return x
+end
+
+"""
+    F \\ b -> x
+
+`solve!` allocating its own output (design_qr_m5b.md §A6).
+"""
+Base.:\(F::QRFrontFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer} = solve!(Vector{T}(undef, F.fsym.base.n), F, b)
+
+"""
+    ldiv!(x::AbstractVector, F::QRFrontFactor, b::AbstractVector) -> x
+
+Alias for [`solve!`](@ref) (stdlib-compatible spelling, design_qr_m5b.md §A6).
+"""
+LinearAlgebra.ldiv!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer} = solve!(x, F, b)

@@ -172,6 +172,36 @@ PureBLAS block-reflector kernels (`larfb`-role `C:=Q·C` extension + the new `C:
 direction), M5b design addendum, front-structure symbolic extension, frontal numeric
 loop, re-run §9.3 for the actual M5 closeout.
 
+**2026-07-15 update: M5b task 16 (frontal numeric loop + solve, `src/qr/frontal*.jl`)
+CLOSED — correct on the worked example (RᵀR≈AᵀA and the solve normal-equations
+residual both to ~1e-14) and on a 60-case random sweep (full rank, rank-deficient,
+various shapes/densities, `--check-bounds=yes` clean) cross-checked against M5a's own
+`:column` path per §A9.2. Three real bugs found and fixed along the way, all via
+disciplined "diff the front's R against a trusted oracle, don't guess" debugging:
+(1) R-harvest for a pivotal column was reading `Ff` BEFORE that reflector's own
+in-panel trailing update landed, so every off-diagonal R entry was stale — fixed by
+harvesting after the apply, with a genuinely deferred second pass for out-of-panel
+(post-block-apply) columns; (2) the "restore the implicit-unit-diagonal" step
+(`Ff[k,jj]=1`) was both unnecessary (the solve-phase V-gather in `frontal_solve.jl`
+hardcodes the diagonal itself, never reads it from `Ff`) AND actively wrong — it
+clobbered the true reduced value at a NON-pivotal column's own diagonal, which is
+exactly what the parent front's C-block pass-up needs to read; removing it fixed
+every front beyond the first in the tree; (3) `_assemble_front!`'s child-gather loop
+read a child's rows `(fr+1):fm` (ALL assembled rows), but pass-up only sets `fmincol`
+for `(fr+1):e_f` — whenever a front has more rows than columns, `e_f < fm` and the
+excess rows are all-zero residue with garbage (assembly-time LOCAL, not global)
+`fmincol`; reading past `e_f` produced a `BoundsError`/segfault. Added an explicit
+`fe::Vector{Ti}` field to `QRFrontFactor` to track `e_f` and bound the child-gather
+loop by it. Also discovered in passing that M5a's own column-QR path has a
+non-negligible normal-equations residual (`‖Aᵀr‖≈0.08` on one rank-deficient test
+case) where the frontal path hits `≈1e-15` — not chased (M5a is already gated/shipped
+and the discrepancy is basic-solution non-uniqueness, not a shared-oracle failure),
+but worth a look if M5a's rank-deficient handling ever gets revisited. New coverage:
+`test/qr_frontal_numeric_tests.jl` (worked example + 60-seed random sweep + explicit
+rank-deficient case, 186 assertions, all passing in the full suite run). Next:
+task 16d (method selection, `qr(A; method=:auto|:frontal|:column)`), 16e (amalgamation
+tunable recalibration), then task 17 (re-run the full M5 gate on galen/wintermute).
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-

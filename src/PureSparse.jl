@@ -30,6 +30,7 @@ include("qr/frontal_symbolic.jl")  # M5b multifrontal symbolic layer (design_qr_
 include("qr/singletons.jl")
 include("qr/numeric.jl")
 include("qr/solve.jl")
+include("qr/frontal.jl")  # M5b multifrontal numeric+solve (design_qr_m5b.md §A4-§A6)
 include("numeric/llt.jl")
 include("numeric/ldlt.jl")
 include("numeric/solve.jl")
