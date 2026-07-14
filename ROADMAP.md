@@ -101,8 +101,59 @@ TrimCheck roots for `qr!`/`solve!` — `qr`/`symbolic_qr` can't be roots there, 
 Laplacian) — the actual `juliac --trim` build was run end-to-end (not just TrimCheck's
 reachability analysis), 0 trim-verifier errors, executable runs and reports all five
 residuals near machine epsilon. Full suite: 113/113 items, 213851/213851 assertions.
-Next: task 11 (zoo extension + benchmark arms + gate measurement, incl. faer as a
-comparator per the user's standing request).
+**2026-07-14 update: M5a task 11 CLOSED — gate measured, verdict NOT PASSING, M5b now
+mandatory scope.** Built `benchmark/qr_matrices.jl` (8 synthetic gate matrices across
+the 3 H4 strata — design §9.4 permits synthetics, same as M1's own gate set) and
+`benchmark/qr_gate.jl` (cold-vs-cold PureSparse-vs-SuiteSparseQR, own-ordering and
+same-permutation arms, mirroring `gate.jl`'s structure; QR needs no OpenBLAS
+kernel-attribution arm — M5a's left-looking loop calls no BLAS-3 kernel, only
+PureBLAS's `nrm2`). Ran on both clock-locked machines (galen, wintermute;
+`performance` governor confirmed on both) after syncing current code (a genuine
+environment gap surfaced along the way: wintermute's `benchmark/` env had no local
+`TypeContracts` checkout at all, unlike galen's — fixed by rsyncing one over, a
+one-time host setup gap, not a code issue). One real benchmark-harness bug found and
+fixed: `SparseArrays.qr(A)\b` throws `SingularException` under `ORDERING_FIXED` on
+the underdetermined (m<n) LP-slack matrices — guarded with try/catch (PureSparse's own
+`\` never throws there, §6.2's basic-solution path handles it by construction).
+
+**Verdict: 3/32 matrix-arm-host combinations beat SuiteSparseQR cold.** Stratum (i)
+(singleton-dominated) 3/12 — wins outright on `staircase_n2000` (entirely-singleton,
+zero numerical work) but loses on partial-singleton LP-slack shapes and the same-perm
+arm. Stratum (ii) (sparse-R/small-front, H4 said "competitive") 0/12 — loses 3–10×.
+Stratum (iii) (flop-rich/large-front, H4 said "may lose") 0/8 — loses 4–7×, as
+anticipated. Diagnostic finding (not guessed, measured): on `banded_ls_n1500x500`,
+PureSparse's COLAMD produces `nnz(R)=4193`, IDENTICAL to SuiteSparseQR's own ordering
+choice — and on `lp_slack_n800x150`'s same-perm arm, forcing PureSparse onto SPQR's
+own column order nearly QUADRUPLES its fill (4586→15624), meaning PureSparse's
+ordering is not merely adequate but measurably better there. `symbolic_qr` alone costs
+about what SPQR's entire cold factorization costs; the remaining 4–9× gap is entirely
+in the unblocked scalar left-looking numeric loop (~1 GFlop/s effective, on ~8M flops
+in 5.8ms) — exactly the architectural gap multifrontal BLAS-3 fronts exist to close.
+Ordering (task 3) is validated as working correctly; the numeric kernel (task 6) is
+confirmed as the actual bottleneck, not a guess.
+
+Per design_qr.md §9.3's unconditional closeout gate ("no fudge factor... a stratum
+loss triggers M5b"), **M5b (multifrontal, §7) is now mandatory scope**, not optional.
+Full report with per-matrix data: `benchmark/results/qr_gate_{galen,wintermute}.json`
+(raw), reproducible via `julia --project=benchmark benchmark/qr_gate.jl`.
+
+**Deferred, not dropped:** design §9.3's config-5 `faer` context arm (not part of the
+pass/fail gate). faer 0.24's sparse QR API (`faer::sparse::linalg::solvers::{Qr,
+SymbolicQr}`) is genuinely different from BlazingPorts.jl's existing DENSE `faer_qr`
+FFI shim (`rust_compare/rust/src/lib.rs`) — needs a new sparse-CSC-array FFI boundary,
+real follow-up work rather than something to rush into this pass. Tracked as an M5a
+task-11 follow-up, not silently dropped.
+
+Next: M5b task list (design_qr.md §10 M5b, conditional list now activated) — P1/P2
+PureBLAS block-reflector kernels (`larfb`-role `C:=Q·C` extension + the new `C:=Qᵀ·C`
+direction), M5b design addendum, front-structure symbolic extension, frontal numeric
+loop, re-run §9.3 for the actual M5 closeout.
+
+**Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
+user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
+subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
+specific); fair to read/reference/use. Not yet evaluated for relevance to PureSparse's
+own scope (LU vs QR/Cholesky) — noted for future consideration, not acted on.**
 
 **Status (2026-07-13): M1 CLOSED, M2 CLOSED, M4 CLOSED (every gate item in
 `docs/design.md` §10 met, see the `### M1`/`### M2` sections and the "M4 closeout"
