@@ -15,6 +15,7 @@ using Preferences: Preferences
 include("tuning.jl")
 include("types.jl")
 include("qr/types.jl")
+include("qr/singletons.jl")
 include("ordering/interface.jl")
 include("ordering/amd.jl")
 include("ordering/ata.jl")
