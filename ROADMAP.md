@@ -12,6 +12,22 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
+**2026-07-14 renumber: M5 = sparse QR (next milestone), GPU renumbered M3 → M6.**
+Design: [`docs/design_qr.md`](docs/design_qr.md) — **v1 Fable draft, awaiting the
+adversarial review pass** (same v1→review→v2 process as `docs/design.md`; the draft's
+§0 lists the review hotspots H1–H6). Older "M3 (GPU)" references below read as M6; the
+`### M3` milestone section's content is unchanged. Summary of the draft's key
+decisions: left-looking column Householder v1 (M5a) with a gate-triggered multifrontal
+escalation (M5b); COLAMD ordering from the primary 2004 paper
+(`refs/linear_algebra/QR/davis_gilbert_larimore_ng_2004_colamd.pdf`, read in full) plus
+Larimore's 1998 UF thesis as the implementation-depth reference
+(`refs/linear_algebra/QR/larimore_1998_colamd_thesis.pdf` — spot-checked in the draft,
+full ch. 3–4 read scheduled with the implementation task); star-matrix
+AᵀA-free symbolic reusing the existing etree/counts pipeline; Heath-test rank detection
+with Foster–Davis-style dead-column dropping; PureBLAS check result — M5a needs no new
+PureBLAS kernels, M5b requires a larfb-role apply kernel + generic geqrf! (both
+verified missing, scheduled as M5b tasks P1/P2).
+
 **Status (2026-07-13): M1 CLOSED, M2 CLOSED, M4 CLOSED (every gate item in
 `docs/design.md` §10 met, see the `### M1`/`### M2` sections and the "M4 closeout"
 section below).** The three M4 gap items (`SimplicialLDLFactor` property parity, `F.U`
@@ -1244,6 +1260,19 @@ surface parity (`logdet`, `det`, `diag`, `issuccess`, `check=`, `shift=`, `perm=
 
 **Gate:** with dropin active, a downstream SparseArrays-dependent smoke test suite passes
 unmodified; M1 perf gate still holds through the dropin entry point.
+
+### M5 — Sparse QR (next; design draft awaiting adversarial review)
+Full design, deliverables, gates, and the ordered M5a/M5b task lists:
+[`docs/design_qr.md`](docs/design_qr.md) (v1 Fable draft, 2026-07-14 — must go through
+the same adversarial-review→v2 pass as `docs/design.md` before implementation starts;
+review hotspots are in its §0). One-line shape: M5a = left-looking column Householder QR
+(COLAMD ordering, star-matrix symbolic reusing etree/counts, singletons, Heath-test rank
+detection, LS/basic/min-norm solves, zero-alloc `qr!`), M5b = conditional multifrontal
+numeric phase (requires two new PureBLAS kernels, tasks P1/P2 there) triggered iff the
+wall-time gate vs stdlib SuiteSparseQR fails on any stratum. **M5 closeout gate is the
+unconditional wall-time inequality** (design_qr.md §9.3).
+
+### M6 — GPU (renumbered from M3, 2026-07-14; content unchanged — see `### M3` above)
 
 ## Standing rules
 
