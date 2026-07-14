@@ -148,7 +148,7 @@ end
     # never read).
     using Random, SparseArrays, LinearAlgebra
     rng = MersenneTwister(53)
-    nnzR_fixed(A, p) = nnz(qr(A[:, p]; ordering = SparseArrays.SPQR.ORDERING_FIXED).R)
+    nnzR_fixed(A, p) = nnz(LinearAlgebra.qr(A[:, p]; ordering = SparseArrays.SPQR.ORDERING_FIXED).R)
 
     # Square and tall (m ≥ n): raw comparison.
     for (m, n, d) in ((60, 40, 0.1), (120, 80, 0.05), (200, 100, 0.03), (150, 150, 0.04),
