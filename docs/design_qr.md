@@ -652,6 +652,15 @@ Two policy points, both taken from the paper's own reasoning:
 - Threshold: `qr_singleton_mult × τ` (§1.6), so the singleton and rank thresholds move
   together (a "singleton" below the rank tolerance would be a rank-deficiency dodge).
 
+Implementation note (task 9, beyond the text above): `tol=0` alone does **not** disable
+peeling — it only relaxes the magnitude threshold to "any nonzero passes" (since the
+threshold is `qr_singleton_mult × τ` and `τ=0` when `tol=0`), so *structural* singletons
+(a column with exactly one live entry) still get peeled. This surprised several
+pre-existing tests written before this task, whose matrices (diagonal-like, LP-like,
+single-row) frequently contain structural singletons and which had used `tol=0` only to
+disable rank-detection strictness, not peeling. `qr()` therefore also takes an explicit
+`singletons::Bool=true` keyword as a true on/off switch, independent of `tol`.
+
 ---
 
 ## §3 Symbolic analysis
@@ -1184,8 +1193,9 @@ YAGNI until someone needs the memory).
 ```julia
 S  = symbolic_qr(A; ordering=COLAMDOrdering())     # analysis, allocates; NO singletons (§2.3)
 F  = qr(A; ordering=COLAMDOrdering(), tol=nothing) # singletons + symbolic + numeric
+F  = qr(A; ordering=COLAMDOrdering(), singletons=false) # opt out of §2.3 peeling entirely
 F  = qr(S, A; tol=nothing)                      # numeric into fresh factor sharing S
-qr!(F, A2)                                       # zero-alloc refactor, same pattern
+qr!(F, A2)                                       # zero-alloc refactor, same pattern (requires F.sym.n1 == 0, §2.3)
 x  = F \ b ; solve!(x, F, b) ; ldiv!(x, F, b)   # LS (m≥n) / basic solution
 solve_minnorm!(x, F, b)                          # §6.3 (F from qr of Aᵀ)
 apply_Q!(y, F); apply_Qt!(y, F); solve_R!(x, F, c); solve_Rt!(x, F, c)

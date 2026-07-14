@@ -53,15 +53,15 @@ function _qr_threshold(A::SparseMatrixCSC{T}, tol) where {T<:Real}
 end
 
 """
-    qr(A::SparseMatrixCSC; ordering::AbstractOrdering, tol=nothing) -> QRFactor
+    _qr_block(A::SparseMatrixCSC; ordering, tol) -> QRFactor
 
-One-shot sparse QR factorization: [`symbolic_qr`](@ref) + numeric factorization
-(design_qr.md §4.3). No default `ordering` yet (§2.1's stated default,
-`COLAMDOrdering()`, lands in a later task) — pass one explicitly, e.g.
-`AMDOrdering()`. `tol` is the rank-detection threshold (§5.1/§5.3); see
-[`_qr_threshold`](@ref) for its default and the `tol ≤ 0` disable convention.
+Build a fresh, fully-populated `QRFactor` for `A` treated as a self-contained block
+(`sym.n1 == 0` always — no singleton awareness). This is what [`qr`](@ref) delegates
+to once singletons (if any) have been peeled off and `A` has been restricted to the
+surviving `A22` submatrix (design_qr.md §2.3); it is also exactly what `qr(A)` reduces
+to when no singletons are found.
 """
-function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
+function _qr_block(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
     sym = symbolic_qr(A; ordering)
     rcolind = Vector{Ti}(undef, sym.nnzR)
     rval = zeros(T, sym.nnzR)              # zero-initialized: dead-row slots (D9) stay
@@ -69,9 +69,47 @@ function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Not
     vval = zeros(T, sym.nnzV)
     beta = zeros(T, length(sym.parent))
     ws = QRWorkspace{T,Ti}(sym)
-    F = QRFactor{T,Ti}(sym, rcolind, rval, vval, beta, ws, QRStats(), true)
+    r1ptr = ones(Ti, 1)                    # n1==0: length-1 sentinel (r1ptr[1]=1, no rows)
+    F = QRFactor{T,Ti}(sym, rcolind, rval, vval, beta, r1ptr, Ti[], T[], ws, QRStats(), true)
     qr!(F, A; tol)
     return F
+end
+
+"""
+    qr(A::SparseMatrixCSC; ordering::AbstractOrdering, tol=nothing, singletons=true) -> QRFactor
+
+One-shot sparse QR factorization (design_qr.md §4.3): column-singleton
+pre-elimination (§2.3) + [`symbolic_qr`](@ref) + numeric factorization. No default
+`ordering` yet (§2.1's stated default, `COLAMDOrdering()`, lands in a later task) —
+pass one explicitly, e.g. `AMDOrdering()`. `tol` is the rank-detection threshold
+(§5.1/§5.3); see [`_qr_threshold`](@ref) for its default and the `tol ≤ 0` disable
+convention — singleton detection's OWN threshold is `qr_singleton_mult × τ` (§1.6/§2.3,
+using the SAME `τ`, so the two move together). **`tol ≤ 0` does NOT disable singleton
+peeling** — it only relaxes the magnitude test to "any nonzero value passes" (since the
+threshold itself becomes `qr_singleton_mult × 0 = 0`); a genuinely structural
+singleton (a column with exactly one nonzero entry, which is extremely common —
+diagonal-shaped, LP-shaped, and many hand-built test matrices all have them) is still
+peeled. `singletons=false` is the actual peeling on/off switch (a coordinator-directed
+addition beyond the original design text, added once this interaction surprised
+several tests written before this task assumed `sym.n1 == 0` unconditionally — genuinely
+useful independent of testing too, e.g. to isolate the core pipeline's own behavior or
+compare timings with/without the optimization).
+
+Singletons are exploited ONLY here, never in [`symbolic_qr`](@ref)/[`qr!`](@ref)'s
+reuse path (§2.3: "a singleton set chosen for A's values is invalid for A2's" — a
+genuinely different matrix sharing this pattern could have different magnitudes at the
+same entries). The resulting `QRFactor` (`sym.n1 > 0`) is a terminal, one-shot object —
+do not call `qr!` on it (§2.3's own restriction; `qr!` asserts `sym.n1 == 0`).
+"""
+function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing, singletons::Bool = true) where {T,Ti<:Integer}
+    singletons || return _qr_block(A; ordering, tol)
+    m, n = size(A)
+    tau = _qr_threshold(A, tol)
+    singleton_threshold = T(QR_SINGLETON_MULT) * tau
+    peel_col, peel_row, collive, rowlive = peel_column_singletons(A, singleton_threshold)
+    n1 = length(peel_col)
+    n1 == 0 && return _qr_block(A; ordering, tol)
+    return _qr_compose_singletons(A, peel_col, peel_row, collive, rowlive, ordering, tol)
 end
 
 """
@@ -100,9 +138,18 @@ Foster–Davis-style dead-column drop (§5.2) folded into steps 3/4:
    handling as the B3 exact-zero guard — the detection-time tail `xnorm` itself is
    also dropped mass (§5.2, N2: bounded by `τ`; the LATER per-column discards in step
    3 above are not themselves τ-bounded and are the bulk of `dropped_norm`).
+
+`F.sym.n1 > 0` (a factor produced by [`qr`](@ref)'s singleton pre-elimination path,
+§2.3) is REJECTED — singletons are exploited only in the one-shot `qr(A)` path, never
+across a refactor (§2.3: "a singleton set chosen for A's values is invalid for A2's").
 """
 function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
     sym = F.sym
+    sym.n1 == 0 || throw(ArgumentError(
+        "qr!: F has sym.n1 = $(sym.n1) > 0 (produced by qr(A)'s singleton pre-elimination, " *
+        "design_qr.md §2.3) — singletons are not exploited across a refactor; build a " *
+        "fresh factor via qr(A2) instead of refactoring this one",
+    ))
     ws = F.ws
     nb = length(sym.parent)
     x = ws.x

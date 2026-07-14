@@ -102,7 +102,10 @@ end
         b = randn(rng, m)
         At = sparse(A')
         well_conditioned(At) || continue
-        F = PureSparse.qr(At; ordering = PureSparse.AMDOrdering())
+        # solve_minnorm!'s minimum-norm formula requires full rank (task 9 finding,
+        # documented on solve_minnorm! itself) -- tol=0 disables rank detection so a
+        # well-conditioned-but-not-provably-so input doesn't spuriously throw.
+        F = PureSparse.qr(At; ordering = PureSparse.AMDOrdering(), tol = 0)
         x = PureSparse.solve_minnorm!(zeros(n), F, b)
         ntested += 1
         @test norm(A * x - b) < 1.0e-6 * max(1.0, norm(b))

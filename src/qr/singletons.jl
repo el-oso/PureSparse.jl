@@ -93,3 +93,118 @@ function peel_column_singletons(A::SparseMatrixCSC{T,Ti}, threshold::T) where {T
     end
     return peel_col, peel_row, collive, rowlive
 end
+
+"""
+    _qr_compose_singletons(A, peel_col, peel_row, collive, rowlive, ordering, tol) -> QRFactor
+
+Assemble a full `QRFactor` (`sym.n1 > 0`) from a peeled singleton block plus the
+factorization of the surviving `A22` submatrix (design_qr.md §2.3).
+
+**R11/R12 need no numerical work** (own derivation, verified algebraically): a
+length-1 Householder reflector has two valid sign conventions (`H=+1` or `H=-1`,
+either gives a valid `QR` pair for a scalar). Choosing `H=+1` (`Q=I`) makes `R11`/`R12`
+literal copies of `A`'s own values at the peeled rows — no transformation needed — and
+makes the OVERALL `Q` block-diagonal (identity ⊕ `Q_block`). Proof sketch this relies
+on: a column can only be peeled when its one remaining live row is not shared by any
+row that survives into `A22` (else that column would have had degree ≥ 2 at peel
+time, contradicting readiness) — so the bottom-left block (`A22`'s rows, peeled
+columns) is provably all-zero, and `A`(permuted) already equals `[R11 R12; 0 A22]`
+exactly, with no elimination required. `apply_Q!`/`apply_Qt!` therefore need no
+special-casing for the singleton rows at all — only `solve!`'s back-substitution does
+(§6.2's "PREPENDED" singleton-block solve).
+"""
+function _qr_compose_singletons(
+        A::SparseMatrixCSC{T,Ti}, peel_col::Vector{Ti}, peel_row::Vector{Ti},
+        collive::BitVector, rowlive::BitVector,
+        ordering::AbstractOrdering, tol::Union{Nothing,Real},
+) where {T,Ti<:Integer}
+    m, n = size(A)
+    n1 = length(peel_col)
+
+    surv_rows = Ti[i for i in 1:m if rowlive[i]]
+    surv_cols = Ti[j for j in 1:n if collive[j]]
+    A22 = A[surv_rows, surv_cols]
+
+    F22 = _qr_block(A22; ordering, tol)
+    sym22 = F22.sym
+    nb = length(sym22.parent)
+
+    cperm = Vector{Ti}(undef, n)
+    @inbounds for k in 1:n1
+        cperm[k] = peel_col[k]
+    end
+    @inbounds for k in 1:nb
+        cperm[n1 + k] = surv_cols[sym22.cperm[k]]
+    end
+    ciperm = Vector{Ti}(undef, n)
+    @inbounds for (k, p) in enumerate(cperm)
+        ciperm[p] = Ti(k)
+    end
+
+    rperm = Vector{Ti}(undef, m)
+    @inbounds for k in 1:n1
+        rperm[k] = peel_row[k]
+    end
+    @inbounds for k in 1:(m - n1)
+        rperm[n1 + k] = surv_rows[sym22.rperm[k]]
+    end
+    riperm = Vector{Ti}(undef, m)
+    @inbounds for (k, p) in enumerate(rperm)
+        riperm[p] = Ti(k)
+    end
+
+    sym = QRSymbolic{Ti}(
+        m, n, n1, sym22.mb,
+        cperm, ciperm, rperm, riperm,
+        sym22.parent, sym22.sptr, sym22.sind,
+        sym22.rcount, sym22.rptr, sym22.vptr, sym22.vrowind, sym22.pivotslot,
+        sym22.max_rrow, sym22.max_vcol, sym22.nnzR, sym22.nnzV, sym22.flops,
+    )
+
+    # R11/R12: gather each peeled row's ORIGINAL entries (value-aware row-form of the
+    # FULL A, not A22), mapped to FINAL column position via ciperm, sorted ascending
+    # (upper-triangular: a row's entries only ever land at columns >= its own index,
+    # by the no-numerical-work argument above).
+    rowptr, rowidx, rowpos = _row_form_values(m, n, A.colptr, A.rowval)
+    r1ptr = Vector{Ti}(undef, n1 + 1)
+    r1ptr[1] = one(Ti)
+    @inbounds for k in 1:n1
+        r = peel_row[k]
+        r1ptr[k + 1] = r1ptr[k] + (rowptr[r + 1] - rowptr[r])
+    end
+    r1colind = Vector{Ti}(undef, Int(r1ptr[n1 + 1] - 1))
+    r1val = Vector{T}(undef, Int(r1ptr[n1 + 1] - 1))
+    @inbounds for k in 1:n1
+        r = peel_row[k]
+        pairs = Tuple{Ti,T}[]
+        for p in rowptr[r]:(rowptr[r + 1] - 1)
+            push!(pairs, (ciperm[rowidx[p]], A.nzval[rowpos[p]]))
+        end
+        sort!(pairs; by = first)
+        c = r1ptr[k]
+        for (fc, v) in pairs
+            r1colind[c] = fc
+            r1val[c] = v
+            c += one(Ti)
+        end
+    end
+
+    # F22.stats only covers A22's own block (it has no knowledge n1 singleton columns
+    # even exist) — every singleton is a genuine LIVE pivot by construction (it passed
+    # the magnitude threshold before being peeled, §2.3), contributing to rank/nnzR
+    # but never to n_dead/dropped_norm (no dropping ever happens in the singleton
+    # block) and no flops (§2.3: "no numerical work, no fill").
+    stats = QRStats(
+        F22.stats.nnzR + length(r1colind),
+        F22.stats.nnzV,
+        F22.stats.flops,
+        F22.stats.rank + n1,
+        F22.stats.n_dead,
+        F22.stats.dropped_norm,
+    )
+
+    return QRFactor{T,Ti}(
+        sym, F22.rcolind, F22.rval, F22.vval, F22.beta,
+        r1ptr, r1colind, r1val, F22.ws, stats, F22.ok,
+    )
+end

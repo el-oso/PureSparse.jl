@@ -90,7 +90,10 @@ end
         F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering())
         @test F.stats.dropped_norm >= 0.0
         @test isfinite(F.stats.dropped_norm)
-        @test F.stats.rank + F.stats.n_dead == F.sym.n - F.sym.n1
+        # F.stats.rank includes the n1 singleton pivots (every singleton is a genuine
+        # live pivot by construction, task 9's stats-composition fix) -- rank + n_dead
+        # sums to the FULL column count n, not just the block's n-n1.
+        @test F.stats.rank + F.stats.n_dead == F.sym.n
         @test 0 <= F.stats.n_dead <= F.sym.n
     end
 end

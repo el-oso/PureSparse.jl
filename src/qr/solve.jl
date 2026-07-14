@@ -116,11 +116,15 @@ function solve!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) w
     sym = F.sym
     m, n = sym.m, sym.n
     nb = length(sym.parent)
+    n1 = sym.n1
     y = F.ws.x                             # length mb, reused as physical-space scratch
     fill!(y, zero(T))
+    # Block physical rows occupy riperm values n1+1 .. n1+mb (design_qr.md §1.4: rperm
+    # places the n1 singleton rows first, then the block's own staircase permutation) —
+    # singleton/null rows (riperm <= n1, or > n1+mb) never scatter into the block scratch.
     @inbounds for p in 1:m
         phys = sym.riperm[p]
-        phys <= sym.mb && (y[phys] = b[p])
+        (phys > n1 && phys - n1 <= sym.mb) && (y[phys - n1] = b[p])
     end
     apply_Qt!(y, F)
     c = Vector{T}(undef, nb)               # correctness-first; zero-alloc is task 10
@@ -131,11 +135,30 @@ function solve!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) w
     xb = Vector{T}(undef, nb)
     solve_R!(xb, F, c)
     @inbounds for k in 1:nb
-        x[sym.cperm[k]] = xb[k]
+        x[sym.cperm[n1 + k]] = xb[k]
     end
-    @inbounds for k in (nb + 1):n
-        x[sym.cperm[k]] = zero(T)           # dead beyond the block (n1==0 for now, task 9)
+
+    if n1 > 0
+        # Singleton block back-substitution (design_qr.md §6.2/§2.3): R11*x1 + R12*x2 = b1,
+        # R11 upper triangular n1×n1 — descending so each row's LATER entries (both later
+        # singleton columns and all of x2) are already resolved before it's used. R11/R12
+        # need no Q transformation (Q=I there, §2.3/task 9 own derivation) — b1[k] is
+        # simply b at the k-th singleton's ORIGINAL row, rperm[k].
+        x1 = Vector{T}(undef, n1)
+        @inbounds for k in n1:-1:1
+            s = b[sym.rperm[k]]
+            for p in (F.r1ptr[k] + 1):(F.r1ptr[k + 1] - 1)
+                jcol = F.r1colind[p]
+                v = F.r1val[p]
+                s -= v * (jcol <= n1 ? x1[jcol] : xb[jcol - n1])
+            end
+            x1[k] = s / F.r1val[F.r1ptr[k]]
+        end
+        @inbounds for k in 1:n1
+            x[sym.cperm[k]] = x1[k]
+        end
     end
+
     fill!(y, zero(T))                      # restore F.ws.x's "all-zero between columns"
                                             # invariant (design.md §4.1) before the next qr!
     return x
@@ -170,25 +193,77 @@ buffer, not a `view` of `F.ws.x` (an earlier version of this function aliased th
 which is wrong for exactly the same reason `solve!` needed the `pivotslot` gather:
 `[z; 0]`'s embedding into the physical space `apply_Q!` operates on must place `z[k]`
 at physical row `pivotslot[k]`, not at physical row `k`).
+
+**Requires `F.stats.n_dead == 0`** (found via testing, not anticipated in the design
+text): the minimum-norm formula assumes `Aᵀ` was factored to FULL rank (every one of
+its columns retired a pivot). Rank detection (§5, task 8) is ON by default in `qr()`
+and silently drops a numerically-near-singular column — `solve_minnorm!`'s math has
+no way to account for a dropped column (there is no "basic solution" concept for a
+minimum-norm solve the way §6.2 has one for least squares), so it would silently
+return a wrong answer rather than error. Pass `tol=0` to the `qr(Aᵀ; ...)` call that
+produced `F` if you need this guarantee on a matrix you haven't separately verified is
+well-conditioned.
 """
 function solve_minnorm!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
     sym = F.sym
+    F.stats.n_dead == 0 || throw(ArgumentError(
+        "solve_minnorm!: F has $(F.stats.n_dead) rank-detected dead column(s) — the " *
+        "minimum-norm formula requires Aᵀ to be factored at full rank; pass tol=0 to " *
+        "qr(Aᵀ; ...) if Aᵀ is well-conditioned, or this system is genuinely rank-" *
+        "deficient and solve_minnorm! does not support that case",
+    ))
     nb = length(sym.parent)
-    z = Vector{T}(undef, nb)               # correctness-first; zero-alloc is task 10
+    n1 = sym.n1
+    c2 = Vector{T}(undef, nb)               # correctness-first; zero-alloc is task 10
     @inbounds for k in 1:nb
-        z[k] = b[sym.cperm[k]]              # Pᵀb: cperm is Aᵀ's OWN column permutation
+        c2[k] = b[sym.cperm[n1 + k]]
     end
-    solve_Rt!(z, F, z)
+
+    z1 = Vector{T}(undef, n1)
+    if n1 > 0
+        # Rᵀz=Pᵀb, with R=[R11 R12; 0 Rblock] (§2.3/task 9): Rᵀ=[R11ᵀ 0; R12ᵀ Rblockᵀ]
+        # is block lower-triangular, so z1 solves FIRST via R11ᵀz1=c1 (forward,
+        # ascending — R11 is upper-triangular row-wise stored, so this is the SAME
+        # forward-scatter idiom as solve_Rt!, generalized to also push R12's
+        # contribution into c2 before the block's own solve_Rt! runs).
+        c1 = Vector{T}(undef, n1)
+        @inbounds for k in 1:n1
+            c1[k] = b[sym.cperm[k]]
+        end
+        @inbounds for k in 1:n1
+            diag = F.r1val[F.r1ptr[k]]
+            zk = c1[k] / diag
+            z1[k] = zk
+            for p in (F.r1ptr[k] + 1):(F.r1ptr[k + 1] - 1)
+                jcol = F.r1colind[p]
+                v = F.r1val[p]
+                if jcol <= n1
+                    c1[jcol] -= v * zk
+                else
+                    c2[jcol - n1] -= v * zk
+                end
+            end
+        end
+    end
+
+    z2 = Vector{T}(undef, nb)
+    solve_Rt!(z2, F, c2)
     y = F.ws.x
     fill!(y, zero(T))
     @inbounds for k in 1:nb
         piv = sym.pivotslot[k]
-        piv != 0 && (y[piv] = z[k])
+        piv != 0 && (y[piv] = z2[k])
     end
     apply_Q!(y, F)
     @inbounds for p in 1:sym.m
         phys = sym.riperm[p]
-        x[p] = phys <= sym.mb ? y[phys] : zero(T)
+        if phys <= n1
+            x[p] = z1[phys]
+        elseif phys - n1 <= sym.mb
+            x[p] = y[phys - n1]
+        else
+            x[p] = zero(T)
+        end
     end
     fill!(y, zero(T))                      # restore F.ws.x's invariant before the next qr!
     return x

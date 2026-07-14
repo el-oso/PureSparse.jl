@@ -152,6 +152,20 @@ mutable struct QRFactor{T<:Real,Ti<:Integer} <: AbstractSparseFactor{T}
     # reflector (H_k = I), which makes §5's dead-column skip a plain no-op.
     vval::Vector{T}
     beta::Vector{T}
+    # R11/R12 (singleton block, §2.3, M5a task 9): rows 1..n1 of the FULL R, stored
+    # ROW-wise like the block's own rcolind/rval, but in FULL final-column order
+    # (1..n, not block-relative). A length-1 Householder reflector is provably H=I
+    # (own derivation: for a scalar x=[v], the standard construction gives beta=2/v'^2
+    # with v'=2v, so H = 1 - beta*v'^2 = 1-2 = -1... EXCEPT choosing R[k,k]=v directly
+    # (Q=+1, the OTHER valid sign convention for a 1-element reflector — either is a
+    # valid QR pair) makes Q's contribution on the singleton block the identity, so
+    # R11/R12 are RAW COPIED VALUES from A, no transformation, and Q_full is
+    # block-diagonal (identity ⊕ Q_block) — apply_Q!/apply_Qt! need no special-casing
+    # for the singleton rows at all, only solve!'s back-substitution does, §6.2).
+    # Empty (n1==0 length-1 vectors) when singletons are off/none found.
+    r1ptr::Vector{Ti}              # length n1+1
+    r1colind::Vector{Ti}
+    r1val::Vector{T}
     ws::QRWorkspace{T,Ti}          # §4.5
     stats::QRStats
     ok::Bool

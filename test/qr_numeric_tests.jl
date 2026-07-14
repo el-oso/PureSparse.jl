@@ -80,7 +80,11 @@ end
         # numeric loop's fundamental identity, which only holds exactly when no column
         # is dropped as rank-deficient (dropping loses information by construction,
         # §5.2) — rank detection's own effect on RᵀR gets its own dedicated test.
-        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)
+        # singletons=false: task 9's peeling is ON by default REGARDLESS of tol (tol
+        # only relaxes the magnitude test, §2.3) — this test's own helpers (gram_R)
+        # assume the raw block-only (n1==0) layout; singleton composition gets its own
+        # dedicated tests (qr_singleton_compose_tests.jl).
+        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)
         G = gram_R(F)
         # R's columns are in FINAL PERMUTED order (design_qr.md §1.4 cperm) — row
         # permutation doesn't matter for AᵀA (cancels: (PA)ᵀ(PA) = AᵀA for any
@@ -98,7 +102,7 @@ end
         m = rand(rng, 1:14)
         n = rand(rng, 1:min(m, 12))
         A = random_rect_qr2(rng, m, n, rand(rng, (0.15, 0.3, 0.5, 0.7)))
-        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)  # raw identity, not rank detection
+        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)  # raw identity
         res = reconstruct_A_from_QR(F, A)
         ismissing(res) && continue
         X, Aperm = res
@@ -119,8 +123,8 @@ end
         # tol=0 in both runs: the default τ scales with eps(T), which differs
         # astronomically between Float64 and BigFloat -- comparing the FULL
         # (undropped) R in both is the fair, apples-to-apples precision check.
-        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)
-        Fbig = PureSparse.qr(Abig; ordering = PureSparse.AMDOrdering(), tol = 0)
+        F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)
+        Fbig = PureSparse.qr(Abig; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)
         n2 = F.sym.n - F.sym.n1
         Rd = zeros(n2, n2)
         Rb = zeros(BigFloat, n2, n2)
@@ -161,9 +165,13 @@ end
 
 @testitem "Structurally dead column (vcount[k]==0): diagonal slot present and zero" begin
     using SparseArrays
-    # A = [1 1 1] (design_qr.md §3.4's own worked example): columns 2,3 structurally dead.
+    # A = [1 1 1] (design_qr.md §3.4's own worked example): columns 2,3 structurally
+    # dead IN THE BLOCK PIPELINE this test means to exercise -- but every column here
+    # is ALSO a structural singleton (m=1, so each has exactly one entry), so task 9's
+    # default-on peeling would intercept it entirely; singletons=false forces the
+    # matrix through the block pipeline this test is actually about.
     A = sparse([1, 1, 1], [1, 2, 3], [1.0, 1.0, 1.0], 1, 3)
-    F = PureSparse.qr(A; ordering = PureSparse.NaturalOrdering())
+    F = PureSparse.qr(A; ordering = PureSparse.NaturalOrdering(), singletons = false)
     @test F.ok
     @test F.beta[2] == 0.0
     @test F.beta[3] == 0.0
@@ -192,22 +200,36 @@ end
     R1 = F1.rval[F1.sym.rptr[1]]
     @test isapprox(R1^2, 2.0^2 + 3.0^2, atol = 1.0e-10)
 
+    # A2's 3 columns are each their own singleton (m=1, so every column has exactly
+    # one entry) -- task 9's singleton peeling (default tol, which does NOT disable
+    # peeling itself, only the magnitude-threshold strictness -- design_qr.md §2.3)
+    # peels ONE of them (the rest become permanently dead once the sole row dies), so
+    # n1 can be > 0 here. Reconstruct the FULL R (R11/R12 in full-column-index space,
+    # the block part offset by n1) rather than assuming n1 == 0.
     A2 = sparse(reshape([1.0, 2.0, 3.0], 1, 3))
     F2 = PureSparse.qr(A2; ordering = PureSparse.NaturalOrdering())
     @test F2.ok
     n = F2.sym.n
+    n1 = F2.sym.n1
     R2 = zeros(n, n)
-    for k in 1:n, c in F2.sym.rptr[k]:(F2.ws.rcursor[k] - 1)
-        R2[k, F2.rcolind[c]] = F2.rval[c]
+    for k in 1:n1, c in F2.r1ptr[k]:(F2.r1ptr[k + 1] - 1)
+        R2[k, F2.r1colind[c]] = F2.r1val[c]
     end
-    @test isapprox(R2' * R2, Matrix(A2)' * Matrix(A2), atol = 1.0e-10)
+    nb = length(F2.sym.parent)
+    for k in 1:nb, c in F2.sym.rptr[k]:(F2.ws.rcursor[k] - 1)
+        R2[n1 + k, n1 + F2.rcolind[c]] = F2.rval[c]
+    end
+    Ad2 = Matrix(A2)[:, F2.sym.cperm]
+    @test isapprox(R2' * R2, Ad2' * Ad2, atol = 1.0e-10)
 end
 
 @testitem "qr!: refactorize with new values on the same pattern" begin
     using Random, SparseArrays
     rng = MersenneTwister(202)
     A = sprand(rng, 8, 5, 0.4)
-    F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0)
+    # qr! requires sym.n1 == 0 (§2.3): force singletons off on the initial factor so
+    # this refactor-focused test can't randomly hit the n1>0 rejection path.
+    F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)
     A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .+ 1.0)
     PureSparse.qr!(F, A2; tol = 0)
     n = F.sym.n

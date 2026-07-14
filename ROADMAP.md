@@ -54,8 +54,28 @@ and one real indexing bug (`pivotslot[k]` vs. physical row `k` conflated at the
 solve-phase boundary) found via testing and fixed (7); rank-deficiency policy (Heath's
 threshold test + Foster–Davis dead-column drop), rank detection ON by default since
 task 7's own testing found an unguarded near-singular pivot blows `beta` up to ~1e33
-(8). Full suite: 94/94 items, 206115/206115 assertions. Next: task 9 (column-singleton
-pre-elimination, §2.3).
+(8). Full suite: 94/94 items, 206115/206115 assertions.
+
+**2026-07-14 update: M5a task 9 CLOSED.** Column-singleton pre-elimination (§2.3):
+breadth-first queue-based peeling on a value-aware row-form, independently verified
+against a hand-written column-ascending reference (0/500 count mismatches). Own
+derivation (verified algebraically, not assumed): a length-1 Householder reflector has
+two valid sign conventions, and choosing `H=+1` makes `R11`/`R12` raw copies of `A`'s
+own values with zero numerical work and makes the overall `Q` block-diagonal — so
+`apply_Q!`/`apply_Qt!` need no change, only `solve!`'s back-substitution does. A
+genuine gap surfaced by testing (not designed up front): `tol=0` alone does not
+disable peeling (it only relaxes the magnitude threshold), so `qr()` gained an
+explicit `singletons::Bool=true` keyword as a true on/off switch (documented in
+design_qr.md §2.3/§6.4). `qr!` now rejects `sym.n1 > 0` factors with a clear
+`ArgumentError`, matching the design's no-singletons-on-reuse rule. `solve_minnorm!`
+gained an explicit full-rank precondition (`n_dead == 0`) since its minimum-norm
+formula silently gives wrong answers otherwise — also found via testing, not designed.
+Singleton peeling defaulting to on caused a large ripple across tasks 6–8's
+pre-existing tests (many implicitly assumed `n1=0`); all traced and fixed one by one
+(either `singletons=false` where the test's intent was the core n1=0 pipeline, or an
+updated `rank+n_dead==n` invariant where the composed/default behavior was the actual
+intent). Full suite: 105/105 items, 213831/213831 assertions. Next: task 10
+(`qr!` zero-alloc/StrictMode/trim hardening).
 
 **Status (2026-07-13): M1 CLOSED, M2 CLOSED, M4 CLOSED (every gate item in
 `docs/design.md` §10 met, see the `### M1`/`### M2` sections and the "M4 closeout"
