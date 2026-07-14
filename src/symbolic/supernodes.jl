@@ -4,25 +4,37 @@
 # own free tunables, design §0 B2/§1.4, no external provenance).
 
 """
-    fundamental_supernodes(n, parent, colcount) -> (nsuper, super)
+    fundamental_supernodes(n, parent, colcount; fundamental=true) -> (nsuper, super)
 
-Partition the POSTORDERED columns `1:n` into fundamental supernodes. `super` has length
-`nsuper+1`; supernode `s` owns columns `super[s]:super[s+1]-1`. Columns j, j+1 belong to
-the same fundamental supernode iff `parent[j]==j+1`, `colcount[j]==colcount[j+1]+1`, AND
-`j+1` has exactly one etree child (design §3.4 condition 3 — required for a genuinely
-*fundamental* partition per Liu–Ng–Peyton; the first two conditions alone give a valid
-superset partition but not a fundamental one).
+Partition the POSTORDERED columns `1:n` into supernodes. `super` has length `nsuper+1`;
+supernode `s` owns columns `super[s]:super[s+1]-1`. Columns j, j+1 belong to the same
+supernode iff `parent[j]==j+1`, `colcount[j]==colcount[j+1]+1`, AND (when
+`fundamental=true`, the default) `j+1` has exactly one etree child (design §3.4
+condition 3 — required for a genuinely *fundamental* partition per Liu–Ng–Peyton; the
+first two conditions alone give a valid superset partition but not a fundamental one).
+
+`fundamental=false` (design_qr_m5b.md §A2.2, M5b's own default for its frontal
+partition — Cholesky/LDLᵀ callers keep `fundamental=true` unchanged) drops the
+only-child condition: SPQR paper §2.3's two-condition supernode test ("for these two
+columns to reside in the same *fundamental* supernode, j must also be the only child of
+j+1; SuiteSparseQR does not use this restriction"). The two remaining conditions still
+guarantee identical column patterns (paper, same sentence), so every pattern-dependent
+consumer of `super` (staircase logic, row structure) is unaffected by the flag.
 """
-function fundamental_supernodes(n::Int, parent::Vector{Ti}, colcount::Vector{Ti}) where {Ti<:Integer}
+function fundamental_supernodes(n::Int, parent::Vector{Ti}, colcount::Vector{Ti};
+        fundamental::Bool = true) where {Ti<:Integer}
     childcount = zeros(Ti, n)
-    @inbounds for j in 1:n
-        p = parent[j]
-        p != 0 && (childcount[p] += one(Ti))
+    if fundamental
+        @inbounds for j in 1:n
+            p = parent[j]
+            p != 0 && (childcount[p] += one(Ti))
+        end
     end
     super = Ti[1]
     j = 1
     @inbounds while j <= n
-        while j < n && parent[j] == j + 1 && colcount[j] == colcount[j + 1] + 1 && childcount[j + 1] == 1
+        while j < n && parent[j] == j + 1 && colcount[j] == colcount[j + 1] + 1 &&
+                (!fundamental || childcount[j + 1] == 1)
             j += 1
         end
         j += 1

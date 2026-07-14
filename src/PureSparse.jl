@@ -10,6 +10,7 @@ import LinearAlgebra  # NOT `using` — our own `cholesky`/`cholesky!`/`ldlt`/`l
                        # here would silently replace it the moment PureSparse loads.
 using SparseArrays
 using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!, nrm2
+using PureBLAS: wy_t!, wy_apply!, WYApplyWorkspace, qr_block_size
 using Preferences: Preferences
 
 include("tuning.jl")
@@ -25,6 +26,7 @@ include("symbolic/counts.jl")
 include("symbolic/supernodes.jl")
 include("symbolic/driver.jl")
 include("qr/symbolic.jl")
+include("qr/frontal_symbolic.jl")  # M5b multifrontal symbolic layer (design_qr_m5b.md §A4)
 include("qr/singletons.jl")
 include("qr/numeric.jl")
 include("qr/solve.jl")

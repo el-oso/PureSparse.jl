@@ -117,6 +117,25 @@ end
     @test super2 == [1, n + 1]
 end
 
+@testitem "fundamental_supernodes: fundamental=false drops the only-child condition (design_qr_m5b.md §A2.2 worked example)" begin
+    # SPQR paper's two-condition supernode test (M5b's own default, not Cholesky's):
+    # column 4 has TWO etree children (2 and 3), so the only-child condition (fundamental
+    # partition) splits {4,5} off from {3}, giving 3 fronts; dropping it merges them into
+    # one, giving 2 — exactly design_qr_m5b.md §A3.3's worked example.
+    parent = [2, 4, 4, 5, 0]
+    colcount = [4, 3, 3, 2, 1]
+    nsuper_f, super_f = PureSparse.fundamental_supernodes(5, parent, colcount; fundamental = true)
+    @test nsuper_f == 3
+    @test super_f == [1, 3, 4, 6]
+    nsuper_nf, super_nf = PureSparse.fundamental_supernodes(5, parent, colcount; fundamental = false)
+    @test nsuper_nf == 2
+    @test super_nf == [1, 3, 6]
+    # fundamental=true is still the default (Cholesky/LDLT callers unaffected)
+    nsuper_default, super_default = PureSparse.fundamental_supernodes(5, parent, colcount)
+    @test nsuper_default == nsuper_f
+    @test super_default == super_f
+end
+
 @testitem "supernode_tree: snode_of/sparent consistency" setup = [SupernodeHelpers] begin
     using Random
     rng = MersenneTwister(22)
