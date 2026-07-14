@@ -14,8 +14,10 @@ using Preferences: Preferences
 
 include("tuning.jl")
 include("types.jl")
+include("qr/types.jl")
 include("ordering/interface.jl")
 include("ordering/amd.jl")
+include("ordering/ata.jl")
 include("symbolic/etree.jl")
 include("symbolic/counts.jl")
 include("symbolic/supernodes.jl")
@@ -32,8 +34,9 @@ include("contracts.jl")
 export symbolic, cholesky, cholesky!, ldlt, ldlt!, issuccess
 export simplicial, updowndate!
 export solve!, solve_L!, solve_D!, solve_Lt!, refine!
-export AbstractOrdering, AMDOrdering, NaturalOrdering, GivenOrdering
+export AbstractOrdering, AMDOrdering, COLAMDOrdering, NaturalOrdering, GivenOrdering
 export Symbolic, SupernodalFactor, LDLFactor, SimplicialLDLFactor, FactorStats
+export QRSymbolic, QRFactor, QRStats
 export activate!, deactivate!
 DROPIN_ACTIVE && export sparse_L
 

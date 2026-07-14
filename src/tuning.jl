@@ -79,6 +79,25 @@ const GPU_FLOP_THRESHOLD = @load_preference("gpu_flop_threshold", 2e9)::Float64
 # `:refactor_required` (design.md §7's documented overflow contract).
 const SIMPLICIAL_GROW = @load_preference("simplicial_grow", 1.5)::Float64
 
+# Sparse QR tunables (design_qr.md §1.6). Rank threshold τ = qr_tol_mult *
+# max(m,n) * eps(T) * max_j‖A[:,j]‖₂ (design_qr.md §5.3) — own derivation, free
+# tunable, no external provenance (design.md's B2 discipline, distinct from
+# design_qr.md's own B2, §0).
+const QR_TOL_MULT = @load_preference("qr_tol_mult", 8.0)::Float64
+
+# Column-singleton pre-elimination magnitude threshold = this × τ (design_qr.md §2.3).
+const QR_SINGLETON_MULT = @load_preference("qr_singleton_mult", 1.0)::Float64
+
+# COLAMD dense-row/column withholding multipliers (design_qr.md §2.2 pt 5). D1: this is
+# a REUSE of the existing AMD dense-row heuristic shape (`max(16, mult*sqrt(n))`,
+# ultimately sourced to the AMD package User Guide, design.md §2.2 pt 6), not an
+# independently derived constant — the COLAMD paper's own default is a flat 50%
+# density ("probably too high for most matrices", paper p.362), deliberately not used
+# here so the whole ordering layer shares one dense-threshold convention.
+const COLAMD_DENSE_ROW_MULT = @load_preference("colamd_dense_row_mult", 10.0)::Float64
+const COLAMD_DENSE_COL_MULT = @load_preference("colamd_dense_col_mult", 10.0)::Float64
+const COLAMD_DENSE_FLOOR = 16
+
 # Drop-in activation (design.md §10 M4): whether `src/dropin.jl` — which extends
 # `LinearAlgebra.cholesky`/`ldlt` for `SparseMatrixCSC`, a genuine stdlib method-table
 # overwrite — is even `include`d. This MUST be a compile-time Preference (not a runtime

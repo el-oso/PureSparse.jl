@@ -10,8 +10,9 @@
 
 using TypeContracts
 
-@contract AbstractOrdering "Every subtype implements `order`, returning a valid permutation vector (design.md §2.1)." begin
+@contract AbstractOrdering "Every subtype implements `order` (symmetric permutation, design.md §2.1) and `order_columns` (rectangular column permutation for sparse QR, design_qr.md §2.1)." begin
     order(::Self, ::Int, ::Vector, ::Vector)::Vector
+    order_columns(::Self, ::Int, ::Int, ::Vector, ::Vector)::Vector
 end
 
 @contract AbstractSparseFactor{T} "Every subtype implements `solve!` in place and reports success via `issuccess`." begin
