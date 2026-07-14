@@ -1,4 +1,4 @@
-# PureSparse.jl — Sparse QR Design Document (v1, DRAFT — awaiting adversarial review)
+# PureSparse.jl — Sparse QR Design Document (v2, corrected after adversarial review)
 
 Adds sparse QR factorization (least-squares / minimum-norm / rank-revealing-lite) to
 PureSparse.jl as **milestone M5**, scheduled before the GPU backend, which is renumbered
@@ -6,58 +6,209 @@ PureSparse.jl as **milestone M5**, scheduled before the GPU backend, which is re
 family **from published papers only** — SuiteSparseQR and CHOLMOD source are GPL and are
 never read, in any form (§11; same absolute policy as `design.md` §11).
 
-This is a **v1 Fable draft**, produced by the same process that produced the original
-`design.md`: a first comprehensive design, to be adversarially reviewed against the
-actual papers and the actual PureBLAS/PureSparse source before implementation. §0 lists
-the decisions most in need of hostile review. Nothing here is implemented yet.
+Produced by the same process that produced `design.md`: a first comprehensive design
+(v1, Fable), then **two independent adversarial reviews** — Opus (1 BLOCKER, 5 DEFECTs,
+6 NITs; `docs/design_qr_review.md`) and a second, independent Fable pass that did not see
+Opus's findings (3 BLOCKERs, 9 DEFECTs, 8 NITs; `docs/design_qr_review_fable.md`) — with
+the two highest-severity findings (the `vcount` off-by-one and the `beta=2/(vᵀv)`
+division-by-zero) independently re-derived and confirmed by the coordinator before this
+revision. §0 is the full changelog. All BLOCKERs and DEFECTs from both reviews are fixed
+below; every fix is traceable to a review finding via its ID. Not yet implemented.
 
 Companion documents: [`design.md`](design.md) (Cholesky/LDLᵀ, the canonical reference
-for conventions used here), [`../ROADMAP.md`](../ROADMAP.md) (milestone status).
+for conventions used here), [`../ROADMAP.md`](../ROADMAP.md) (milestone status),
+[`design_qr_review.md`](design_qr_review.md) and
+[`design_qr_review_fable.md`](design_qr_review_fable.md) (the two v1 reviews this
+revision fixes).
 
 ---
 
-## §0 Review status and hotspots (v1)
+## §0 Changelog from v1 → v2 (two independent adversarial reviews)
 
-No changelog yet — this is the unreviewed draft. Decisions the reviewer should attack
-first, in order of blast radius:
+Mirrors `design.md` §0's changelog convention. IDs below are this document's own
+(distinct from the reviews' internal numbering, since the two reviews numbered
+independently and their BLOCKER/DEFECT sets overlap); each entry says which review(s)
+found it.
 
-- **H1 — the star-matrix fill-equivalence derivation (§3.2).** The whole symbolic layer
-  reuses the existing Cholesky pipeline on a stand-in pattern; the correctness of that
-  reuse rests on the ~10-line fill-path argument written out in §3.2. It is our own
-  derivation (the primary paper, Gilbert–Li–Ng–Peyton 2001, is not in the archive; only
-  the survey's two-sentence description of the construction is). If the argument has a
-  hole, everything downstream is wrong. Hand-check it against small matrices by brute
-  force.
-- **H2 — the V-pattern recurrence and pivot-row bookkeeping (§3.4).** Derived from the
-  survey's statement of George–Ng 1987 plus the row-merge view (Liu 1986c via survey).
-  The exact "which row retires at column k" convention is ours; an off-by-one here
-  produces V patterns that are *sometimes* right — the same failure mode design.md §3.3
-  N6 warns about for column counts. The §9.1 superset invariant is the safety net; review
-  whether the invariant as stated actually catches a wrong pivot convention.
-- **H3 — rank-deficiency handling is *not* Heath's exact method (§5).** v1 drops dead
-  columns' sub-threshold tails (reporting the dropped mass) instead of Heath's exact
-  Givens row-zeroing. §5 argues this is the Foster–Davis phase-1 strategy and bounds the
-  error; review whether the bound and the `\`-semantics consequences are stated honestly.
-- **H4 — the architecture decision (§1.3): left-looking v1, multifrontal only if the
-  gate forces it.** The gate philosophy (CLAUDE.md req 2) is non-negotiable wall-time;
-  §9.3 predicts where left-looking wins and loses and defines the escalation trigger.
-  Review whether M5's gate as written is a real gate or a dodge.
-- **H5 — every identifier and constant against the B1/B2 test** ("where did this come
-  from?" — design.md §0). Particular attention: the τ default formula (§5.3, our own),
-  the reflector sign convention (§4.4), field names in §1.4, the COLAMD dense-row/column
-  thresholds (§2.2 pt 5, ours — the paper explicitly declines to prescribe one).
-- **H6 — the COLAMD specification (§2.2) against the primary sources.** §2.2 was
-  written from the actual Davis–Gilbert–Larimore–Ng 2004 paper (read in full), the same
-  way design.md §2.2 was written from the AMD paper — and AMD's §2.2 needed an
-  adversarial pass against the paper to get the degree bookkeeping right (design.md §0
-  D4/N4/N5). Verify §2.2's set-difference/tag-array bookkeeping and the recommended-
-  variant choices against the paper's Algorithm 3 and §4.8 line by line; COLAMD is
-  *not* AMD on a different graph (no quotient-graph elements, different absorption
-  rules) and any place where §2.2 silently reads like design.md §2.2 is suspect.
-  Additionally: Larimore's 1998 thesis (the paper's own stated detail reference, in the
-  archive) was only **spot-checked** for this draft (§2.2 status note) — the reviewer
-  should read its Chapters 3–4 and flag anything the condensed journal prose made §2.2
-  get subtly wrong.
+**BLOCKERs (all three fixed; two were found independently by both reviewers and
+re-derived/confirmed by the coordinator before this revision — treated as certain):**
+
+- **B1** (Opus BLOCKER-1 + Fable B1, coordinator-confirmed) — §3.4's `vcount`
+  recurrence `vcount[k] = a_k + Σ_child (vcount[c] − 1)` went **negative** whenever an
+  etree child structurally evaporates (`vcount[c]==0` contributes no pivot row to
+  retire, but the formula subtracted 1 for it regardless). Minimal witness:
+  `A = [1 1 1]` (chain etree 1→2→3, column 1 evaporates) gives `vcount = [1,0,−1]`.
+  Fixed to `vcount[k] = a_k + Σ_child max(vcount[c] − 1, 0)` (§3.4). Both reviewers
+  brute-forced the corrected formula clean: Opus 2424/2424 random trials, Fable's
+  "live-children form" 4000/4000 (0 failures either way) once the max-clamp is applied.
+  A negative/under-sized `vcount` corrupts `nnzV`/`vptr` sizing — a memory-safety bug
+  on ordinary rank-deficient input (CLAUDE.md req 5), not a corner case (~5% of Opus's
+  random trials contained an evaporation). The §9.1 superset invariant does **not**
+  catch this (it is an over-allocation guard; under-allocation is the opposite failure
+  — Opus DEFECT-4, fixed as part of B1, see §9.1 item 3). §3.4's claim that a dead
+  column's row of R is "structurally empty" was also wrong (Fable D9: `rcount[k]` can
+  exceed 1 for a dead `k`, e.g. `A=[1 1 1]` again) — corrected to "numerically empty."
+  **Cross-checked against `faer`'s sparse QR** (§11): its supernodal Householder
+  symbolic pass propagates `min(max(s_count, panel_width) − panel_width, s_col_count)`
+  to each parent, which for a single-column supernode (`panel_width=1`, matching this
+  design's per-column case) is algebraically identical to this fix's
+  `max(vcount[c]−1, 0)` clamp — an independent, working implementation arriving at the
+  same clamp. (`faer`'s formula has an additional outer clamp by `s_col_count`, an
+  upper bound this design's `vcount` does not currently enforce; noted as a plausible
+  additional test invariant in §9.1 item (d), not required since B1's actual bug —
+  negative counts — is already fixed without it.)
+- **B2** (Fable B2, judgment call — resolved by redesigning the row-numbering scheme,
+  then independently cross-checked against `faer`'s working sparse QR at the
+  coordinator's direction) — §3.4/§1.4/§4.5's original convention ("pivot row of
+  column k gets number k; non-pivot rows get numbers > n") is unrepresentable: for
+  `m < n` (a declared goal, §1.1) a live column k>m has no physical row to number "k"
+  (witness: `A=[0 1]`, m=1,n=2 — column 2 is live and wants row-number 2, but m=1);
+  and with dead columns present, `rperm` is not even a permutation of `1..m` under the
+  stated rule. Fixed by decoupling "row k of R" (always indexed 1..n′, the block
+  column count — every column gets a row slot, live or dead) from "physical permuted
+  row number" (indexed 1..m) via an explicit `pivotslot::Vector{Ti}` array
+  (§1.4/§3.4/§4.1). Worked examples for both failure modes (`A=[0 1]`, `A=[1 1;0 0]`)
+  added to §3.4. **Cross-checked against `faer`'s sparse QR** (MIT-licensed, a new
+  permitted-source category distinct from the CHOLMOD/SuiteSparse prohibition, §11):
+  `faer`'s `min_col_perm` construction (`qr.rs`) is the identical primitive — a
+  physical row permutation sorted purely by each row's leftmost-nonzero column,
+  independent of pivot/column indexing — confirming the fix's general shape against a
+  real, working implementation; `faer` itself sidesteps `m<n` entirely by requiring
+  `m≥n` at its API boundary (`assert!(A.nrows() >= A.ncols())`) and pushing that case
+  to the caller (factor the transpose, matching this design's own §6.3), which is a
+  narrower contract than this design's stated goal (§1.1) — so the fix here remains
+  necessary, not something `faer`'s stricter choice would have let us skip.
+- **B3** (Fable B3, coordinator independently re-derived and confirmed) — §4.4's
+  `beta = 2/(vᵀv)` had no zero-norm guard. Reachable and distinct from the
+  `vcount[k]==0` structurally-dead case: a column can be symbolically live
+  (`vcount[k]>0`, nonempty pattern) but numerically all-zero on that pattern (no value
+  cancellation needed — a genuinely zero column, or all its remaining pattern already
+  zeroed by prior reflectors). With rank detection off (`tol ≤ 0`, an explicitly
+  supported mode, §5.3), nothing intercepted this and `beta` became `0/0`. Fixed:
+  §4.4 now states the standard dlarfg-style special case (`‖x‖==0 ⇒ beta:=0`,
+  reflector is the identity) independent of the rank-detection setting, and confirms
+  §4.2's existing `beta[i]==0 ⇒ skip` apply-loop handles both the structural and this
+  numeric dead case uniformly once `beta` is set correctly here.
+
+**DEFECTs (all fixed):**
+
+- **D1** (Opus DEFECT-2 + Fable D1, provenance) — `colamd_dense_row_mult`/
+  `colamd_dense_col_mult` (§1.6/§2.2 pt 5) relabeled: the `max(16, mult·√dim)` shape
+  was claimed "own, no external provenance," but it is a direct reuse of the
+  *existing* PureSparse AMD dense-row heuristic (`AMD_DENSE_MULT=10.0`/floor `16`,
+  `tuning.jl`), itself sourced to the AMD package User Guide's `AMD_DENSE=10` default
+  (design.md §2.2 pt 6/N5) — a permitted source, but the claim as written would not
+  survive "where did this come from?" (the exact B1/B2 trap from the original
+  Cholesky review). Also corrected: "the paper prescribes no threshold" — the COLAMD
+  paper (p.362, checked) **does** ship a default ("We used the same default threshold
+  used by MATLAB's COLMMD, 50%, which is probably too high for most matrices");
+  §2.2 pt 5 now states this accurately and explains why we deliberately use the
+  reused AMD-shaped default instead. **Cross-checked against `faer`** (§11): its AMD
+  default (`dense=10.0`, `max(16,alpha·√n)`) matches this codebase's existing AMD
+  heuristic exactly, cross-validating design.md's own AMD provenance claim; its
+  COLAMD default (`dense_row=dense_col=0.5`, a flat 50%-of-dimension threshold, not
+  √-scaled) independently confirms the paper's own 50% default is what a real
+  implementation ships — this design's choice to reuse the √n-scaled AMD shape
+  instead remains a deliberate, stated divergence from both, not an unresolved gap.
+- **D2** (Opus DEFECT-1) — dropped the unsupported "Liu 1986c's row-merge tree gives
+  the counting view" citation from §3.4/§11: the survey's Liu-1986c citations are for
+  block-Row-Givens merging (§7.2) and deriving `AᵀA`'s etree without forming it
+  (§11.5), never a "counting view" in the V-pattern discussion. Relabeled as own
+  inference by analogy to the COLAMD paper's Liu-1991 row-merge count recurrence
+  (which §2.2 pt 1 already cites correctly).
+- **D3** (Opus DEFECT-3 + Fable N6) — §9.3's gate rule was undefined against a
+  possibly-TBB-parallel stdlib SPQR baseline. §9.2/§9.3 now state the rule explicitly:
+  attempt to pin SPQR to one thread, document whether the pin is honored, and gate
+  single-thread-vs-single-thread; if SPQR cannot be pinned, gate against its
+  separately-measured single-thread wall time, not the parallel run.
+- **D4** (Opus DEFECT-4) — folded into B1: the superset invariant is now explicitly
+  labeled one-sided (over-allocation/stray-fill only), and §9.1 item 3 gains a
+  complementary exact-count / under-allocation check.
+- **D5** (Opus DEFECT-5) — `QRSymbolic`'s field comments (§1.4) were ambiguous about
+  index space (full `n` vs. non-singleton block `n−n1`) for `rcount`/`rptr`/`vptr`/
+  `vrowind`. Now every symbolic-analysis array is explicitly declared block-local
+  (size `n′ = n−n1`), matching `parent`, and decoupled from the full-`n`-sized
+  `cperm`/`ciperm`.
+- **D6** (Fable D2) — §3.4's "pattern(V_k) = S_k" / "reflector acts on exactly the
+  rows S_k" overclaimed exactness: `S_k` is a symbolic **upper bound** on the true
+  numeric support (Fable measured 118/4000 random trials with at least one strictly
+  overpredicting column — a survivor row's remaining pattern can become empty by
+  structural early death with no value cancellation). Reworded throughout §3.4/§9.1;
+  the §9.1 H2 test now explicitly asserts `⊇`, not `=` (getting this backwards would
+  make the test flaky/wrong once real numeric data is used).
+- **D7** (Fable D3) — §3.2's fill-path proof gained the missing path-endpoint case
+  (the detour argument as written only covered *interior* clique-edge vertices; the
+  one-clause fix: the new interior vertex `v₁` satisfies `v₁ < min(a,b)` whether the
+  replaced edge's other end is itself interior or a path endpoint). Conclusion
+  unchanged — brute force already covered it (3000+/3000+, both reviews).
+- **D8** (Fable D4) — §4.6/§7.2 corrected further: `_apply_reflectors_left!` computes
+  `C := Q·C` only (forward block order, the SVD back-transform direction). M5b's
+  front trailing-update needs the **transposed** application (`C := Qᵀ·C`, reversed
+  block order + transposed T — dormqr's 'T' case), which does not exist in PureBLAS
+  either. P1 (§7.2) rescoped to cover both directions explicitly; the "adapt, don't
+  derive" conclusion still holds (transposing the block order and the T-triangle use
+  is a small extension of the same proven algorithm, not new math) but §4.6/§11 no
+  longer imply the existing kernel is usable as-is in either direction.
+- **D9** (Fable D5) — §2.2 pts 1–2 restored COLAMD paper Algorithm 2's `l_k = 0`
+  branch (`K := ∅`, no `{k}` reference added to any `C_j`) — the condensed
+  `C_j = (C_j\Cₖ)∪{k}` formula silently dropped it. The paper notes this "can occur
+  for k < n if the matrix is not strong Hall" — routine for the rectangular/
+  rank-deficient inputs this milestone targets, not an edge case.
+- **D10** (Fable D6) — fixed SPQR citations: the (1)/(2)/(3) solve-method enumeration
+  the design cites is in paper **§5.1** ("The methods"), not §3.3, in §6.2/§6.3/§5.2.
+- **D11** (Fable D7) — §1.2's "α heuristic documented there" claim removed: the
+  survey names the *existence* of scaled-identity conditioning improvement (§7.5) and
+  says its optimal value is "only approximated through heuristics" (§11.5) but
+  documents no actual heuristic. Table entry reworded to not overpromise a citation
+  the source doesn't contain.
+- **D12** (Fable D8) — §6.3's transpose-factorization identity fixed: from
+  `Aᵀ·P = QR` follows `A = P·Rᵀ·Qᵀ` (was written `Pᵀ·Rᵀ·Qᵀ`, a display error — the
+  operational solve formulas that followed were already correct and are unchanged).
+
+**NITs folded in** (both reviews): the `sign(0):=+1` reflector convention made
+explicit (§4.4, Opus N4); §7.3's τ-boundary wording fixed (exact at τ<0, upper bound
+at τ≥0 including the boundary, Fable N5); the pivot-selection tie-break rule for
+inherited rows made precise rather than referencing an undefined "current number"
+(§3.4, Fable N4 — resolved as part of B2's redesign); §2.2.6's "AMD wins most of its
+large LS set" softened to match SPQR Table VI's actual plurality, not majority (Fable
+N3); §2.2 pt 3's "rejected by the paper's own experiments" wording loosened for the
+two metrics the paper didn't experimentally test (exact degree: cost-rejected without
+testing; approximate deficiency: "mixed... about the same," not rejected — Fable N2);
+§2.2 pt 1's "identical algebra" claim now states the actual offset
+(`vcount[k] = l_k + 1`) rather than asserting bare identity (Opus N1/Fable N1 — this
+offset is exactly where B1's bug lived); §7.1's staircase citation corrected to SPQR
+paper §2.3 (defines it) / §3.1 (illustrates it), not §3.1 alone (Fable N7); task 3's
+checklist (§10) now names the specific Larimore-thesis precision points a bare
+journal-paper reading would miss (Opus N6).
+
+**New permitted-source category added** (coordinator-directed, post-review): `faer`
+(the Rust linear algebra crate, MIT-licensed) is added to §11 as a legitimate,
+citable third-party reference — distinct from and unrelated to the CHOLMOD/SuiteSparse
+GPL prohibition, which is unchanged and absolute — the same standing PureBLAS.jl
+already gives `faer` for its own dense-kernel fast path. Used narrowly here to
+cross-check B1, B2, and D1 against a real, working sparse-QR/ordering implementation
+(details in each entry above and in §11); it did **not** change this design's chosen
+architecture (star-matrix reuse, left-looking Householder, COLAMD-from-the-paper all
+stand unchanged).
+
+**Provenance correction in the design's favor** (Fable, "Verified clean" §4): the
+§3.4 "one row of S_k retires as pivot, the remainder pass to parent(k)" convention,
+previously labeled "our own derivation" as part of hotspot H2, is already published —
+Oliveira 2001, quoted verbatim in the survey (p.57): "One row is selected as a pivot,
+and the remainder are sent to the parent." H2's *core* recurrence is therefore
+paper-grounded, not independent derivation; only the exact deterministic tie-break and
+the physical-slot indexing (now specified precisely by B2's fix) remain our own. §3.4
+and §11's provenance line are updated accordingly.
+
+**Unchanged (verified sound by both independent reviews):** the H1 star-matrix
+fill-equivalence derivation (confirmed by independent brute force: Opus 252+2424/2424,
+Fable 3000/3000, 0 failures either way, modulo D7's proof-wording fix); H3's rank
+policy honesty (the Foster–Davis framing, the `dropped_norm` certificate, the `\`
+basic-solution semantics); H6's COLAMD specification against the primary paper (all
+checked claims faithful except D1/D9); the overall M5a-vs-M5b architecture decision
+and the milestone-level gate structure (H4, subject to D3's baseline-pinning
+clarification); clean-room provenance (**zero violations found** by either reviewer —
+every name/constant traced to a permitted source, D1/D2 were mislabeling, not leaks).
 
 ---
 
@@ -126,7 +277,7 @@ Survey §7.5, condensed, because PureSparse uniquely already ships both alternat
 | Situation | Recommended PureSparse tool |
 |---|---|
 | Well-conditioned LS, no rank worries | normal equations: `cholesky(AᵀA)` (Google/Ceres precedent, survey §7.5) — fastest, least memory |
-| Moderately ill-conditioned, or dense rows in A | augmented system `[αI A; Aᵀ 0]` via `ldlt` + `refine!` (survey §7.5, eq. 7.1; α heuristic documented there) |
+| Moderately ill-conditioned, or dense rows in A | augmented system `[αI A; Aᵀ 0]` via `ldlt` + `refine!` (survey §7.5, eq. 7.1; the survey names `α` scaling as improving conditioning and notes its optimum "is only approximated through heuristics" (§11.5) but documents no specific heuristic — **D11**: caller must choose `α`, e.g. by experiment or literature outside this design's cited sources, not from a formula given here) |
 | Ill-conditioned, rank-deficient, or robustness required | `qr` (this document) |
 
 ### 1.3 Architecture decision: left-looking column Householder v1, multifrontal as the gated escalation
@@ -153,7 +304,7 @@ Honest trade-off table:
 | Axis | (a) left-looking | (b) multifrontal |
 |---|---|---|
 | Reuse of existing code | **maximal**: entire symbolic pipeline (§3) reused on a stand-in pattern; numeric loop is structurally the sibling of `llt.jl`'s left-looking scatter loop (scattered work vector + pattern-driven updates + per-column harvest), and of `simplicial/updown.jl`'s column storage discipline | symbolic layer same as (a); numeric layer is new machinery: frontal assembly, extend-add, contribution-block stack, staircase exploitation, in-front rank handling |
-| PureBLAS dependencies | **none new** (§4.6 — the per-column work is sparse-indexed level-1, which is PureSparse's own domain; PureBLAS `nrm2` used on packed segments) | **one adaptation + one gap** (§7.2): apply-stored-block-reflectors-to-external-C (LAPACK dlarfb/dormqr role) already exists correct-but-private/SVD-specific as `svd.jl`'s `_apply_reflectors_left!` and needs generalizing to a QR-appropriate minimal workspace (smaller task than writing it from scratch); a generic-`T` `geqrf!` fallback is still a real gap (§4.6) |
+| PureBLAS dependencies | **none new** (§4.6 — the per-column work is sparse-indexed level-1, which is PureSparse's own domain; PureBLAS `nrm2` used on packed segments) | **one adaptation (two sub-parts, D8) + one gap** (§7.2): apply-stored-block-reflectors-to-external-C (LAPACK dlarfb/dormqr role) exists correct-but-private/SVD-specific/`Q·C`-direction-only as `svd.jl`'s `_apply_reflectors_left!` and needs both generalizing to a QR-appropriate minimal workspace and extending to the transposed `Qᵀ·C` direction M5b needs (smaller task than writing either from scratch); a generic-`T` `geqrf!` fallback is still a real gap (§4.6) |
 | Zero-alloc-after-symbolic | natural (exact V/R sizing from symbolic, §3.4; no dynamic structures) | needs a preallocated contribution-block arena sized by a symbolic stack simulation (SPQR paper §2.3/§3.1 describes exactly this simulation; doable, more machinery) |
 | Flop rate | BLAS-1/2-grade; wins when fronts are small / R very sparse (SPQR paper §1: row/column methods "are very competitive when R remains very sparse") | BLAS-3; SPQR reaches a substantial fraction of dense-DGEQRF speed (paper §5.5: 2.49 vs 2.67 GFlops single-core) |
 | Rank handling | drop-with-reported-error (§5) — simple, zero-alloc | Heath-per-front, exact, contribution block can grow (SPQR §3.2 + Theorem 1) |
@@ -185,35 +336,63 @@ discipline; if BLAS-3 is needed, do the published thing).
 
 ### 1.4 Core types
 
-Naming note (B1 discipline): field names below follow this package's own established
+Naming note (design.md's B1 discipline — distinct from *this* document's own B1/B2/B3
+blocker IDs, §0): field names below follow this package's own established
 conventions (`rowind`/`*_ptr`/`px` from `types.jl`; `beta` is the survey §7.3
 pseudocode's own name for the Householder coefficients). None are copied from any
 SuiteSparse internal (which we have never seen).
 
+**Index-space convention (D5 fix — stated explicitly, previously ambiguous):** every
+field below is annotated with the space it is indexed over. Two spaces exist:
+*full* (size `n` for columns, `m` for rows — the original, un-eliminated problem) and
+*block* (size `n′ = n − n1` for columns, `m′` for rows — the non-singleton block A22
+that §3/§4 actually operate on; `m′ ≤ m` is the row count remaining after the `n1`
+singleton rows are also removed, §2.3). `cperm`/`ciperm`/`rperm`/`riperm` translate
+between the two spaces (singleton entries first, block entries after); every other
+`QRSymbolic` field — `parent`, `rcount`, `rptr`, `vptr`, `vrowind`, `pivotslot`, and
+the workspace-sizing scalars — is **block-local**, consistent with `parent`'s
+already-stated `n−n1` sizing. An implementer must never index `rcount`/`vptr`/etc. by
+an original (full-space) column number without first translating through `ciperm`.
+
 ```julia
 struct QRSymbolic{Ti<:Integer}
-    m::Int
-    n::Int
+    m::Int                         # full row count
+    n::Int                         # full column count
     # --- singleton block (§2.3); n1 == 0 when disabled or none found ---
     n1::Int                        # number of pre-eliminated column singletons
-    # --- permutations ---
+    mb::Int                        # block row count m′ (rows remaining after removing
+                                   #   the n1 singleton rows, §2.3) — B2: this is the
+                                   #   size of the PHYSICAL permuted-row space every
+                                   #   block-local structure below indexes into; it can
+                                   #   be LESS than n′ = n-n1 (the m<n′ case, §3.4).
+    # --- permutations (FULL space, size n / m) ---
     cperm::Vector{Ti}              # column permutation (singletons first, then
     ciperm::Vector{Ti}             #   fill-reducing ∘ postorder on the rest), length n
-    rperm::Vector{Ti}              # row permutation: staircase sort + pivot-row
-    riperm::Vector{Ti}             #   assignment (§3.4), length m
-    # --- column elimination tree of the non-singleton block (postordered) ---
+    rperm::Vector{Ti}              # row permutation (singleton rows first, then the
+    riperm::Vector{Ti}             #   block's own staircase permutation, §3.4), length m
+    # --- column elimination tree of the block (postordered; BLOCK space, size n-n1) ---
     parent::Vector{Ti}             # length n-n1; 0 = root
-    # --- factor structure ---
-    rcount::Vector{Ti}             # nnz of row k of R  (= colcount of L(AᵀA)), length n
-    rptr::Vector{Ti}               # row-of-R pointers (CSC of Rᵀ), length n+1
-    vptr::Vector{Ti}               # V column pointers, length n+1
-    vrowind::Vector{Ti}            # V row patterns (permuted rows; first entry of
-                                   #   column k is k, the pivot slot — §3.4)
+    # --- factor structure (BLOCK space throughout) ---
+    rcount::Vector{Ti}             # nnz of row k of R (= colcount of L(AᵀA)), length n-n1
+    rptr::Vector{Ti}               # row-of-R pointers (CSC of Rᵀ), length n-n1+1
+    vptr::Vector{Ti}               # V column pointers, length n-n1+1
+    vrowind::Vector{Ti}            # V row patterns, physical (block-permuted, 1..mb)
+                                   #   row numbers — §3.4; pivot row for column k is
+                                   #   NOT assumed to be numbered k (B2) — see pivotslot
+    pivotslot::Vector{Ti}          # B2 fix: pivotslot[k] = the physical row number
+                                   #   (1..mb) that is column k's designated pivot row,
+                                   #   for a LIVE column k; 0 for a structurally dead
+                                   #   column (vcount[k]==0). Decouples "row k of R"
+                                   #   (a logical index, always 1..n-n1, live or dead)
+                                   #   from "physical row number" (1..mb, only live
+                                   #   columns consume one) — see §3.4 worked examples.
+                                   #   Chosen at symbolic time (pattern-only, static).
     # --- workspace sizing ---
     max_rrow::Int                  # max rcount — sizes the row-subtree gather buffer
     max_vcol::Int                  # max V column length — sizes the packed reflector buffer
     nnzR::Int
-    nnzV::Int
+    nnzV::Int                      # Σ vcount (D6: an upper bound on true numeric V
+                                   #   nonzeros, exact as a STRUCTURAL/allocation count)
     flops::Float64                 # §3.5 — exact when rank detection is off
 end
 
@@ -270,10 +449,10 @@ the package (design.md §9.1 D6 separation applies unchanged).
 
 | Preference | Default | Meaning |
 |---|---|---|
-| `qr_tol_mult` | `8.0` | c_τ in the rank threshold τ = c_τ·max(m,n)·eps(T)·max_j‖A[:,j]‖₂ (§5.3 — **own derivation**, free tunable, no external provenance; B2 discipline) |
+| `qr_tol_mult` | `8.0` | c_τ in the rank threshold τ = c_τ·max(m,n)·eps(T)·max_j‖A[:,j]‖₂ (§5.3 — **own derivation**, free tunable, no external provenance; design.md's B2 discipline, distinct from this document's own B2, §0) |
 | `qr_singleton_mult` | `1.0` | singleton magnitude threshold = this × τ (§2.3) |
-| `colamd_dense_row_mult` | `10.0` | COLAMD withholds rows with nnz > max(16, mult·√n) (§2.2 pt 5 — threshold shape is ours; the paper prescribes none and flags COLMMD's 50% as too high) |
-| `colamd_dense_col_mult` | `10.0` | COLAMD withholds (and orders last) columns with nnz > max(16, mult·√m) (§2.2 pt 5, same provenance status) |
+| `colamd_dense_row_mult` | `10.0` | COLAMD withholds rows with nnz > max(16, mult·√n) (§2.2 pt 5 — **D1 fix**: this is the *existing* PureSparse AMD dense-row heuristic reused by analogy (design.md §2.2 pt 6, AMD User Guide `AMD_DENSE=10`), NOT an independent derivation; the COLAMD paper's own default is a flat 50% density, deliberately not used here — see §2.2 pt 5) |
+| `colamd_dense_col_mult` | `10.0` | COLAMD withholds (and orders last) columns with nnz > max(16, mult·√m) (§2.2 pt 5, same provenance as above) |
 
 ---
 
@@ -341,15 +520,30 @@ to what we implement:
    `Rₖ = (∪_{k = min Rᵢ} Rᵢ ∪ ∪_{k = min Aᵢ} Aᵢ) \ {k}` — every candidate pivot row's
    upper-bound pattern collapses onto `Rₖ`, so the used sets are discarded (*regular
    row absorption*, paper eq. (1)). The pivot-column count bound is
-   `lₖ = Σ_{k = min Rᵢ} lᵢ + |{i : k = min Aᵢ}| − 1` (paper eq. (2)) — note this is
-   *identical algebra* to §3.4's `vcount` recurrence, which is no accident: both are
-   the row-merge tree. Storage never grows above O(|A|) (paper's §3 argument: each
-   `C_j` update replaces `C_j` by `(C_j \ Cₖ) ∪ {k}`, never larger).
+   `lₖ = Σ_{k = min Rᵢ} lᵢ + |{i : k = min Aᵢ}| − 1` (paper eq. (2)). This is the
+   *same row-merge-tree quantity* as §3.4's `vcount` recurrence, related by the offset
+   `vcount[k] = lₖ + 1` (the `+1` accounts for the pivot row itself, which `lₖ`
+   excludes by convention, "excluding the pivot column itself" per the paper) —
+   **N1/D9 correction:** the two are offset-equivalent, not literally identical
+   algebra as an earlier draft of this section claimed; the offset is exactly where
+   this design's own `vcount` recurrence had its B1 bug (a per-child `max(·,0)` clamp
+   that eq. (2)'s absorption machinery gets right implicitly, by construction, and
+   which the naive analogy did not carry over). Storage never grows above O(|A|)
+   (paper's §3 argument: each `C_j` update replaces `C_j` by `(C_j \ Cₖ) ∪ {k}`, never
+   larger).
 2. **Column sets for column selection (paper Algorithm 2).** To permute columns during
    the elimination, maintain for each column j the set `C_j` referencing exactly those
    row sets (`Rᵢ` bold / `Aᵢ` plain, in the paper's notation) containing j; initially
    `C_j = Struct(A[:,j])`. The symbolic update rewrites `C_j = (C_j \ Cₖ) ∪ {k}` for
-   every j ∈ Rₖ.
+   every j ∈ Rₖ — **D9 fix, do not drop this branch:** Algorithm 2 (paper p.361)
+   qualifies this with `K := {k}` normally, but **`K := ∅` (and `Rₖ := ∅`) when
+   `lₖ = 0`** — i.e. a pivot row that causes no fill-in and represents no non-pivotal
+   rows is discarded entirely, and `{k}` is *not* added to any `C_j`. The paper notes
+   `lₖ = 0` "can occur for k < n if the matrix is not strong Hall" (p.360) — routine
+   for the rectangular/rank-deficient inputs this milestone targets, not an exotic
+   corner. An implementation following only the condensed `∪{k}` formula above
+   without this qualifier inserts phantom `{k}` references; implement from Algorithm
+   2/3 verbatim (task 3), treat the bullet above as a summary, not the spec.
 3. **Pivot metric (paper §4.3/§4.8, Algorithm 3).** At step k, select the candidate
    column c minimizing the maintained metric `d_c`, swap into position k. The
    **recommended COLAMD variant** (paper §4.8, adopted verbatim as our v1): initial
@@ -364,10 +558,14 @@ to what we implement:
    almost nothing to detect" there); super-rows and super-columns ON. The paper tested
    16 variants and explicitly recommends this combination (§4.8, including the
    deliberately kept initial-metric "bug" story — initial COLMMD beat initial AMD by
-   ~8% flops); we do not re-litigate that experiment. Rejected metrics (exact degree,
-   Householder-update size, approximate Markowitz, approximate deficiency — paper
-   §4.2/§4.4–4.6) are documented as rejected *by the paper's own experiments*, not
-   re-tested by us.
+   ~8% flops); we do not re-litigate that experiment. The alternative metrics
+   (Householder-update size §4.4, approximate Markowitz §4.5) were tested and
+   discarded by the paper for giving worse orderings; exact external degree (§4.2) was
+   rejected on cost grounds **without being tested** ("we thus did not test this
+   method" — paper's own words); approximate deficiency (§4.6) was tested with mixed
+   results "about the same" as the recommended variant, not rejected outright
+   (**N2 fix**: the earlier blanket "rejected by the paper's own experiments" overstated
+   two of these four). None are re-tested by us regardless.
 4. **Super-columns / mass elimination (paper §4).** Columns in `Rₖ` with identical
    pattern (hash-bucketed, Ashcraft-style hash per the paper) merge into
    super-columns; selecting a super-column mass-eliminates all its members; a column
@@ -376,15 +574,23 @@ to what we implement:
    but the detection site (within `Rₖ` after the symbolic update) is COLAMD's own.
 5. **Dense rows/columns (paper §4).** Dense rows destroy the bound (one dense row ⇒
    the A⁽¹⁾ bound is fully dense) and are withheld from the ordering; dense columns
-   only cost time and are withheld and placed **last** in Q. The paper prescribes no
-   threshold (explicitly: "problem dependent"; MATLAB COLMMD's 50% is called "probably
-   too high"). Our defaults are therefore our own free tunables (§1.6, B2 discipline):
-   withhold rows with > max(16, `colamd_dense_row_mult`·√n) entries and columns with >
-   max(16, `colamd_dense_col_mult`·√m) entries — the same shape as our AMD dense-row
-   heuristic, chosen for the same reason, calibrated in the M5 benchmark pass. A
-   withheld dense row still densifies R itself (§1.1 non-goals — Björck 1984
-   withholding is the real fix and is out of scope); the ordering just stops being
-   poisoned by it.
+   only cost time and are withheld and placed **last** in Q. **D1 fix — the paper does
+   prescribe a default**, contrary to an earlier draft of this section: "Determining
+   how dense a row or column should be for it to be withheld is problem dependent. We
+   used the same default threshold used by MATLAB's COLMMD, **50%**, which is probably
+   too high for most matrices" (p.362, verbatim). We deliberately do **not** use that
+   50%-density default: PureSparse already has an absolute-count-with-√-scaling dense
+   heuristic for AMD (`max(16, AMD_DENSE_MULT·√n)`, sourced to the AMD package User
+   Guide, design.md §2.2 pt 6), the paper's own text calls its 50% "probably too high,"
+   and reusing the existing AMD-shaped default keeps one dense-threshold convention
+   across the whole ordering layer instead of two. Concretely: withhold rows with
+   > max(16, `colamd_dense_row_mult`·√n) entries and columns with
+   > max(16, `colamd_dense_col_mult`·√m) entries — **D1**: this is a *reuse* of the
+   AMD heuristic (permitted-source provenance, §1.6), not an independently derived
+   "own" constant as an earlier draft claimed; calibrated (if at all) in the M5
+   benchmark pass, same as AMD's. A withheld dense row still densifies R itself (§1.1
+   non-goals — Björck 1984 withholding is the real fix and is out of scope); the
+   ordering just stops being poisoned by it.
 6. **Complexity** (paper §3): time O(Σ_j |A[:,j]|·υ_j) (υ_j = bound-of-U column
    counts), storage O(|A|), both typically far below numeric factorization.
 
@@ -403,7 +609,9 @@ orthogonal to factorization throughput, exactly as in M1.
 
 Kept as a first-class option, not a placeholder: MA49 orders exactly this way (SPQR
 paper §2.2), and SPQR's own measured default *prefers* AMD-on-AᵀA for m > 2n (paper
-§5.4, Table VI — AMD wins most of its large LS set). `ata_pattern(A)` builds
+§5.4, Table VI — AMD is the plurality winner in the paper's own "Best" column, 5 of 11
+of its large LS set, ahead of METIS's 4 and COLAMD's 2 — **N3 fix**: "wins most" in an
+earlier draft overstated a 5/11 plurality as a majority). `ata_pattern(A)` builds
 pattern(AᵀA) column-by-column with a marker array from the row-form copy of A (already
 needed by §2.3/§3.4; the SPQR paper §2.1 makes the same "transpose needed anyway"
 observation), then delegates to the untouched `ordering/amd.jl`. Cost: worst-case
@@ -476,10 +684,17 @@ there is a path a→b whose interior vertices are all < min(a,b).
 - Every S-edge is a clique edge, so any S-fill-path is an AᵀA-fill-path: filled(S) ⊆
   filled(AᵀA).
 - Conversely, replace any clique edge (v_j, v_k), j,k ≥ 2, appearing in an
-  AᵀA-fill-path by the detour v_j–v₁–v_k. Since v₁ = min C_i < v_j and v_j is an
-  *interior* vertex of the path (so v_j < min(a,b)), the detour's interior vertices
-  remain < min(a,b): the path is still a fill path in G(S). Hence filled(AᵀA) ⊆
-  filled(S). ∎
+  AᵀA-fill-path by the detour v_j–v₁–v_k. The new interior vertex is v₁ = min C_i,
+  and v₁ < v_j and v₁ < v_k since j,k ≥ 2 by construction. **D7 fix (path-endpoint
+  case, an earlier draft only argued the interior-vertex case):** each of v_j, v_k is
+  either an *interior* vertex of the original fill path (in which case v_j < min(a,b)
+  or v_k < min(a,b) by the fill-path property itself) or a *path endpoint*
+  (v_j = a or v_k = b, for which no bound below min(a,b) is needed or claimed — an
+  endpoint is allowed to equal a or b). In either case v₁ < v_j and v₁ < v_k give
+  v₁ < min(a,b): the newly introduced interior vertex satisfies the fill-path
+  condition regardless of whether the replaced edge sat at an endpoint or strictly
+  inside the path. So the detour is a legal fill path in G(S) in every case. Hence
+  filled(AᵀA) ⊆ filled(S). ∎
 
 Consequences, all for free:
 - `etree(S)` via the existing `etree.jl` = the column elimination tree of A.
@@ -511,50 +726,141 @@ that R's *final* pattern is known but fills in over time — except the left-loo
 column order makes the arrival order per-row monotone, so no intermediate-fill concern
 exists (contrast survey §7.2's row-ordering discussion, which is about row methods).
 
-### 3.4 V structure: the row-merge recurrence and the staircase row permutation (H2)
+### 3.4 V structure: the row-merge recurrence and the physical row permutation (H2 — B1/B2/D6 fixes applied, v2)
 
 Published basis, all via survey §7.1/§7.3: George–Ng 1986/1987 define the column
 patterns of V and show V fits in the space of L(AᵀA) for square zero-free-diagonal A;
 George–Liu–Ng 1988 show each *row* of V is a path in the column etree starting at the
-column of that row's leftmost nonzero; Liu 1986c's row-merge tree gives the counting
-view; the survey's §7.3 closing line fixes the contract: "the pattern Vk of the kth
-column of V is computed in the symbolic factorization phase."
+column of that row's leftmost nonzero; the survey's §7.3 closing line fixes the
+contract: "the pattern Vk of the kth column of V is computed in the symbolic
+factorization phase." (**D2 fix:** an earlier draft also cited "Liu 1986c's row-merge
+tree" here for "the counting view" — unsupported; the survey's Liu-1986c citations are
+for block-Row-Givens merging (§7.2) and deriving AᵀA's etree without forming it
+(§11.5), never for a counting recurrence over V. The `vcount` recurrence below is our
+own bookkeeping on top of the George–Ng/George–Liu–Ng pattern results, by analogy to
+the COLAMD paper's Liu-1991 row-merge count recurrence — §2.2 pt 1 — not a second,
+distinct Liu-1986c source.)
 
-Our formulation (own derivation on top of those statements — this is hotspot H2):
+**Provenance correction (in this design's favor — Fable review):** the "one row of
+S_k retires as pivot, the rest pass to parent(k)" convention below, previously
+presented as this document's own invention (hotspot H2), is already published:
+Oliveira 2001, quoted verbatim in the survey (p.57): *"One row is selected as a
+pivot, and the remainder are sent to the parent."* H2's core set-recurrence is
+therefore paper-grounded; only the deterministic tie-break (which row is *the* pivot
+when several qualify) and the physical-row indexing scheme (B2, below) are this
+design's own.
 
 - **Row assignment.** Each row r of A is assigned to column `leftcol(r)` = its leftmost
-  nonzero (permuted) column. `a_k` = number of rows assigned to k.
-- **Active sets.** Process columns in ascending order, maintaining disjoint row sets.
-  `S_k` = (rows assigned to k) ∪ (non-pivot rows inherited from each child of k in the
-  column etree). Column k's reflector acts on exactly the rows S_k, so
-  **pattern(V_k) = S_k**; one row of S_k retires as the *pivot row* of column k (it is
-  where row k of R physically lives after the reflector), and the remaining |S_k| − 1
-  rows pass to parent(k).
-- **Counts** (for exact allocation): `vcount[k] = a_k + Σ_{c child of k} (vcount[c] − 1)`
-  — one bottom-up O(n) pass; `nnzV = Σ vcount`. A column with `vcount[k] == 0` is a
-  *structurally dead* pivot (Oliveira 2001's "row k evaporates when S_k is empty",
-  survey §7.1): `beta[k] = 0` permanently, row k of R is structurally empty, and if
-  structural rank matters the caller learns it from `stats.rank` (§5).
-- **Row permutation `rperm`.** Rows are numbered so that the pivot row of column k gets
-  number k (a staircase sort by `leftcol`, then pivot selection; SPQR's analysis phase
-  performs the same leftmost-sort, paper §2.3, "P₂"). Pivot selection rule (ours,
-  deterministic): the assigned row with the smallest original index if a_k > 0, else
-  the inherited row of smallest current number. Non-pivot rows receive numbers > n in
-  arrival order (for m > n; when m < n dead pivots absorb the shortfall). In permuted
-  numbering, `vrowind` for column k starts with k itself (the pivot slot) followed by
-  the inherited/assigned rows in ascending permuted order.
-- **Patterns** (`vrowind`): a second bottom-up pass materializes each S_k. Each row
-  lives in exactly one active set at a time, so threading rows through per-column
-  linked lists (head/next arrays, the same idiom as `llt.jl`'s descendant lists) builds
-  all patterns in O(nnzV) total, then one sort pass per column (counting-free: rows
-  can be emitted in ascending order by merging children's already-sorted survivor lists
-  with the assigned-rows list — children's lists are sorted by induction).
+  nonzero (permuted) column, if it has one (a fully null row of A has none — it never
+  enters any `S_k`, harmlessly; §9.4). `a_k` = number of rows assigned to k.
+- **Physical row numbering (`rperm`/`riperm`) — decided FIRST, independent of pivot
+  selection (B2 fix).** Before any pivot bookkeeping, assign every one of the `mb`
+  physical rows a permuted number 1..mb via a deterministic canonical order: ascending
+  by `(leftcol(r), original row index r)`, with null rows (no `leftcol`) ordered last
+  by original index (SPQR's analysis phase performs the same leftmost-sort, paper
+  §2.3, "P₂"). This numbering is a pure relabeling — it does not depend on, and is
+  decided before, which row within a column's active set becomes that column's pivot.
+  Decoupling it this way is what fixes B2: no column's pivot row number is ever tied
+  to the column's *own* index.
+- **Active sets.** Process columns in ascending order, maintaining disjoint row sets
+  (as physical row numbers, from the fixed numbering above). `S_k` = (rows assigned to
+  k) ∪ (non-pivot rows inherited from each child of k in the column etree). Column k's
+  reflector is *applied* over all of `S_k` — **D6 fix:** `S_k` is `V_k`'s *symbolic*
+  pattern, an upper bound on the true numeric support, not a claim that every row of
+  `S_k` is nonzero in every instance (a survivor row's remaining column pattern can
+  become empty by structural early death with no value cancellation — measured:
+  ~3% of columns in Fable's 4,000-trial random check strictly overpredicted). The
+  numeric loop (§4.1) always operates over the full symbolic `S_k`; this is safe
+  (confirmed 4,000/4,000 trials: no numeric nonzero ever lands outside `S_k`) and
+  costs only wasted flops on the zero entries, never a correctness or under-allocation
+  problem in the *other* direction. One row of `S_k` retires as its **pivot row**
+  (`pivotslot[k]`, chosen as the row with the **smallest physical row number** in
+  `S_k` — well-defined and deterministic since every row already has a physical
+  number from the previous step, live or inherited, with no special-casing needed
+  between freshly-assigned and inherited rows — **N4 fix:** an earlier draft's tie-break
+  ("smallest original index if assigned, else smallest *current* number" for inherited
+  rows) referenced an undefined quantity, since under the old column-number-as-pivot-slot
+  scheme an inherited row's "current number" wasn't yet fixed at the point of the
+  comparison; fixing the physical numbering upfront removes the circularity entirely),
+  and the remaining `|S_k| − 1` rows pass to `parent(k)`.
+- **Counts** (for exact allocation — **B1 fix**):
+  `vcount[k] = a_k + Σ_{c child of k} max(vcount[c] − 1, 0)` — one bottom-up O(n) pass;
+  `nnzV = Σ vcount`. The `max(·, 0)` clamp is required: a child `c` with
+  `vcount[c] == 0` retires no pivot and has an empty `S_c`, so it must contribute 0 to
+  its parent, not `vcount[c] − 1 = −1`. The unclamped formula
+  (`vcount[k] = a_k + Σ_c (vcount[c] − 1)`) is **wrong** and goes negative whenever a
+  child structurally evaporates — this was a real bug in the v1 draft (BLOCKER, both
+  reviews independently). **Worked example:** `A = [1 1 1]` (1×3 row vector). Star
+  matrix: row 1's leftmost nonzero is column 1, so star column 1 = {1,2,3} (the whole
+  row); columns 2,3 get no assignments and no star entries of their own beyond
+  whatever falls out of column 1's off-diagonal pattern — the resulting column etree
+  is the chain `1→2→3`. `a_1 = 1, a_2 = 0, a_3 = 0`. Ascending pass: `vcount[1] = a_1
+  = 1` (live, `S_1 = {row 1}`, retires it — `pivotslot[1] = 1`). `vcount[2] = a_2 +
+  max(vcount[1] − 1, 0) = 0 + max(0, 0) = 0` (dead — `S_1`'s only row was already
+  fully retired by column 1, nothing to inherit). `vcount[3] = a_3 + max(vcount[2] −
+  1, 0) = 0 + max(−1, 0) = 0` (dead). Final: `vcount = [1, 0, 0]`, matching the true
+  `|S_k| = [1, 0, 0]` exactly — the unclamped formula would instead give
+  `vcount[3] = 0 + (0 − 1) = −1`, a negative allocation. Both reviews' brute force
+  confirms the clamped formula matches `|S_k|` in every trial (Opus: 2424/2424; Fable:
+  4000/4000, 0 failures either way).
+- **Structurally dead columns.** `vcount[k] == 0` ⟺ `S_k = ∅` (Oliveira's evaporation):
+  `beta[k] = 0` permanently, `pivotslot[k] = 0` (sentinel, no physical row), and row k
+  of R is **numerically** empty below the diagonal (not necessarily *structurally*
+  empty — **D9 fix**: `rcount[k]` is the row's allocated slot count from the star
+  matrix's column-count pass, which can exceed 1 even for a dead column, e.g. in the
+  example above `rcount[2] = 2` — row 2 of R has allocated room for entries at columns
+  2 and 3 even though `vcount[2] = 0` means no reflector ever writes a nonzero value
+  there below the diagonal; those slots stay zero). If structural rank matters the
+  caller learns it from `stats.rank` (§5).
+- **Physical-row-count guarantee (B2, why the fix is sufficient for `m < n`).** Once
+  the `max(·, 0)` clamp is applied, at most `mb` columns can ever be live: every live
+  column retires exactly one physical row, distinctly (no row is ever retired twice —
+  it either becomes a pivot once, or is passed to exactly one parent, by construction
+  of the disjoint active sets), and there are only `mb` physical rows in total
+  (`Σ_k a_k = mb`). So `pivotslot[k]`, whenever it is set (live `k`), is *automatically*
+  a value in `1..mb` — there is no separate bound to enforce, and the `m < n′`
+  case (where `n′ = n − n1 > mb` forces at least `n′ − mb` columns structurally dead by
+  pigeonhole) falls out of the same recurrence with no special-casing. **Worked
+  example (B2's original counterexample, now resolved):** `A = [0 1]` (m=1, n=2, no
+  singletons — this is the symbolic-reuse path where §2.3 is disabled). Column 1's
+  entries are all zero: `a_1 = 0`. Row 1's leftmost nonzero is column 2: `a_2 = 1`.
+  Star matrix: both columns are isolated (column 1 has no entries at all — not even a
+  diagonal; column 2's only entry is the row that's leftmost there, giving a bare
+  diagonal), so `parent = [0, 0]` (both roots). `vcount[1] = a_1 = 0` (dead — the null
+  column). `vcount[2] = a_2 = 1` (live, `S_2 = {row 1}`, `pivotslot[2] = 1` — row 1's
+  physical number, which is trivially 1 since `mb = 1`). No conflict: column 2's
+  pivot slot is 1, not "2" — the old scheme's `pivotslot := k` convention is exactly
+  what B2 replaces. **Second worked example (dead-column case, m ≥ n):**
+  `A = [1 1; 0 0]` (m=2, n=2). Row 1's leftmost nonzero is column 1 (`a_1 = 1`); row 2
+  is null (no assignment). Star matrix: column 1's pattern is `{1,2}` (row 1 has
+  nonzeros at both columns), giving `parent[1] = 2`; column 2 has no row whose
+  *leftmost* nonzero is column 2, so it is otherwise isolated — `parent = [2, 0]`.
+  `vcount[1] = a_1 = 1` (live, `S_1 = {row 1}`, `pivotslot[1] = 1`). `vcount[2] = a_2 +
+  max(vcount[1] − 1, 0) = 0 + max(0, 0) = 0` (dead — column 1 fully retired its only
+  row, nothing inherited). Row 2 (the null row) never enters any `S_k` at all and is
+  simply never harvested into R, consistent with a null row's algebraic contribution
+  being exactly 0. Both examples check out with `pivotslot` and `rperm`/`riperm`
+  staying honest bijections/partial-maps over `1..mb` throughout.
+- **Patterns** (`vrowind`): a second bottom-up pass materializes each `S_k` as its
+  physical row numbers, **first entry `pivotslot[k]`** (for live `k`; empty for dead
+  `k`) followed by the rest in ascending physical-row order — keeping the pivot slot
+  first preserves the O(1)-lookup convenience §4.1's harvest step relies on, now via
+  the explicit `pivotslot` array rather than an implicit "row k". Each row lives in
+  exactly one active set at a time, so threading rows through per-column linked lists
+  (head/next arrays, the same idiom as `llt.jl`'s descendant lists) builds all
+  patterns in O(nnzV) total, then one sort pass per column (counting-free: rows can be
+  emitted in ascending order by merging children's already-sorted survivor lists with
+  the assigned-rows list — children's lists are sorted by induction).
 - **Consistency property** (tested, §9.1): for every k, applying the recurrence's set
   algebra must reproduce George–Liu–Ng 1988's row-path characterization — for every
   row r, {k : r ∈ S_k} is a contiguous ascending path in the column etree starting at
-  leftcol(r) and ending where r retires as a pivot (or at a root). A cheap exact
-  cross-check on every zoo matrix, and the property the numeric loop's correctness
-  leans on.
+  leftcol(r) and ending where r retires as a pivot (or at a root, structurally
+  unretired if that root is itself dead — impossible by the same pigeonhole argument
+  above, since the *last* column of any set containing r is always live enough to
+  retire it: a chain of dead columns cannot receive rows without eventually being
+  live, by the vcount recurrence). A cheap exact cross-check on every zoo matrix
+  (Fable: 1,500/1,500 trials, 0 failures), and the property the numeric loop's
+  correctness leans on.
 
 ### 3.5 Flops and workspace bounds
 
@@ -562,9 +868,13 @@ Applying reflector i to a column costs 4·vcount[i] flops (one dot + one axpy ov
 pattern(V_i)); constructing reflector k costs ~3·vcount[k]. Reflector i is applied once
 for every j with i ∈ T^j — that multiplicity is `rcount[i] − 1`. So
 `flops = Σ_i (4·vcount[i]·(rcount[i]−1) + 3·vcount[i])`, computed in the counts pass —
-exact when rank detection is off (dead columns only *remove* applications; same
-upper-bound stance as SPQR paper §2.3). `max_rrow = max rcount` sizes the row-subtree
-gather buffer; `max_vcol = max vcount` sizes the packed reflector staging buffer (§4.5).
+exact **as performed work** when rank detection is off (the numeric loop always applies
+over the full symbolic `S_i` pattern, §3.4 D6 — `vcount[i]` is an upper bound on true
+numeric support but an exact count of the flops actually spent, dead columns only
+*remove* applications; same upper-bound-on-*value*-fill, exact-on-*work* stance as SPQR
+paper §2.3). `max_rrow = max rcount` sizes the row-subtree gather buffer; `max_vcol =
+max vcount` sizes the packed reflector staging buffer (§4.5), sized to `vcount`'s
+allocation count (an upper bound on nonzeros, so never an under-allocation, §3.4 D6).
 
 ---
 
@@ -577,7 +887,7 @@ Direct sparse transcription of survey §7.3's `qr_left_householder`, with the
 survey specifies. For k = 1..n:
 
 1. **Scatter** column k of A (rows permuted by `rperm`) into the dense work vector
-   `x` (length m, kept all-zero between columns — the `SimplicialLDLFactor.wval`
+   `x` (length `mb`, kept all-zero between columns — the `SimplicialLDLFactor.wval`
    discipline, re-zero only what was touched).
 2. **Row subtree.** Collect T^k = {i < k : R[i,k] ≠ 0}: for each j in
    pattern(S[:,k]) (star matrix column, available from §3.2's structures), climb
@@ -587,12 +897,17 @@ survey specifies. For k = 1..n:
    the `max_rrow` buffer (insertion into runs or in-place quicksort — implementation
    detail, but the no-allocation requirement is contractual).
 3. **Apply prior reflectors.** For i in T^k ascending, skip if `beta[i] == 0` (dead or
-   trivial), else: `w = beta[i] · Σ_{r ∈ V_i} vval[r]·x[r]` (sparse dot), then
-   `x[r] -= w·vval[r]` for r ∈ V_i (sparse axpy). Harvest `R[i,k] = x[i]` (the pivot
-   slot of i) into row i's cursor position and zero `x[i]`.
-4. **Form reflector k** (§4.4) from x on pattern(V_k) = `vrowind` column k; write
-   packed values into `vval`, coefficient into `beta[k]`, diagonal into `R[k,k]`;
-   zero x on the pattern. Rank test happens here (§5).
+   trivial — this now uniformly covers BOTH the structurally-dead case, `vcount[i]==0`,
+   AND the numerically-zero-live-pattern case, §4.4's B3 fix, since both set
+   `beta[i]=0`), else: `w = beta[i] · Σ_{r ∈ V_i} vval[r]·x[r]` (sparse dot), then
+   `x[r] -= w·vval[r]` for r ∈ V_i (sparse axpy). Harvest `R[i,k] = x[pivotslot[i]]`
+   (**B2 fix**: the pivot slot of column i is `pivotslot[i]`, a physical row number in
+   `1..mb`, not the column index `i` itself — §3.4) into row i's cursor position and
+   zero `x[pivotslot[i]]`.
+4. **Form reflector k** (§4.4) from x on pattern(V_k) = `vrowind` column k (whose
+   first entry is `pivotslot[k]`, §3.4); write packed values into `vval`, coefficient
+   into `beta[k]`, diagonal into `R[k,k]`; zero x on the pattern. Rank test happens
+   here (§5), and so does the zero-norm guard (§4.4 B3).
 
 Structural sibling of `llt.jl`'s loop (pattern-driven pending work + scatter/harvest on
 preallocated storage + per-step dense-ish kernel), with Householder apply where LLᵀ has
@@ -614,27 +929,54 @@ pattern-identical A2: reset cursors/stats, replay §4.1 — **zero allocations**
 CSC walk through `riperm`, already O(nnz) with no searches. Note the reuse-path caveat
 from §2.3: `n1 = 0` under reuse.
 
-### 4.4 Householder convention (documented, independently derived)
+### 4.4 Householder convention (documented, independently derived; B3 zero-norm guard added, v2)
 
 Textbook reflector (Golub–Van Loan-style; also the survey's `gallery('house')`):
 `H = I − beta·v·vᵀ`, `v[pivot] = 1` implicit? — **No: v is stored in full with its pivot
 entry**, `beta = 2/(vᵀv)`, and the sign choice `v[pivot] = x[pivot] + sign(x[pivot])·‖x‖`
-avoids cancellation. `R[k,k] = −sign(x[pivot])·‖x‖`. Rationale for storing v unnormalized
-with explicit pivot entry rather than LAPACK's implicit-1 convention: the sparse apply
-(§4.1 step 3) then never special-cases the pivot slot, and `beta` absorbs the
-normalization — one fewer branch in the innermost loop. ‖x‖ is computed by packing the
-pattern values into the `max_vcol` staging buffer first and calling PureBLAS `nrm2` on
-the packed view (overflow/underflow-safe lassq accumulation — PureBLAS req 6 — for free;
-the packed copy is then reused as the source for `vval`). This convention is
+avoids cancellation, with the convention **`sign(0) := +1`** (Opus N4 — needed when
+`x[pivot] == 0` but `‖x‖ > 0`; matches PureBLAS's own `qr.jl` reflector, `head ≥ 0 ?
+nrm : −nrm`, so the two codebases agree on this edge case even though V/`vval` never
+cross the PureBLAS ABI). `R[k,k] = −sign(x[pivot])·‖x‖`. Rationale for storing v
+unnormalized with explicit pivot entry rather than LAPACK's implicit-1 convention: the
+sparse apply (§4.1 step 3) then never special-cases the pivot slot, and `beta` absorbs
+the normalization — one fewer branch in the innermost loop. ‖x‖ is computed by packing
+the pattern values into the `max_vcol` staging buffer first and calling PureBLAS `nrm2`
+on the packed view (overflow/underflow-safe lassq accumulation — PureBLAS req 6 — for
+free; the packed copy is then reused as the source for `vval`). This convention is
 self-contained here and tested against `H·x = (R_kk, 0…)ᵀ` directly; it deliberately
 does not need to match LAPACK/faer/anything else since V never crosses an ABI.
 
+**B3 fix — zero-norm guard (BLOCKER, Fable, coordinator-confirmed).** `beta = 2/(vᵀv)`
+divides by zero whenever `x` is exactly zero on the whole pattern `S_k`: then `v = 0`
+identically and `vᵀv = 0`. This is **reachable** and distinct from the `vcount[k]==0`
+structurally-dead case (§3.4): `S_k` can be symbolically nonempty (`vcount[k] > 0`,
+i.e. the *pattern* is live) while every value on that pattern happens to be
+numerically zero — no cancellation required, just a genuinely zero live column (or a
+column whose entire remaining pattern was already zeroed by earlier reflectors). With
+rank detection **on** (`tol > 0`), the §5.1 threshold test (`‖x‖ ≤ τ`) intercepts this
+before the division. But §5.3 explicitly supports `tol ≤ 0` ("disables rank detection
+entirely"), and in that mode nothing else guards the division — "structurally-dead
+pivots still handled" (§5.3) covers only the `vcount[k]==0` case, not a live-pattern/
+zero-value column. **Fix, unconditional on the rank-detection setting:** the kernel
+itself checks `‖x‖ == 0` on the pattern (the same norm already computed for the sign
+choice above) and, if so, sets `beta[k] := 0` and treats the reflector as the identity
+(`R[k,k] := 0`, `vval` on the pattern left as the zero it already is, `pivotslot[k]`
+still recorded so the column's row-of-R slot is addressable) — **regardless of
+`tol`**. This is the same convention the design already relies on for structurally
+dead columns, just applied to the numeric case too. §4.1/§4.2's apply loop already
+skips on `beta[i]==0` unconditionally, so no change is needed there — it uniformly
+covers both the structural and this numeric dead-pivot case once `beta` is set
+correctly here, exactly as §4.1 step 3's updated comment now states.
+
 ### 4.5 `QRWorkspace{T,Ti}`
 
-Preallocated once per factor from `QRSymbolic` sizes: `x::Vector{T}` (m, zero-kept),
-`stamp::Vector{Ti}` + `tsub::Vector{Ti}` (row-subtree stamps and gathered/sorted T^k,
-`max_rrow`), `pack::Vector{T}` (`max_vcol`, §4.4), `rcursor::Vector{Ti}` (n, per-row
-append cursors into `rcolind`/`rval`), `rhs::Vector{T}` (m, solve scratch — §6).
+Preallocated once per factor from `QRSymbolic` sizes: `x::Vector{T}` (length `mb`,
+physical/block row space — §1.4/§3.4 — zero-kept), `stamp::Vector{Ti}` +
+`tsub::Vector{Ti}` (row-subtree stamps and gathered/sorted T^k, `max_rrow`),
+`pack::Vector{T}` (`max_vcol`, §4.4), `rcursor::Vector{Ti}` (`n-n1`, per-row append
+cursors into `rcolind`/`rval`), `rhs::Vector{T}` (length `m`, full space — solve
+scratch operates on the caller's original-shaped RHS, §6).
 
 ### 4.6 PureBLAS dependency check — result (checked against PureBLAS source, 2026-07-14;
 corrected 2026-07-14 after an independent re-check caught a coverage gap in the first
@@ -652,10 +994,21 @@ Verified by reading `/home/el_oso/Documents/claude/PureBLAS.jl/src/qr.jl`,
   used internally for SVD's bidiagonalization back-transform. Read in full — it is the
   real thing, correctly implemented: blocked compact-WY (dlarft-style T construction
   from `G = VᵀV`, then `C -= V·(T·(Vᵀ·C))`) driven by PureBLAS's own `gemm!`, Float64.
-  **But it is not directly usable for QR as-is:** it is `_`-prefixed/unexported, and its
-  scratch (`T`/`G`/`W`/`Yb`) comes from a hardwired `SVDWorkspace{Float64}` — a much
-  larger struct carrying unrelated SVD-bidiagonalization fields, not a QR-appropriate
-  minimal workspace.
+  **Two limitations, not one (D8 fix — an earlier draft only flagged the second):**
+  (i) **direction** — the block loop runs right-to-left (blocks applied `H(k)…H(1)`,
+  the forward/dlarft "columnwise" T convention), which computes `C := Q·C` only (the
+  SVD back-transform's own need). M5b's front trailing-update (§4.6 below: "factor the
+  pivotal column block, then apply its reflectors to the non-pivotal columns") needs
+  the **transposed** application, `C := Qᵀ·C` (dormqr's 'T' case — reversed block
+  order, transposed-T triangular solve in the compact-WY product), which this routine
+  does not compute and nothing else in PureBLAS does either; (ii) it is
+  `_`-prefixed/unexported, and its scratch (`T`/`G`/`W`/`Yb`) comes from a hardwired
+  `SVDWorkspace{Float64}` — a much larger struct carrying unrelated SVD-bidiagonalization
+  fields, not a QR-appropriate minimal workspace. Neither limitation changes the
+  practical conclusion below (adapting proven code is still smaller than deriving
+  compact-WY from scratch — transposing a known-correct block order/T-usage is a
+  contained extension, not new numerical-algorithm risk) but P1 (§7.2) must now cover
+  both directions explicitly, not just the workspace generalization.
 - PureBLAS **still lacks**, as of today: a generic `T<:Real` fallback for
   `geqrf!`/`qr_unblocked!` (`cabi_lapack.jl:14`: "getrf!/geqrf!/gesvd! are Float64-only
   kernels"; `qr.jl:7`: "Float64-only … ponytail: generic/AD QR deferred") — this gap
@@ -721,12 +1074,16 @@ therefore adopts the Foster–Davis phase-1 strategy:** on a dead pivot, set
 `beta[k] = 0` (all later applications of H_k become no-ops — no pattern growth, no
 allocation), leave row k of R structurally present but empty-below-diagonal
 (R[k,k] = 0; entries R[k,j], j > k, that later columns would have written against pivot
-k are *the dropped mass*: each later column j with k ∈ T^j discards `x[k]` at harvest
-time, accumulating `dropped_norm² += x[k]²`), and count k in `n_dead`. The per-column
-tail dropped at detection is itself ≤ τ by the test. `stats.rank`, `stats.n_dead`, and
-`stats.dropped_norm` report the outcome; `\` computes the **basic solution** (dead
-columns' unknowns set to zero, back-substitution over live rows only — SPQR paper §3.3
-method (3) semantics).
+k are *the dropped mass*: each later column j with k ∈ T^j discards `x[pivotslot[k]]`
+at harvest time — using `pivotslot`, §3.4 B2 — accumulating `dropped_norm² +=
+x[pivotslot[k]]²`), and count k in `n_dead`. The per-column tail dropped at *this*
+detecting column is itself ≤ τ by the test (N2: the *later* per-column discards, at
+every subsequent `j` with `k ∈ T^j`, are not themselves τ-bounded and are the bulk of
+`dropped_norm` — only the detection-time tail is bounded by the test). `stats.rank`,
+`stats.n_dead`, and `stats.dropped_norm` report the outcome; `\` computes the **basic
+solution** (dead columns' unknowns set to zero, back-substitution over live rows only —
+**D10 fix**: SPQR paper §5.1 method (3), not §3.3 — §5.1 "The methods" is where the
+paper's (1)/(2)/(3) enumeration lives; §3.3 gives the LS formula only).
 
 Honest consequences, documented for the user: this is the least accurate of the
 published rank strategies (the survey says exactly this of Heath's method, §7.4, and
@@ -741,7 +1098,7 @@ Bischof–Hansen 1991) remain non-goals (§1.1) — all are either dynamic-restr
 requires update/downdate of R and can't keep Q) or second-factorization machinery out
 of v1 scope.
 
-### 5.3 Threshold default (own derivation — B2 discipline)
+### 5.3 Threshold default (own derivation — design.md's B2 discipline)
 
 `τ = qr_tol_mult · max(m,n) · eps(T) · max_j ‖A[:,j]‖₂`, `qr_tol_mult = 8.0` free
 tunable (§1.6). Shape rationale (ours): a backward-stable orthogonal reduction perturbs
@@ -760,8 +1117,9 @@ detection entirely (exact structural behavior; structurally-dead pivots still ha
 ### 6.1 Building blocks (all exported, mirroring the split-solve convention of design.md §6)
 
 - `apply_Qt!(y, F)` / `apply_Q!(y, F)`: y ← Qᵀy / Qy by applying reflectors k = 1..n
-  ascending / n..1 descending over pattern(V_k) (dense y, length m; multi-RHS variants
-  loop columns). Sparse-indexed level-1, same kernels as §4.1 step 3.
+  ascending / n..1 descending over pattern(V_k) (dense y, length `mb` — the block
+  physical row space, §1.4/§3.4; multi-RHS variants loop columns). Sparse-indexed
+  level-1, same kernels as §4.1 step 3.
 - `solve_R!(x, F, c)`: back-substitution over rows of R descending, live rows only
   (dead ⇒ x[k] = 0); `solve_Rt!` the forward mirror (needed by minimum-norm and by
   CSNE-style consumers).
@@ -772,14 +1130,20 @@ detection entirely (exact structural behavior; structurally-dead pivots still ha
 `solve_R!` on y[1:n]; x ← cperm-unpermute. Exactly SPQR paper §3.3's
 `x = P·(R \ (Qᵀb))`, with the singleton block's `R11/R12` triangular solve prepended
 when `n1 > 0`. For m < n or rank-deficient F the same path yields the basic solution
-(dead/absent columns zero — paper §3.3 method (3)). Residual-norm helper
-`lsq_residual(F, b)` = ‖tail of Qᵀb‖ comes free from the same apply.
+(dead/absent columns zero — **D10 fix**: SPQR paper §5.1 method (3), not §3.3).
+Residual-norm helper `lsq_residual(F, b)` = ‖tail of Qᵀb‖ comes free from the same
+apply.
 
 ### 6.3 Minimum-norm solve (m < n)
 
-Published pattern (George–Heath–Ng 1984 via survey §7.2; SPQR paper §3.3 method (2)):
-factor **Aᵀ** (tall), then from Aᵀ·P = QR follows A = Pᵀ·Rᵀ·Qᵀ… i.e. solve
-`Rᵀ·z = (Pᵀb)` forward (`solve_Rt!`), then `x = apply_Q!([z; 0])`. Provided as
+Published pattern (George–Heath–Ng 1984 via survey §7.2; SPQR paper §5.1 method (2)
+— **D10 fix**, was mis-cited to §3.3): factor **Aᵀ** (tall), then from `Aᵀ·P = QR`
+follows **`A = P·Rᵀ·Qᵀ`** (**D12 fix**: an earlier draft wrote `A = Pᵀ·Rᵀ·Qᵀ`, a
+display error — transposing `Aᵀ·P = QR` gives `Pᵀ·Aᵀᵀ = Pᵀ·A`... i.e.
+`(Aᵀ·P)ᵀ = Pᵀ·A = Rᵀ·Qᵀ`, so `A = P·Rᵀ·Qᵀ`, with `P` not `Pᵀ`; the *operational*
+formulas immediately below were already correct and are unchanged), i.e. solve
+`Rᵀ·z = (Pᵀb)` forward (`solve_Rt!`), then `x = apply_Q!([z; 0])` (matches SPQR §5.1
+method (2), `x=Q*(R'\(P'*b))`, checked). Provided as
 `solve_minnorm!(x, F_of_At, b)` with the factor-the-transpose requirement in its
 docstring and checked by StrictMode (dimension test distinguishes misuse). Q must be
 kept for this — and V *is* always kept in v1 (Q-less/discard-Q mode is a listed
@@ -835,7 +1199,8 @@ relaxed amalgamation, i.e. exactly the knobs `supernodes.jl` already has (includ
 `AMALG_*` tunables, recalibrated for QR fronts in an M5b task). Front f's pivotal
 columns = the supernode's columns; its rows = rows of A assigned to those columns
 (§3.4's `a_k` lists) + children's contribution-block rows; the *staircase* (first
-structural zero per column — paper §3.1) falls out of the same assembly simulation the
+structural zero per column — defined in SPQR paper §2.3, illustrated §3.1 — **N7
+fix**: an earlier draft cited only §3.1) falls out of the same assembly simulation the
 SPQR paper §2.3 describes, which also yields exact front sizes and the
 contribution-block **stack** high-water mark for a postorder schedule → preallocated
 arena, zero-alloc numeric (paper §3.2: fronts factorized in postorder, contribution
@@ -844,20 +1209,26 @@ discipline, minus the parallelism).
 
 ### 7.2 PureBLAS prerequisites (from §4.6's verified findings)
 
-- **P1 `larfb`-role kernel — generalize, not derive.** §4.6 found the compact-WY
-  apply-stored-reflectors-to-external-C algorithm **already exists and is proven
-  correct** in PureBLAS: `svd.jl`'s `_apply_reflectors_left!` (`C -= V·(T·(Vᵀ·C))` via
-  `gemm!`, used in production for SVD's bidiagonalization back-transform). The task is
-  therefore **adapting known-working code, not deriving compact-WY math from scratch**:
-  generalize/export that pattern into a QR-appropriate kernel taking caller-provided
-  V/tau/C and a minimal caller-provided workspace (`T`/`G`/`W` scratch sized to the
-  block, not the full `SVDWorkspace{Float64}` the SVD call site carries — QR's fronts
-  need none of SVD's unrelated bidiagonalization fields). This is a meaningfully
-  smaller, lower-risk task than the "build it" framing this section originally carried
-  (correction recorded in §4.6) — real work (extracting a private/workspace-coupled
-  routine into a public, minimally-scoped one, plus its own test/gate pass in
-  PureBLAS), but not new numerical-algorithm risk. Float64 fast path (this adaptation)
-  + the separate generic fallback below.
+- **P1 `larfb`-role kernel — generalize AND extend, not derive (D8 fix: two sub-tasks,
+  not one).** §4.6 found the compact-WY apply-stored-reflectors-to-external-C
+  algorithm **already exists and is proven correct** in PureBLAS, in one direction:
+  `svd.jl`'s `_apply_reflectors_left!` (`C -= V·(T·(Vᵀ·C))` via `gemm!`, used in
+  production for SVD's bidiagonalization back-transform) computes `C := Q·C`.
+  **P1a (workspace generalization):** generalize/export that pattern into a
+  QR-appropriate kernel taking caller-provided V/tau/C and a minimal caller-provided
+  workspace (`T`/`G`/`W` scratch sized to the block, not the full
+  `SVDWorkspace{Float64}` the SVD call site carries). **P1b (direction extension,
+  newly scoped by D8):** M5b's front trailing-update needs the transposed application
+  `C := Qᵀ·C` (dormqr's 'T' case: reversed block order, transposed-T use in the
+  compact-WY product) — not covered by `_apply_reflectors_left!` at all, in either its
+  current or generalized form. Both are **adapting/extending known-working compact-WY
+  code, not deriving the math from scratch**: P1b is the same triple-gemm identity
+  with the block loop reversed and `T` used transposed, a contained, well-understood
+  extension (LAPACK's dormqr does exactly this next to dorgqr's forward form) — real
+  work (extracting a private/workspace-coupled routine into a public, minimally-scoped
+  one covering both directions, plus its own test/gate pass in PureBLAS), but not new
+  numerical-algorithm risk. Float64 fast path (this adaptation) + the separate generic
+  fallback below.
 - **P2 generic `geqrf!`:** a `T<:Real` generic unblocked path (potrf! precedent in the
   same file family), so PureSparse's front loop stays one generic implementation
   (CLAUDE.md req 3). This gap is real and unchanged by the P1 correction — no existing
@@ -872,7 +1243,9 @@ Keeps: §2 ordering+singletons, §3 symbolic (plus front structure), §5 τ poli
 upgraded to exact SPQR-style per-front dead-pivot handling (skip reflector inside the
 dense front; the row stays in the contribution block; C may grow a row — paper §3.2 +
 Theorem 1's no-fill guarantee; the symbolic stack/size bounds become upper bounds when
-τ > 0, exactly the paper's stated trade), §6 API and solves (V storage gains a
+**τ ≥ 0**, exactly at τ<0 when rank-detection is exact — **N5 fix**: SPQR (p.9) is
+exact only when τ<0 (disabled); the boundary τ=0 belongs to the upper-bound side, an
+earlier draft's "τ>0" excluded that boundary case), §6 API and solves (V storage gains a
 per-front panel form; `apply_Qt!` becomes per-front `larfb` sweeps). Replaces: §4's
 per-column loop with assemble→partial-QR→push-C. The M5a scalar path remains as the
 generic-`T` fallback and small-problem path (mirroring the width-1/2 fast-path
@@ -900,8 +1273,18 @@ Int64, kwarg-default paths) — same pattern as the existing gate.
 3. **Invariants (first-class):** (a) star-pattern equivalence — on every zoo matrix,
    `etree(star(A)) == etree(pattern(AᵀA))` and `column_counts` agree (brute-force AᵀA
    formed *in the test only*; this is H1's executable check); (b) V row-path property
-   (§3.4); (c) R/V superset property — every numeric nonzero produced lands inside the
-   symbolic pattern, both full-rank and rank-detecting modes.
+   (§3.4); (c) R/V **superset** property (**D6 fix — assert `⊇`, not `=`**: every
+   numeric nonzero produced lands inside the symbolic pattern `S_k`/`rcount`, both
+   full-rank and rank-detecting modes — `pattern(V_k) = S_k` is a symbolic upper bound,
+   not the exact numeric support, §3.4 D6; a test asserting equality would be flaky/
+   wrong the moment real numeric data hits a structurally-early-dead survivor row);
+   (d) **exact-count / under-allocation guard (new, B1/D4 fix — the superset test in
+   (c) is one-sided and does NOT catch an under-sized `vcount`/`vptr`):** per column
+   `k`, the number of entries actually written into `vval`/`vrowind` during symbolic
+   construction equals `vcount[k]` exactly, and `nnzV == Σ|S_k|` computed independently
+   by walking the row-assignment/inheritance recursion without the recurrence's
+   O(1) counting shortcut — this is the check that would have caught the v1 `vcount`
+   BLOCKER (a negative or under-sized count fails here, not at the superset check).
 4. **Oracles:** (a) dense **BigFloat Householder QR** of the permuted matrix,
    elementwise |R| comparison (sign-freedom per row: compare R up to row signs) on
    small/medium matrices, and Q via applying stored V to I; (b) residual gates:
@@ -935,12 +1318,27 @@ constants including `ORDERING_FIXED`, `ORDERING_AMD`, `ORDERING_COLAMD`,
 SuiteSparseQR baseline by default, and **the same-permutation gate arm is feasible in
 both directions**: (→) run stdlib `qr` with `ordering=SPQR.ORDERING_FIXED` on
 column-pre-permuted A to impose our permutation; (←) feed stdlib's chosen `F.pcol` into
-PureSparse via `GivenOrdering`. One open empirical item for the harness (checked at
-bench time, not assumed): whether Julia's SuiteSparseQR build runs TBB tree-parallelism
-internally — the harness must confirm single-threaded execution (BLAS threads pinned to
-1 as usual; if SPQR spawns TBB threads regardless, that is *recorded and reported* with
-the results, and the gate comparison notes it — we do not silently gate against a
-parallel baseline, nor silently ignore that it is one).
+PureSparse via `GivenOrdering`.
+
+**D3 fix (Opus DEFECT-3 / Fable N6) — the TBB-parallelism contingency, resolved, not
+just flagged.** An earlier draft only said a possibly-parallel SPQR baseline would be
+"recorded and reported," without stating what that means for the gate *decision* —
+"report" is not a rule. The rule, stated now: (1) the harness attempts to pin
+SuiteSparseQR to one thread the same way BLAS threads are already pinned for every
+other PureSparse benchmark (environment variable(s) controlling TBB's thread count —
+document at implementation time which one Julia's SuiteSparseQR build actually honors,
+if any); (2) **the gate is always single-thread-PureSparse vs. single-thread-SPQR** —
+if the pin is confirmed effective (verified by observed wall-clock/CPU-time ratio, not
+assumed from the environment variable being set), gate against that pinned run
+directly; (3) if SPQR cannot be pinned (the variable has no effect, or SPQR's TBB pool
+size is not user-controllable in this build), the harness separately measures SPQR's
+*effective single-thread* wall time (e.g. via `taskset`/CPU-affinity restriction to one
+core rather than an in-process thread-count control) and gates against **that**
+measurement, not the multi-thread run — the multi-thread number is still recorded and
+reported alongside, for transparency, but never substituted into the gate inequality.
+This mirrors how the Cholesky gate resolved an analogous CHOLMOD-arm ambiguity via its
+explicit 4-arm design (design.md §9.3) — QR gets the equivalent explicit resolution
+instead of an open question.
 
 ### 9.3 Benchmark matrix and performance gate
 
@@ -1022,8 +1420,18 @@ it, M5b is not built (recorded as such); otherwise M5b is mandatory scope.
    the update; thesis §4.2 init_scoring/find_ordering decomposition) → super-columns/
    mass elimination (thesis: hash table sharing the degree-list head array) →
    aggressive row absorption → dense/null row and column withholding (thesis §4.2.3).
-   Tests: brute-force exact-minimum on tiny matrices, quality-vs-stdlib-COLAMD bound
-   (§2.2), H6 review pass against both sources before merge.
+   **N6 fix — specific thesis precision points a bare journal-paper reading would miss
+   (name these explicitly when implementing, don't rediscover them):** the per-row
+   `−1` in the *initial* degree `d_j = Σ_{i∈C_j}(|R_i|−1)`; that aggressive row
+   absorption (row-level, inline during the set-difference scan) and mass elimination
+   (column-level, after degree summation) are two distinct mechanisms, not one; that
+   final scoring must follow super-column detection (`d_j = d_j + |R_r| − |j|`, `|j|`
+   = grown supercolumn size); the exact hash `(Σ_{i∈C_j} i) mod n_col`; the lazy
+   sentinel reset of the `w` tag array; the ones'-complement garbage-collection row
+   marker. Also implement Algorithm 2/3's `l_k = 0` branch verbatim (§2.2 pts 1–2,
+   **D9**) — do not transcribe the condensed `∪{k}` formula literally. Tests:
+   brute-force exact-minimum on tiny matrices, quality-vs-stdlib-COLAMD bound (§2.2),
+   H6 review pass against both sources before merge.
 4. Star pattern builder + reuse of etree/postorder/counts (§3.2); H1 brute-force
    equivalence tests **first** (they are cheap and everything depends on them).
 5. Staircase row assignment + V counts/patterns (§3.4) + row-path property test (H2).
@@ -1043,9 +1451,12 @@ it, M5b is not built (recorded as such); otherwise M5b is mandatory scope.
 13. Docs (least-squares guide, API reference, benchmark page from saved JSON).
 
 **M5b (conditional) task list:**
-- P1. PureBLAS: generalize `svd.jl`'s `_apply_reflectors_left!` (existing, proven,
-  SVD-workspace-coupled) into a public, minimal-workspace block-reflector apply kernel
-  (larfb-role, §7.2) — in PureBLAS, with its own OpenBLAS-parity gate.
+- P1. PureBLAS (**D8**: two sub-tasks, not one — §7.2): (a) generalize `svd.jl`'s
+  `_apply_reflectors_left!` (existing, proven, SVD-workspace-coupled, `C:=Q·C`
+  direction only) into a public, minimal-workspace block-reflector apply kernel
+  (larfb-role); (b) extend it to the transposed `C:=Qᵀ·C` direction M5b's front
+  update actually needs (dormqr's 'T' case — not covered by the existing routine in
+  any form) — in PureBLAS, with its own OpenBLAS-parity gate.
 - P2. PureBLAS: generic-`T` `geqrf!` fallback (§7.2).
 - 14. M5b design addendum (front assembly/stack simulation details; §7.1 scope) —
   reviewed before code, like this document.
@@ -1075,6 +1486,68 @@ of `SparseArrays.qr`'s API surface, outputs, and performance (§9.2's probes wer
 reflection on a running session — kwargs, property names, constants' *names* — never
 wrapper or library source).
 
+**New permitted-source category, v2 (coordinator-directed addition): `faer` (Rust
+linear algebra crate).** `faer` is **MIT-licensed** (verified: license file at
+`https://raw.githubusercontent.com/sarah-quinones/faer-rs/main/LICENSE`, "Copyright (c)
+2026 sarah quiñones el kazdadi") — a completely different provenance category from the
+CHOLMOD/SuiteSparse GPL prohibition above, which remains absolute and unchanged. `faer`
+is an independently-developed, permissively-licensed project with no clean-room
+restriction attached to it; reading it and citing attributed inspiration from it is
+legitimate, exactly as PureBLAS.jl already treats `faer` as a legitimate dense-kernel
+reference (`qr.jl`'s own header: "Port of faer 0.24.1's unblocked panel reduction").
+Used here (read directly, source URLs cited per finding) to cross-check three of this
+revision's fixes against a real, working, sparse-QR implementation — not to restructure
+the design around `faer`'s architecture, which stays untouched (star-matrix reuse of the
+Cholesky pipeline, left-looking column-Householder for M5a, COLAMD from the
+Davis–Gilbert–Larimore–Ng paper all stand as designed):
+
+- **B2 (row numbering for m<n), resolved with higher confidence.** `faer`'s sparse QR
+  (`faer/src/sparse/linalg/qr.rs`) builds a physical row permutation exactly the way
+  this revision's B2 fix does: `min_col_perm` (an array of length `m`, the physical row
+  count) is initialized to the identity and then `sort_unstable_by_key(|i| min_col[i])`
+  — sorted purely by each row's `min_col` (`faer`'s name for our `leftcol(r)`), fully
+  decoupled from any column/pivot index (`qr.rs`, `factorize_supernodal_symbolic_qr`,
+  the `min_col_perm` construction directly after the symbolic Cholesky call). This is
+  the identical construction as this document's "physical row numbering... independent
+  of pivot selection" (§3.4) — strong external confirmation the general shape of the
+  fix is right. One difference worth recording honestly: `faer`'s own public entry
+  point asserts `A.nrows() >= A.ncols()` (`qr.rs`, `factorize_symbolic_qr`,
+  `#[track_caller] ... assert!(A.nrows() >= A.ncols());`) — `faer` does **not** attempt
+  m<n inside its core QR at all, and pushes that case entirely to the caller (factor
+  the transpose), matching this design's own §6.3 min-norm convention. This design's
+  stated goal (§1.1: "any shape, m ≥ n or m < n" accepted directly by `qr(A)`) is
+  broader than `faer`'s, so B2's fix is still necessary work here, not something we
+  could have skipped by copying `faer`'s stricter contract — but the underlying
+  row-numbering primitive is the same one `faer` already ships and relies on.
+- **B1 (`vcount` clamp), independently confirmed by a working implementation.** `faer`'s
+  supernodal Householder symbolic pass (`qr.rs`,
+  `ghost_factorize_supernodal_householder_symbolic`) propagates a row count to each
+  supernode's parent via `non_zero_count[parent] += min(max(s_count, panel_width) −
+  panel_width, s_col_count)`. For a single-column supernode (`panel_width = 1`, the
+  per-column case this design's `vcount` covers), `max(s_count, 1) − 1` is algebraically
+  identical to `max(s_count − 1, 0)` — **exactly** this revision's B1 clamp, arrived at
+  independently by a different, shipping implementation. (`faer`'s formula also has an
+  additional outer `min(·, s_col_count)` clamp, bounding the propagated count by the
+  Cholesky-column-count-equivalent quantity — a refinement this design's per-column
+  `vcount` does not currently apply; whether `vcount[k] ≤ rcount[k]` always holds here
+  too is a plausible additional invariant worth adding as a §9.1 test, not a required
+  fix — B1's actual bug, negative counts, is already fixed without it.)
+- **D1 (COLAMD dense threshold), independently confirmed.** `faer`'s AMD
+  (`amd.rs`, `Control::default`) ships `dense: 10.0` with `dense_count =
+  max(16, alpha·√n)` — **exactly** this codebase's existing `AMD_DENSE_MULT=10.0`/
+  floor-16 formula, cross-validating design.md's own AMD provenance claim. `faer`'s
+  **COLAMD** (`colamd.rs`, `Control::default`), by contrast, ships `dense_row: 0.5,
+  dense_col: 0.5` with `dense_count = max(16, fraction·dim)` — a flat **50%-of-
+  dimension** threshold, not `√`-scaled — confirming independently that the paper's
+  own stated default (§2.2 pt 5, "we used the same default threshold used by MATLAB's
+  COLMMD, 50%") is what a real shipping COLAMD implementation actually uses, not a
+  road not taken. This design's choice to reuse the AMD-shaped `√n` default instead
+  (§2.2 pt 5/D1) therefore remains a **deliberate divergence** from both the paper's
+  own default and `faer`'s implementation of it — recorded honestly as such, not
+  changed, since the reason for the divergence (one dense-threshold convention across
+  the whole ordering layer, §2.2 pt 5) still holds and the coordinator's ask was to
+  resolve the *provenance labeling*, not necessarily match the paper's number.
+
 **Provenance table** (every component, its allowed source):
 
 | Component | Source |
@@ -1083,19 +1556,20 @@ wrapper or library source).
 | Star-matrix AᵀA-free symbolic | construction: Gilbert–Li–Ng–Peyton 2001 as described in survey §7.1 (primary paper unavailable — declared gap); correctness: **own fill-path derivation, §3.2** |
 | Row/column counts | Gilbert–Ng–Peyton, ORNL/TM-12195 1992 (`refs/.../QR/gilbert_ng_peyton_1992_ornl_tm12195.pdf`, pseudocode + Lemmas 1–4; QR applicability stated in its §1) — already implemented in `symbolic/counts.jl`, reused |
 | Left-looking column Householder | Davis 2006 as presented in survey §7.3 (full dense pseudocode + sparse row-subtree specification quoted there) |
-| V patterns / row paths / row-merge counting | George–Ng 1986, 1987; George–Liu–Ng 1988; Liu 1986c; Oliveira 2001 (evaporation) — all via survey §7.1/§7.3; set-algebra formulation + pivot convention: **own, §3.4 (H2)** |
-| Householder reflector convention | textbook (Golub–Van Loan-style; survey's `gallery('house')` reference); packing + explicit-pivot storage: own, §4.4 |
+| V patterns / row paths, pivot-retire recurrence | George–Ng 1986, 1987; George–Liu–Ng 1988 (row-path); **Oliveira 2001** (retire-one-pivot/pass-rest-to-parent, survey p.57 verbatim quote — **v2 correction**: previously mislabeled "own derivation"; the core recurrence is paper-grounded) — all via survey §7.1/§7.3; deterministic tie-break + physical-row indexing (`pivotslot`, B2): **own, §3.4, cross-checked against `faer`'s `min_col_perm` construction (MIT-licensed, see above)** (**D2**: the "Liu 1986c... counting view" citation in an earlier draft was unsupported and has been removed) |
+| Householder reflector convention | textbook (Golub–Van Loan-style; survey's `gallery('house')` reference; `sign(0):=+1` cross-checked against PureBLAS's own `qr.jl`); packing + explicit-pivot storage + zero-norm guard (B3): own, §4.4 |
 | Singleton pre-elimination | SPQR paper (Davis, TOMS 2011) §2.1 — description-level; queue implementation ours |
-| COLAMD (v1 default ordering) | Davis–Gilbert–Larimore–Ng, ACM TOMS 30(3), 2004 (`refs/.../QR/davis_gilbert_larimore_ng_2004_colamd.pdf`, read in full — §3 symbolic LU/row-merge, §4 Algorithms 2–3 + metrics, §4.8 recommended variant); implementation depth: Larimore MS thesis, UF 1998 (`refs/.../QR/larimore_1998_colamd_thesis.pdf`, spot-checked this draft, full ch. 3–4 read scheduled for task 3/review — §2.2); row-merge tree: Liu 1991 via the paper; dense thresholds: **own, §2.2 pt 5 (H5)** |
+| COLAMD (v1 default ordering) | Davis–Gilbert–Larimore–Ng, ACM TOMS 30(3), 2004 (`refs/.../QR/davis_gilbert_larimore_ng_2004_colamd.pdf`, read in full — §3 symbolic LU/row-merge incl. Algorithm 2's `l_k=0` branch (D9), §4 Algorithms 2–3 + metrics, §4.8 recommended variant); implementation depth: Larimore MS thesis, UF 1998 (`refs/.../QR/larimore_1998_colamd_thesis.pdf`, spot-checked this draft, full ch. 3–4 read scheduled for task 3/review — §2.2); row-merge tree: Liu 1991 via the paper; dense thresholds: **D1 — reused from design.md §2.2 pt 6's AMD User Guide `AMD_DENSE=10` default, not independently derived; cross-checked against `faer`'s AMD (matches) and COLAMD (diverges by design, see above) implementations** |
 | Ordering alternative (AMD on AᵀA) | existing `ordering/amd.jl` (design.md §2.2 provenance); precedent MA49 + SPQR options/default, SPQR paper §2.2/§5.4 |
 | Rank detection threshold test | Heath 1982 via survey §7.2/§7.4 + SPQR paper §3.2; τ default formula: **own derivation, free tunable, §5.3** |
 | Dead-column drop + error report | Foster–Davis 2013 phase-1 strategy as described in survey §7.4; left-looking adaptation ours (§5.2, H3) |
 | No-fill guarantee for Heath-style handling | SPQR paper §3.2 Theorem 1 (proof read and summarized §5.2) |
 | Multifrontal QR (M5b) | Matstoms 1994/1995; Amestoy–Duff–Puglisi 1996 (MA49); SPQR paper §2.3/§3 — survey §11.5 for the landscape |
-| Solve formulas (LS/basic/min-norm) | SPQR paper §3.3; George–Heath–Ng 1984 via survey §7.2 |
+| Solve formulas (LS/basic/min-norm) | LS formula (`x=P*(R\(Q'*b))`): SPQR paper §3.3; basic/min-norm method numbering: SPQR paper **§5.1** "The methods" (**D10** — an earlier draft mis-cited these to §3.3); George–Heath–Ng 1984 via survey §7.2 |
 | Alternatives guidance (§1.2) | survey §7.5 (normal equations / augmented system / Peters–Wilkinson) |
-| Fronts-from-supernodes, staircase, stack | SPQR paper §2.3/§3.1–3.2 |
-| Dense QR kernels (M5b) | PureBLAS `geqrf!` (verified present, §4.6); block-reflector apply: `svd.jl`'s `_apply_reflectors_left!` (verified present and correct, §4.6 — P1 generalizes it, not a from-scratch derivation, §7.2); generic-`T` `geqrf!` fallback: verified absent, P2 is new work (§7.2) |
+| Fronts-from-supernodes, staircase, stack | SPQR paper §2.3 (defines staircase) / §3.1–3.2 (illustrates/uses it) — **N7**: an earlier draft cited only §3.1 for the definition |
+| `faer` (MIT) cross-checks, v2 | `faer-rs` (`sarah-quinones/faer-rs`, MIT), read directly: `qr.rs` (row-numbering B2, `vcount` clamp B1), `amd.rs`/`colamd.rs` (dense-threshold D1) — see the discussion above; distinct permitted-source category from the CHOLMOD/SuiteSparse GPL prohibition, same standing PureBLAS already gives `faer` for dense kernels |
+| Dense QR kernels (M5b) | PureBLAS `geqrf!` (verified present, §4.6); block-reflector apply: `svd.jl`'s `_apply_reflectors_left!` computes `C:=Q·C` only, forward block order (verified present but **direction-limited**, §4.6/§7.2 **D8**) — P1 generalizes/extends it (both `Q·C` and the transposed `Qᵀ·C` M5b's front update actually needs), not a from-scratch derivation of either; generic-`T` `geqrf!` fallback: verified absent, P2 is new work (§7.2) |
 
 Local reference archive (gitignored): `refs/linear_algebra/QR/` holds the five primary
 PDFs cited throughout: `davis2011_spqr_toms.pdf`,
