@@ -446,6 +446,32 @@ not faster, in the course of this investigation) — the panel-split fix above w
 real lever. The gate's own noise floor at small/medium scale still needs a longer/
 more-sampled run before any single verdict there is trusted.
 
+**2026-07-15, session close-out: re-ran the gate solo on galen (confirmed no
+contention from a concurrent PureBLAS-tuning session also using the fleet this
+session) — result STABLE at 6/16, `iii_flop_rich` still a clean 4/4, matching the
+prior run exactly (not a fluke).** Two more findings from this pass, both by
+diagnosis rather than guessing, both concluding "not the lever" (recorded so nobody
+re-chases them without new evidence):
+- `ii_sparse_R`'s amalgamation was swept AGAIN, specifically for `grid_ls_70x50`
+  (383 fronts currently): a more aggressive schedule collapsed it to 85 fronts but
+  ran SLOWER locally (6.7ms→8.2ms) — nnzVF grew ~1.8x (420725→751242), padding waste
+  outweighing the reduced per-front overhead. Confirms task 16e's amalgamation retune
+  is not a live lever for either matrix regime tested so far (the earlier
+  near-fully-dense 7000×4000 case, and now this genuinely-sparse grid-Laplacian
+  case) — deliberately did NOT add QR-specific `qr_amalg_cols`/`qr_amalg_zmax`
+  Preferences infrastructure (§A8 suggests this IF QR wants different values;
+  it currently doesn't, by direct test, so the indirection isn't earned yet).
+  `grid_ls_70x50`'s own margin against SPQR is now much tighter than it looked in
+  earlier runs (own-arm ~1.09x, same-perm ~1.4x — the panel-split fix already helped
+  here too, just not enough to flip the verdict).
+- Stratum-(i) (`lp_slack`/tiny matrices) losses are confirmed OUT of M5b's scope: these
+  matrices are singleton-heavy and structurally decompose the frontal path into ~1
+  front per column (e.g. `lp_slack_n300x60`: 274 fronts) — but `qr(A; method=:auto)`
+  already correctly routes them to `:column` (ratio 1.14-1.59, far under the 40.0
+  threshold), so the gate's `best-of` already picks the right method; the residual
+  loss is `:column`'s (M5a, already gated/shipped) own fixed per-call overhead at
+  noise-level margins (~0.04-0.15ms either way) — not a frontal-path defect to fix.
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
