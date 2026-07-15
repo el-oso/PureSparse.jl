@@ -19,3 +19,12 @@ SparseArrays = "1.12.0"
 StrictMode = "0.3.7"
 TypeContracts = "0.14.0"
 julia = "1.12"
+
+# PureBLAS is not yet registered (Pure Julia Ecosystem sibling, same convention as
+# StrictMode/TypeContracts before they were registered). A local `Pkg.develop(path=
+# "../PureBLAS.jl")` Manifest override works for local development (gitignored,
+# per-workstation), but CI/a fresh clone has no Manifest and no sibling checkout to
+# fall back to — this `[sources]` entry is what makes `Pkg.instantiate()` resolvable
+# from nothing but this file (Julia 1.11+ feature).
+[sources]
+PureBLAS = {url = "https://github.com/el-oso/PureBLAS.jl", rev = "master"}
