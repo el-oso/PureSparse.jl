@@ -236,6 +236,56 @@ PureSparse (:column and :frontal) vs SPQR vs faer — see
 `benchmark/results/faer_vs_puresparse_7000x4000_galen.json` and the session record for
 the printed table.
 
+**2026-07-15 later update: task 16e first lever CLOSED (allocation elimination) +
+task 16d's `:auto` is now genuinely calibrated, not a placeholder.** Read faer
+0.24.1's actual sparse QR source (`sparse/linalg/qr.rs`, MIT — freely readable per
+CLAUDE.md req 1's SuiteSparse-only prohibition) via a research agent; found three
+concrete techniques: (1) a `flops/nnz`-ratio simplicial-vs-supernodal dispatch
+(threshold 40.0, `QR_SUPERNODAL_RATIO_FACTOR`), (2) a graded 4-tier amalgamation
+schedule `(4,1.0),(16,0.8),(48,0.1),(∞,0.05)` shared across faer's QR/Cholesky/LU,
+(3) per-PANEL (not per-front) block-size re-derivation as the staircase narrows.
+Acted on (1) and a related allocation cleanup:
+
+- **Zero-alloc pass** (`src/qr/frontal{,_assemble,_numeric,_solve}.jl`): moved every
+  per-front scratch array (assembly's `push!`-grown gather buffers, factorization's
+  `elim_col`/`piv_k`/`piv_rlo`, solve's `cc` and `apply_Q!`'s panel-boundary arrays)
+  into `QRFrontWorkspace`, preallocated once from the symbolic's capacity bounds.
+  `qr!`/`solve!`/`apply_Q!`/`apply_Qt!` are now genuinely 0-byte warm (new gate test
+  in `qr_frontal_numeric_tests.jl`, both full-rank and rank-deficient instances).
+  **Gate effect: 1/16 → 3/16 passing** (`grid_ls_40x30 own` and `staircase_n2000`
+  both arms newly pass). **7000×4000 effect: none measurable** (PS frontal times
+  within ~1-2% of the pre-optimization run at that scale — expected, since per-front
+  allocation is a fixed cost per front, amortized away once fronts are large; it
+  mattered at the smaller gate-set scale where per-call overhead is proportionally
+  bigger, not at this scale where actual flops dominate).
+- **`qr(A; method=:auto)` calibrated for real** (`src/tuning.jl`'s new
+  `QR_AUTO_METHOD_RATIO=40.0`, `src/qr/numeric.jl`): dispatches on
+  `sym.flops/sym.nnzR` (already computed by `symbolic_qr`, zero extra numeric work).
+  Not a blind copy of faer's constant — independently verified against our own gate
+  set: every `:column`-winning matrix sat at ratio ≤ 7, every `:frontal`-winning
+  matrix at ratio ≥ 863, a wide enough margin that faer's own 40.0 is kept rather
+  than picking an arbitrary number in the gap. Note this does NOT move the gate's
+  own pass/fail count (the gate already takes best-of `:column`/`:frontal` per row),
+  but it is the real task-16d deliverable and the mechanism a real caller gets.
+
+Re-ran the 7000×4000 comparison after the zero-alloc pass (density-swept, galen):
+faer 4.02-4.20s, SPQR 5.35-5.89s, PS frontal 5.44-6.97s, PS column 62.0-64.7s —
+essentially unchanged from the pre-optimization run, confirming the allocation fix
+doesn't matter at this scale (see above). PS frontal still edges out SPQR at the
+highest density (5.44s vs 5.89s) and remains ~25-30% behind faer across the board.
+
+**Remaining task 16e levers, NOT yet pulled** (paused here pending user direction):
+(2) the QR-specific graded amalgamation retune — our current `AMALG_COLS`/
+`AMALG_ZMAX` (3-tier, `(16,64,128)`/`(0.97,0.35,0.08)`) were swept for Cholesky, not
+QR; faer's own 4-tier schedule is a concrete, well-grounded starting hypothesis to
+re-verify on our own gate set, same discipline as the `:auto` ratio above. (3)
+per-panel NB re-derivation, lower priority (§A5.3 already reuses faer's own
+panel-split heuristic; this is a refinement on top, not a missing mechanism). Also
+still open: strata-(i) tiny-matrix losses are noise-level (~0.05-0.15ms vs SPQR's
+~0.04-0.15ms) and not explained by anything faer's source suggested — likely
+PureSparse's own fixed per-call overhead (COLAMD/symbolic setup cost), a genuinely
+separate investigation from the frontal-vs-column architecture question.
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
