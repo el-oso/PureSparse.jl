@@ -202,6 +202,40 @@ rank-deficient case, 186 assertions, all passing in the full suite run). Next:
 task 16d (method selection, `qr(A; method=:auto|:frontal|:column)`), 16e (amalgamation
 tunable recalibration), then task 17 (re-run the full M5 gate on galen/wintermute).
 
+**2026-07-15 update: task 16d CLOSED** (`qr(A; ..., method=:column|:frontal|:auto)`,
+`src/qr/numeric.jl`) — `:frontal` routes to `qr_frontal` (Float64 only, silent
+`:column` fallback for other `T` per §A5.6 until P2 lands); `:auto` is explicitly
+**not yet calibrated** (still `:column` — the threshold is a measured, not guessed,
+quantity per CLAUDE.md's "don't guess" rule, and §A5.6 itself says so). Tested in
+`test/qr_numeric_tests.jl` (6 new assertions); full 221k-assertion suite clean.
+
+**2026-07-15: task 17 gate measured on galen (`benchmark/results/qr_gate_galen.json`,
+clock-locked, `performance` governor) — verdict: 1/16 matrix-arm combinations pass,
+OVERALL NOT YET PASSING.** Honest result, not fudged. Per-stratum: (i) 1/6, (ii) 0/6,
+(iii) 0/4. The frontal path is consistently 2-4x faster than :column in strata
+(ii)/(iii) (e.g. `grid_ls_70x50` same-perm: column 45.5ms → frontal 6.8ms — a real,
+large win over M5a) but SuiteSparseQR is still ahead there by roughly 1.2x-2.3x
+(closest: `dense_arrow_n800x200_d8dense` at ~1.2x; furthest: `banded_ls_n1500x500_bw15`
+at ~2.3x). Stratum (i)'s losses are noise-level close (0.049ms vs 0.045ms,
+0.146ms vs 0.144ms) — plausibly resolved by more samples, not a structural gap.
+Two concrete next levers, neither yet pulled: (1) `_assemble_front!` still allocates
+several small `Vector`s per front (`push!`-built `phys`/`mincol`/`srcfront`/`srcrow`,
+flagged as a known gap in its own file header since task 16a landed) — likely a
+non-trivial constant-factor tax on every matrix size, unlike the amalgamation lever
+below which mainly helps larger fronts; (2) task 16e's amalgamation recalibration
+(§A8) — the current `AMALG_COLS`/`AMALG_ZMAX` were swept for Cholesky, not QR, and
+§A8 gives concrete reasons QR should tolerate more merging (a merge deletes an
+assembly round-trip, not just saves padding flops). Wall-clock note: wintermute was
+NOT used for this run — a concurrent session had live uncommitted PureBLAS.jl work
+there when this session's rsync landed (no data loss found on inspection: the other
+session's work was intact in `git stash@{0}` afterward), so this session stood down
+from that host rather than risk further collision; galen-only for now.
+
+Also ran the user-requested standalone comparison: 7000×4000, densities 1%/3%/5%/10%,
+PureSparse (:column and :frontal) vs SPQR vs faer — see
+`benchmark/results/faer_vs_puresparse_7000x4000_galen.json` and the session record for
+the printed table.
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
