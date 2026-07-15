@@ -496,6 +496,44 @@ ruled out, both by direct local measurement, no single bug found this pass.**
   as the `qr_block_size` gap already relayed to (and now being worked on by) the
   PureBLAS-side agent; may improve here too once that lands, not verified yet.
 
+**2026-07-15: small-front scalar fallback landed — faer's `qr_in_place_unblocked`
+precedent, not previously read.** Re-reading faer's actual dense QR kernel source
+(`linalg/qr/no_pivoting/factor.rs`, which the M5b port had only skimmed enough to
+identify the PureBLAS substitution point, never actually read) showed
+`qr_in_place`/`qr_in_place_blocked` recursively drop to a PURE SCALAR Householder
+loop — zero BLAS-3 calls — whenever a sub-problem falls under
+`QrParams::auto().blocking_threshold = 48×48 = 2304` elements. `banded_ls`'s fronts
+(max 25×65=1625) are well under that — faer itself never blocks them either.
+Implemented the equivalent: fronts under `QR_FRONTAL_UNBLOCKED_THRESHOLD` (2304,
+`tuning.jl`) now skip `wy_t!`/`wy_apply!` entirely, using a pure column-by-column
+scalar pass instead (new `QRFrontFactor.fscalar` flag; solve-phase `apply_Qt!`/
+`apply_Q!` replay via a new `_scalar_apply_to_vec!`, exploiting that a Householder
+reflector is self-adjoint so the same formula covers both directions). R harvest/
+pass-up needed no changes (already a shared post-loop pass keyed on `F.elimcol`).
+Scope note: the actual scalar factorization logic stays in PureSparse (coupled to
+dead-pivot/Heath rank-detection policy PureBLAS deliberately doesn't own, same
+boundary as the pre-existing `_front_form_reflector!`/`_front_apply1!`); the
+THRESHOLD decision is architecturally closer to `qr_block_size`'s role and could
+migrate to PureBLAS later, but lives in PureSparse's own `tuning.jl` for now
+(PureBLAS's repo is off-limits this session).
+
+Verified: full test suite (221656 assertions, 0 new failures), 61-case random sweep
+under `--check-bounds=yes` (every matrix in that sweep is small enough to exercise
+the new path). Measured, galen:
+- `banded_ls_n1500x500_bw15`: locally 0.47ms→0.36ms (~23% faster, all 34 fronts
+  went scalar).
+- `grid_ls_70x50` (342/383 fronts scalar): the GATE's own single-sample measurement
+  initially looked like a regression (8.27ms→10.29ms) — resolved by a targeted
+  2000-rep timing check: median `qr!` = **2.95ms** (min 2.94ms, but a long tail to
+  6.29ms — this matrix has real, high sample-to-sample variance at this scale,
+  something to keep in mind for future gate runs here specifically). The true
+  median is well under SPQR's 5-8ms, meaning this matrix most likely actually
+  passes now — the single-sample gate run caught a rare slow outlier, not a real
+  regression. Full gate re-run recommended before trusting any single verdict on
+  this specific matrix.
+- `grid_ls_40x30`/`dense_arrow`/`random_tall`: no regressions; `random_tall`
+  correctly stayed fully on the blocked path (0 fronts below threshold).
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
