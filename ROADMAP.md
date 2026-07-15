@@ -627,6 +627,35 @@ a 20×12 matrix, where this path happens to be 0 bytes). `:frontal`'s `qr!`/`sol
 0 bytes at both sizes — this is `:column`-specific. Filed as task #48, not fixed here
 (out of scope for a docs task).
 
+**2026-07-15: user flagged a suspected apples-to-oranges bug in the faer comparator —
+real, but not the mechanism suspected, and the measured margin holds.** User's
+hypothesis was that faer materializes explicit Q/R while PureSparse only stores R
+explicitly with Q implicit (Householder reflectors), needing an extra step. Checked:
+false — both store Q implicitly (`QRFrontFactor.fval`/`ftau` vs faer's `Qr.indices`/
+`numeric`, same convention as SuiteSparseQR); PureSparse never materializes Q unless
+`apply_Q!` is called. The REAL asymmetry: `BlazingPorts.jl`'s `faer_sparse_qr` shim
+timed factorize **and** `solve_lstsq_in_place` together, because faer's sparse `Qr`
+exposes no direct `.R()` accessor and a solve was the only way the original author
+found to stop the Rust compiler eliding the factorization as dead code — while
+PureSparse's/SPQR's own wrappers here (`_ps_frontal_cold`/`_spqr_cold`) are
+factorize-only. Confirmed by reading faer 0.24.1's own source
+(`sparse/solvers.rs::Qr::try_new_with_symbolic`, what `sp_qr()` calls): it does ONLY
+`factorize_numeric_qr`, no solve of any kind — the solve genuinely was pure
+benchmark-shim overhead, not part of faer's own factorization cost.
+
+Fixed with `std::hint::black_box` (Rust's actual idiom for "keep this alive without
+doing extra work," stable since 1.66) instead of a real solve — added
+`faer_sparse_qr_factor` to `BlazingPorts.jl` (`f370a3a`), rebuilt the cdylib on galen,
+switched the comparator wrapper to it (`260f7c1`), re-measured. Result: the corrected
+numbers are within ~0.7% of the pre-fix ones (1% density: faer 4002.5ms vs prior
+~4029.7ms avg; 10%: 4231.1ms vs prior ~4216.9ms avg) — well inside the run-to-run
+noise already established for this benchmark. **The solve was cheap relative to the
+factorization itself**, so the bug was real (worth fixing — the comparator now
+measures the same scope on both sides) but empirically didn't inflate PureSparse's
+reported margin over faer. `docs/src/benchmarking.md`'s flagship table updated to the
+re-measured numbers (2.3×/4.8× vs faer, 3.0×/6.5× vs SPQR — materially unchanged from
+before).
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-

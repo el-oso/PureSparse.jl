@@ -108,15 +108,25 @@ kept in perfect sync with every run.
 Where the multifrontal path's BLAS-3 architecture is actually exercised — a
 7000×4000 random matrix at 1% and 10% density
 (`benchmark/faer_vs_puresparse_7000x4000.jl`) — PureSparse's `:frontal` path beats
-both [faer](@cite) and SuiteSparseQR outright (galen, clock-locked, cold medians,
-two back-to-back runs agreeing within ~1%):
+both [faer](@cite) and SuiteSparseQR outright (galen, clock-locked, cold medians of
+10 samples; four runs across two comparator implementations now agree within ~1%):
 
 | density | PureSparse `:frontal` | faer | SuiteSparseQR | vs faer | vs SPQR |
 |---|---|---|---|---|---|
-| 1% | **1.71 s** | 4.04 s | 5.24 s | 2.4× | 3.1× |
-| 10% | **0.89 s** | 4.21 s | 5.66 s | 4.7× | 6.3× |
+| 1% | **1.72 s** | 4.00 s | 5.23 s | 2.3× | 3.0× |
+| 10% | **0.89 s** | 4.23 s | 5.74 s | 4.8× | 6.5× |
 
 ![7000×4000 sparse QR comparison](assets/qr_faer_comparison.png)
+
+**Comparator fairness check (2026-07-15):** the [faer](@cite) side originally timed
+factorize *and* a least-squares solve together (`BlazingPorts.jl`'s shim needed a
+solve as a compiler dead-code-elimination guard, since faer's sparse `Qr` exposes no
+direct `.R()` accessor) — not a fair comparison against PureSparse's/SPQR's
+factorize-only wrappers. Fixed by adding `faer_sparse_qr_factor`
+(`std::hint::black_box` as the guard instead) and re-measuring: the corrected numbers
+above are within ~0.7% of the pre-fix ones, confirming the solve was cheap relative
+to the factorization and the original margin wasn't a measurement artifact — but the
+fix is real and the comparator now measures the same thing on both sides.
 
 (The `:column` path takes ~60 s here — this is exactly the regime `method = :auto`
 exists to route away from.) The honest overall picture: PureSparse QR is already the
