@@ -534,6 +534,37 @@ the new path). Measured, galen:
 - `grid_ls_40x30`/`dense_arrow`/`random_tall`: no regressions; `random_tall`
   correctly stayed fully on the blocked path (0 fronts below threshold).
 
+**2026-07-15: task 17 gate re-run on galen, now including PureBLAS's landed geqrf
+`_qr_nb` fix (`el-oso/PureBLAS.jl@357db97`, "derive real `_qr_nb` from register count +
+L2, req#8" — the flat-NB gap this session had relayed to the concurrent PureBLAS-tuning
+agent).** Result: still **6/16** (`i_singleton` 2/6, `ii_sparse_R` 0/6, `iii_flop_rich`
+4/4) — same shape as the pre-fix run. `grid_ls_40x30` is now within noise of passing
+(frontal 2.582ms/1.583ms vs SPQR 2.476ms/1.475ms); `grid_ls_70x50`'s single-sample gate
+reading (10.458ms/5.682ms) is again far above the 2000-rep true median (2.95ms) found
+previously — same noise caveat, not re-investigated further here. Conclusion: the
+`_qr_nb` fix doesn't move this gate's own matrix set, because none of the 8 gate
+matrices are large enough to spend meaningful time in the blocked dense-panel GEMM path
+`_qr_nb` tunes — they're either overhead-bound (stratum i) or sparsity-structure-bound
+(stratum ii). The fix's actual target is the flagship 7000×4000 dense-panel case
+(`benchmark/faer_vs_puresparse_7000x4000.jl`), re-measured separately (see below).
+
+Operationally: galen's `~/Documents/claude/PureBLAS.jl` — the copy PureSparse's
+`Manifest.toml` path-deps on — had gone stale (still flat `_QR_NB=32`, predating the
+merge) and was a raw rsync copy with no `.git`, distinct from the other agent's actual
+working checkout at `/home/el_oso/PureBLAS.jl`. Per user direction, turned it into a
+real tracking checkout (`git init` + `git remote add origin ... + fetch + reset --hard
+origin/master`) rather than rsyncing files — verified clean/no-uncommitted-work first,
+consistent with the standing PureBLAS-repo-contention caution. Also root-caused two
+unrelated infra footguns that silently killed background gate runs on galen for over an
+hour before this: (1) `~/.julia/config/startup.jl` auto-loads OhMyREPL even under
+non-interactive `-e`, which appears to crash/exit silently with no controlling TTY
+(stdin `/dev/null`) — fix is `--startup-file=no`; (2) `benchmark/qr_gate.jl` (like most
+of this repo's benchmark scripts) gates its `run_gate()` call behind `if
+abspath(PROGRAM_FILE) == @__FILE__`, which is never true when the file is loaded via
+`include(...)` from a `julia -e` string — must invoke it as `julia script.jl`, not
+`julia -e 'include("script.jl")'`. Neither is a PureSparse code defect; both are
+recorded here as galen-specific operational gotchas for future sessions.
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
