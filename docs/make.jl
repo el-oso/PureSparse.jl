@@ -1,15 +1,13 @@
-using Documenter, DocumenterVitepress, PureSparse
+using Documenter, DocumenterCitations, DocumenterVitepress, PureSparse
 
-# `remotes = nothing`: this repo has no `origin` configured yet (not pushed to GitHub),
-# so Documenter can't auto-detect source-permalink URLs from `git remote`. Remove once the
-# repo is actually pushed — `repo =` below (the VitePress deploy target, a separate
-# setting from Documenter's own source-permalink `repo`) already names the intended URL.
+bib = CitationBibliography(joinpath(@__DIR__, "src", "refs.bib"))
+
 makedocs(;
     sitename = "PureSparse.jl",
     authors = "el_oso",
     modules = [PureSparse],
     warnonly = true,
-    remotes = nothing,
+    plugins = [bib],
     format = DocumenterVitepress.MarkdownVitepress(;
         repo = "github.com/el-oso/PureSparse.jl",
         devbranch = "master",
@@ -21,10 +19,12 @@ makedocs(;
     pages = [
         "Home" => "index.md",
         "Guide" => "guide.md",
+        "Sparse QR Guide" => "qr-guide.md",
         "Interior-Point Guide" => "ipm-guide.md",
         "Benchmarking" => "benchmarking.md",
         "API Reference" => "api.md",
         "Provenance & Licensing" => "provenance.md",
+        "References" => "references.md",
     ],
 )
 

@@ -582,6 +582,51 @@ shows up on the large dense panels this flagship case exercises, not on the gate
 small/medium matrix set. `PS column` remains unusably slow here as expected (61-65s —
 this is exactly the flop-rich regime `:auto`/`:frontal` exists to avoid).
 
+**2026-07-15: M5a task 13 (user-facing docs) closed — QR guide, API reference, and a
+benchmarking page landed, with real comparison plots and a bibliography.** Delegated
+doc/plot generation to a Fable-model agent (`docs/src/qr-guide.md`, the `## Sparse QR`
+section of `api.md`, the `## Sparse QR (M5)` section of `benchmarking.md`,
+`benchmark/plot_qr_comparison.jl`), then verified: fixed one Markdown-escaping bug in
+`qr`'s docstring (a bare `design_qr.md` on the same line as a `[...](@ref)` link broke
+both), corrected an imprecise `:column`-vs-`:frontal` speedup claim (36-74×, not the
+agent's "35-65×"), and confirmed the docs build clean end to end
+(`julia --project=docs docs/make.jl` — zero new warnings; the pre-existing
+`TypeContractsDocumenterExt` load error is unrelated, present before this work). Added
+`docs/src/refs.bib` (`DocumenterCitations`, 7 entries: AMD, COLAMD paper, Larimore
+thesis, Gilbert-Ng-Peyton, SPQR paper, the Davis/Rajamanickam/Sid-Lakhdar survey, faer)
+and `.github/workflows/{CI,docs}.yml` (this repo had none before — mirrored
+PureFFT.jl's exact templates) so the new README badges (CI/Coverage/Docs/License,
+matching the sibling projects' pattern) aren't pointing at nonexistent infrastructure.
+
+Per explicit user direction, the comparison plots are **violin+boxplot overlays**
+(project convention, see BlazingPorts.jl's `bench/harness.jl`), not bars of the median
+alone — `qr_gate.jl` and `faer_vs_puresparse_7000x4000.jl` now persist each config's
+raw Chairmarks sample vector (`*_samples` keys) alongside the median specifically so
+this is possible from saved JSON without re-running. This immediately paid off: the
+gate-strata violins visually confirm real, high sample-to-sample variance on several
+`ii_sparse_R` matrices (not just the already-documented `grid_ls_70x50` — `banded_ls`
+own-arm spans ~1ms to ~100ms across 20 samples), which a bar-of-median plot hides
+entirely. The flagship 7000×4000 figure stays a **bar chart** (explicit user call):
+faer/SPQR cost 4-6s/call there, so even a deliberately-bounded re-run (10 samples for
+the plotted series, `:column` capped separately at 3 samples since it isn't plotted and
+costs ~65s/call) is too thin a sample for a meaningful density estimate, and a full
+violin-worthy count would cost ~30 min. That bounded re-run's first attempt actually
+surfaced a real bug: at the original `SECONDS=2.0` budget, faer/SPQR (4-6s/call) each
+got exactly **one** completed sample (Chairmarks finishes an in-progress rep before
+checking budget), rendering as a degenerate flat-line "violin" — fixed by giving the
+flagship script its own larger budget. Three back-to-back re-runs of the flagship case
+now agree within ~1% (1.72-1.73s / 4.03-4.04s / 5.2-5.4s at 1% density; 0.88-0.89s /
+4.21-4.23s / 5.66-5.69s at 10%) — the 6/16 gate figure itself also re-confirmed
+unchanged on a fresh run (stratum pass/fail details shuffled slightly within the
+already-documented noise, total unchanged).
+
+Side finding while verifying the agent's report (measured directly, not just trusted):
+warm `qr!` on the `:column` (M5a) path allocates **1056 bytes** at 200×50 — a real
+CLAUDE.md req-5 zero-alloc gap the existing gate test doesn't catch (it only exercises
+a 20×12 matrix, where this path happens to be 0 bytes). `:frontal`'s `qr!`/`solve!` are
+0 bytes at both sizes — this is `:column`-specific. Filed as task #48, not fixed here
+(out of scope for a docs task).
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-

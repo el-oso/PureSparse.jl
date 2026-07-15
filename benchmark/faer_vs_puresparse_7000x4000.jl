@@ -9,10 +9,13 @@ LinearAlgebra.BLAS.set_num_threads(1)
 # run ~4-6s/call at this size): at the old SECONDS=2.0, faer/SPQR each got exactly 1
 # sample (Chairmarks completes an in-progress rep before checking budget, so a 2.0s
 # budget against a 4-6s call always yields n=1) — a degenerate, non-distributional
-# violin/boxplot. `ps_column` (~60-65s/call) still bottoms out near 1 sample regardless
-# of any reasonable budget here; it isn't plotted, so that's fine.
-const SAMPLES = 8
-const SECONDS = 50.0
+# violin/boxplot. `ps_column` (~60-65s/call) gets its OWN small budget: at 10 samples it
+# would cost ~11 minutes per density on its own (not plotted, prints in the table only) —
+# capped separately so the whole script stays well under a few minutes.
+const SAMPLES = 10
+const SECONDS = 65.0
+const COLUMN_SAMPLES = 3
+const COLUMN_SECONDS = 5.0    # first rep always completes regardless of this cap
 _times(b) = Float64[s.time for s in b.samples]
 _median_time(b) = median(_times(b))
 
@@ -39,7 +42,7 @@ for dens in (0.01, 0.10)
     @info "density $dens: nnz=$(nnz(A)) ($(round(100*nnz(A)/(m*n); digits=2))%)"
 
     ordering = PureSparse.COLAMDOrdering()
-    b_col = @be _ps_column_cold($A, $ordering) seconds = SECONDS samples = SAMPLES evals = 1
+    b_col = @be _ps_column_cold($A, $ordering) seconds = COLUMN_SECONDS samples = COLUMN_SAMPLES evals = 1
     b_front = @be _ps_frontal_cold($A, $ordering) seconds = SECONDS samples = SAMPLES evals = 1
     b_spqr = @be _spqr_cold($A) seconds = SECONDS samples = SAMPLES evals = 1
     b_faer = @be _faer_sparse_qr_cold($A) seconds = SECONDS samples = SAMPLES evals = 1

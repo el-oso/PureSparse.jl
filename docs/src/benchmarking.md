@@ -55,3 +55,84 @@ julia --project=benchmark benchmark/gate.jl report      # print verdict from the
 Results are written to `benchmark/results/gate_<hostname>.json` (gitignored — per-host
 measurement caches aren't committed, matching PureBLAS.jl's convention for its own
 per-host benchmark data).
+
+## Sparse QR (M5)
+
+### Methodology
+
+`benchmark/qr_gate.jl` runs the M5 wall-time gate with the same discipline as M1's:
+Chairmarks medians, single-thread pinned, `evals=1`, 20 samples / 1.5s per
+measurement. The gate is **cold-vs-cold only** — one-shot `qr(A)` including symbolic
+analysis — because stdlib SuiteSparseQR [spqr2011](@cite) exposes no
+analyze-once/refactorize path to compare warm `qr!` against (warm numbers are
+reported in the JSON, not gated). Both **own-ordering** (PureSparse's COLAMD vs
+SPQR's default) and **same-permutation** arms run, as for Cholesky. PureSparse's
+number is the **best of `:column`/`:frontal`** per matrix-arm — the same choice
+`qr(A; method = :auto)` makes for a real caller.
+
+The gate set is stratified into three regimes (design_qr.md §9.3), and the M5
+closeout gate requires **every stratum to pass, both arms** — not just a majority:
+
+- `i_singleton` — LP-shaped, singleton-dominated matrices (`lp_slack`, `staircase`).
+- `ii_sparse_R` — genuinely sparse R, little dense work (`banded_ls`, `grid_ls`).
+- `iii_flop_rich` — dense-panel-heavy problems where BLAS-3 fronts pay
+  (`dense_arrow`, `random_tall`).
+
+Two context arms are measured alongside but are **not** part of the pass/fail
+verdict: PureSparse's own `cholesky(AᵀA)` normal equations (the §1.2 "when not to
+use QR" alternative) and [faer](@cite)'s sparse QR via a `ccall` shim (its
+ordering/threshold choices differ, so gating on it would conflate ordering quality
+with kernel throughput).
+
+### Current result
+
+As of 2026-07-15 on `galen` (clock-locked, `performance` governor), **6/16**
+matrix-arm combinations beat SuiteSparseQR cold. This does **not** yet meet M5's
+gate. Per stratum:
+
+| Stratum | Passing | Where it stands |
+|---|---|---|
+| `iii_flop_rich` | **4/4** | clean sweep — the multifrontal path (M5b) wins every flop-rich case, by up to ~2.5× |
+| `i_singleton` | 2/6 | losses are noise-level margins (~0.04–0.15 ms either way); `:auto` already routes these to `:column`, and the residual gap is fixed per-call setup overhead, not an algorithmic deficit |
+| `ii_sparse_R` | 0/6 | the real open front: SPQR stays ~1.1–2.3× ahead on sparse-R problems (`banded_ls` own-arm ≈ 2.2× is the worst); `grid_ls_70x50`'s single-sample gate readings additionally have high measured sample-to-sample variance, so no single verdict there is trusted without a longer run |
+
+![M5 QR gate per-stratum comparison](assets/qr_gate_strata.png)
+
+`ROADMAP.md` is the living source of truth for the diagnosis trail (amalgamation
+retuning tested and ruled out; panel-split trigger bug found and fixed — that fix is
+what closed `iii_flop_rich`; scalar small-front fallback landed); this page won't be
+kept in perfect sync with every run.
+
+### The flagship dense-panel case (7000×4000)
+
+Where the multifrontal path's BLAS-3 architecture is actually exercised — a
+7000×4000 random matrix at 1% and 10% density
+(`benchmark/faer_vs_puresparse_7000x4000.jl`) — PureSparse's `:frontal` path beats
+both [faer](@cite) and SuiteSparseQR outright (galen, clock-locked, cold medians,
+two back-to-back runs agreeing within ~1%):
+
+| density | PureSparse `:frontal` | faer | SuiteSparseQR | vs faer | vs SPQR |
+|---|---|---|---|---|---|
+| 1% | **1.71 s** | 4.04 s | 5.24 s | 2.4× | 3.1× |
+| 10% | **0.89 s** | 4.21 s | 5.66 s | 4.7× | 6.3× |
+
+![7000×4000 sparse QR comparison](assets/qr_faer_comparison.png)
+
+(The `:column` path takes ~60 s here — this is exactly the regime `method = :auto`
+exists to route away from.) The honest overall picture: PureSparse QR is already the
+fastest of the three at the large, flop-rich end, and not yet competitive with SPQR
+on small singleton-heavy and sparse-R problems — which is why the gate stays open.
+
+### Reproducing
+
+```bash
+julia --project=benchmark benchmark/qr_gate.jl          # measure + save + print gate verdict
+julia --project=benchmark benchmark/qr_gate.jl report    # verdict from the last saved JSON only
+julia --project=benchmark benchmark/plot_qr_comparison.jl  # regenerate the two plots above
+                                                           # from the SAVED JSON (never re-measures)
+```
+
+The plots regenerate from `benchmark/results/qr_gate_galen.json` and
+`benchmark/results/faer_vs_puresparse_7000x4000_galen.json` — saved measurement
+snapshots; re-running a benchmark to make a plot is against this repo's benchmarking
+rules (results→JSON first, plots from saved JSON only).

@@ -1,5 +1,10 @@
 # PureSparse.jl
 
+[![CI](https://github.com/el-oso/PureSparse.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/el-oso/PureSparse.jl/actions/workflows/CI.yml)
+[![Coverage](https://coveralls.io/repos/github/el-oso/PureSparse.jl/badge.svg?branch=master)](https://coveralls.io/github/el-oso/PureSparse.jl?branch=master)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://el-oso.github.io/PureSparse.jl/dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A pure-Julia supernodal sparse Cholesky/LDLᵀ solver, part of the **Pure Julia Ecosystem** —
 pure-Julia replacements for Julia's non-Julia default libraries (siblings:
 [PureBLAS.jl](https://github.com/el-oso/PureBLAS.jl),

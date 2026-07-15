@@ -78,7 +78,7 @@ end
 """
     qr(A::SparseMatrixCSC; ordering::AbstractOrdering, tol=nothing, singletons=true, method=:column) -> QRFactor | QRFrontFactor
 
-One-shot sparse QR factorization (design_qr.md §4.3): column-singleton
+One-shot sparse QR factorization (`design_qr.md` §4.3): column-singleton
 pre-elimination (§2.3) + [`symbolic_qr`](@ref) + numeric factorization. No default
 `ordering` yet (§2.1's stated default, `COLAMDOrdering()`, lands in a later task) —
 pass one explicitly, e.g. `AMDOrdering()`. `tol` is the rank-detection threshold
@@ -143,7 +143,7 @@ end
 """
     qr!(F::QRFactor, A::SparseMatrixCSC; tol=nothing) -> QRFactor
 
-Refactorize in place: `A` must share `F.sym`'s sparsity pattern (design_qr.md §4.3).
+Refactorize in place: `A` must share `F.sym`'s sparsity pattern (`design_qr.md` §4.3).
 Implements the survey §7.3 left-looking loop exactly (design_qr.md §4.1), with the
 Foster–Davis-style dead-column drop (§5.2) folded into steps 3/4:
 
