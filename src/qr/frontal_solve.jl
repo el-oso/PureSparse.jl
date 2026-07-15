@@ -1,6 +1,26 @@
 # Multifrontal solve phase (design_qr_m5b.md §A6): replays stored front panels against
 # a shared physical-row-space work vector, postorder for Qᵀ, reverse postorder for Q.
 #
+# faer correspondence (`SupernodalQrRef::apply_Q_transpose_in_place_with_conj`,
+# qr.rs:719-819, and `solve_in_place_with_conj`, qr.rs:824-883): the per-front replay
+# below walks the SAME stored block-descriptor records the factorization wrote
+# (faer's tau_block_size/householder_nrows/householder_ncols triple, qr.rs:786-800 —
+# here pbs/pnrows/pncols) in the same order, gathering the front's rows out of the
+# shared vector, applying each stored block's V/T, and scattering back
+# (qr.rs:761-810). Deviations, each forced by PureSparse machinery faer lacks:
+#   - faer reads each block's V in place from the stored front
+#     (s_H.submatrix(start, start, nrows, ncols), qr.rs:789); here V is gathered into
+#     an explicit-unit copy because (a) PureBLAS's `wy_apply!` contract requires it
+#     (wy.jl header) and (b) dead-pivot skipping (which faer has none of) makes a
+#     block's live reflector columns non-contiguous — `F.elimcol` recovers them.
+#   - faer stages all fronts' rows in an m×k tmp at supernode-start offsets and reads
+#     R-space components out of tmp[0:n] at the end (qr.rs:757-818); here `solve!`
+#     reads them via `fpivotrow` (the dead-pivot-aware equivalent of that readout).
+#   - faer's `solve_in_place` back-substitutes R via blocked supernodal panels of its
+#     L=Rᵀ storage (qr.rs:848-882); `solve_R!`/`solve_Rt!` substitute over the padded
+#     row storage scalar-wise (rval has no strided column-major panel to hand to a
+#     BLAS-3 kernel — a storage-layer difference, §A5.5, not an orchestration one).
+#
 # A panel's alive reflectors are NOT generally column-contiguous within the front (a
 # dead-skipped pivotal column breaks contiguity), so V cannot be recovered as a simple
 # view into the front rectangle — `F.elimcol` (front-local column per elimination,
