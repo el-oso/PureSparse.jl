@@ -53,7 +53,7 @@ function _gather_panel_V!(F::QRFrontFactor{T,Ti}, f::Int, pnl::Int, row0::Int, m
         # Ff[row0+c-1+1 : row0+mp-1, jj] (up to the panel's own row extent).
         krow = row0 + c - 1
         Vv[c, c] = one(T)
-        for i in (krow + 1):(row0 + mp - 1)
+        @simd for i in (krow + 1):(row0 + mp - 1)
             Vv[i - row0 + 1, c] = Ff[i, jj]
         end
     end

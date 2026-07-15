@@ -94,6 +94,21 @@ function (@main)(argv::Vector{String})::Cint
     println(out, "qr!       residual_inf = ", r5)
     ok &= issuccess(Fqr) && r5 < tol
 
+    # QR (M5b task 17): the multifrontal path (design_qr_m5b.md §A9 point 7 — the
+    # method kwarg exercised both ways). `qr_frontal` is the frontal one-shot entry
+    # (mirrors `qr`'s own singletons=false-equivalent: sym.n1==0 always, §A1.2).
+    Fqrf = qr_frontal(A; ordering = AMDOrdering(), tol = 0)
+    solve!(x, Fqrf, b)
+    r6 = residual_inf(A, x, b)
+    println(out, "qr_frontal residual_inf = ", r6)
+    ok &= issuccess(Fqrf) && r6 < tol
+
+    qr!(Fqrf, A; tol = 0)                     # analyze-once / refactorize path
+    solve!(x, Fqrf, b)
+    r7 = residual_inf(A, x, b)
+    println(out, "qr_frontal! residual_inf = ", r7)
+    ok &= issuccess(Fqrf) && r7 < tol
+
     println(out, ok ? "PureSparse trim smoke: OK" : "PureSparse trim smoke: FAIL")
     return ok ? Cint(0) : Cint(1)
 end

@@ -111,9 +111,7 @@ function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
     # scatter values in GATHER order (grouped by source: A-rows, then each child's
     # contiguous block — cg2l is built once per child, not once per row).
     Fused = view(Ff_full, 1:m_f, 1:n_f)
-    @inbounds for jcol in 1:n_f, i in 1:m_f
-        Fused[i, jcol] = zero(T)
-    end
+    fill!(Fused, zero(T))
 
     t = 1
     @inbounds while t <= m_f && srcfront[t] == 0

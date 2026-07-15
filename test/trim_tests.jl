@@ -33,5 +33,11 @@
         # path this gate exists for.
         PureSparse.qr!(PureSparse.QRFactor{Float64, Int64}, SparseMatrixCSC{Float64, Int64}),
         PureSparse.solve!(Vector{Float64}, PureSparse.QRFactor{Float64, Int64}, Vector{Float64}),
+        # QR frontal (M5b task 17, design_qr_m5b.md §A9 point 7): same in-place
+        # refactor + solve pair, multifrontal path (`QRFrontFactor` always has
+        # fsym.base.n1==0, §A1.2 — no singletons-path root needed, same reasoning as
+        # the :column QRFactor pair above).
+        PureSparse.qr!(PureSparse.QRFrontFactor{Float64, Int64}, SparseMatrixCSC{Float64, Int64}),
+        PureSparse.solve!(Vector{Float64}, PureSparse.QRFrontFactor{Float64, Int64}, Vector{Float64}),
     )
 end

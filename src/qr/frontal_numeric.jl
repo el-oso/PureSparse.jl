@@ -274,6 +274,7 @@ qr_frontal_numeric_tests.jl).
 function qr!(F::QRFrontFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
     fsym = F.fsym
     sym = fsym.base
+    check_refactor_shape(A, sym.m, sym.n, "qr!")
     τ = _qr_threshold(A, tol)
 
     # NOT translating faer's one-shot `householder_val.fill(zero())` (qr.rs:1064-1066)
@@ -318,6 +319,15 @@ function qr!(F::QRFrontFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothin
     F.stats.n_dead = n_dead
     F.stats.dropped_norm = Float64(sqrt(dropped_sq))
     F.ok = true
+    # check_finite(F.fval, ...)/check_finite(F.tauv, ...) are NOT mirrored from M5a's
+    # own qr! (which checks its rval/vval analogues) — both fval and tauv are sized to
+    # a rank-deficiency UPPER-BOUND capacity (§A3.2) that a dead pivot or non-pivotal
+    # B3-trivial column can leave partially unwritten; those slots hold whatever
+    # `Vector{T}(undef, ...)` originally had, not a guaranteed-finite zero, so checking
+    # them wholesale would false-positive on a perfectly correct factorization. F.rval
+    # has no such gap (`zeros(T, ...)`-initialized, and every dead-pivot row's slots
+    # stay at that zero — only live pivots overwrite, always with a finite harvest).
+    check_finite(F.rval, "qr!")
     return F
 end
 

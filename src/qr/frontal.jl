@@ -155,7 +155,7 @@ end
     beta = -s * xnorm
     tau = (beta - alpha) / beta
     invdenom = one(T) / (alpha - beta)
-    @inbounds for i in (lo + 1):hi
+    @inbounds @simd for i in (lo + 1):hi
         Ff[i, jj] *= invdenom
     end
     Ff[lo, jj] = beta
@@ -167,12 +167,16 @@ end
 # §A5.3's step (a), mirroring PureBLAS's own `_qr_apply1_f64!` structure).
 @inline function _front_apply1!(Ff::AbstractMatrix{T}, lo::Int, hi::Int, jj::Int, jcol::Int, tau::T) where {T}
     dot = Ff[lo, jcol]
-    @inbounds for i in (lo + 1):hi
+    # a dot-product reduction (@simd's textbook case: Julia's @simd permits the
+    # float-add reordering this needs to vectorize, the same relaxation any BLAS-1
+    # dot-product kernel takes — LLT.jl's own hot loop already establishes this
+    # pattern in this codebase, src/numeric/llt.jl:74).
+    @inbounds @simd for i in (lo + 1):hi
         dot += Ff[i, jj] * Ff[i, jcol]
     end
     kk = -tau * dot
     Ff[lo, jcol] += kk
-    @inbounds for i in (lo + 1):hi
+    @inbounds @simd for i in (lo + 1):hi
         Ff[i, jcol] += kk * Ff[i, jj]
     end
     return nothing
