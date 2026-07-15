@@ -112,6 +112,7 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
         (@be _ps_cold_nosing($A, $ps_ordering) seconds = SECONDS samples = SAMPLES evals = 1)
     F1 = PureSparse.qr(A; ordering = ps_ordering, singletons = ps_singletons)
     result["ps_cold"] = _median_time(b_cold)
+    result["ps_cold_samples"] = _times(b_cold)
     result["ps_n1"] = F1.sym.n1
     result["ps_rank"] = F1.stats.rank
     result["ps_nnzR"] = F1.stats.nnzR
@@ -129,6 +130,7 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
         b_frontal = @be _ps_frontal_cold($A, $ps_ordering) seconds = SECONDS samples = SAMPLES evals = 1
         Ffrontal = PureSparse.qr(A; ordering = ps_ordering, method = :frontal)
         result["ps_frontal_cold"] = _median_time(b_frontal)
+        result["ps_frontal_cold_samples"] = _times(b_frontal)
         result["ps_frontal_rank"] = Ffrontal.stats.rank
         b_frontal_solve = @be _ps_solve($Ffrontal, $b) seconds = SECONDS samples = SAMPLES evals = 1
         result["ps_frontal_solve"] = _median_time(b_frontal_solve)
@@ -148,6 +150,7 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
     b_cold2 = @be _spqr_cold($A_spqr; $spqr_kw...) seconds = SECONDS samples = SAMPLES evals = 1
     F2 = SparseArrays.qr(A_spqr; spqr_kw...)
     result["spqr_cold"] = _median_time(b_cold2)
+    result["spqr_cold_samples"] = _times(b_cold2)
 
     # SuiteSparseQR's `\` on an underdetermined (m<n) system under ORDERING_FIXED can
     # throw SingularException — its rank-revealing minimum-norm path apparently needs
