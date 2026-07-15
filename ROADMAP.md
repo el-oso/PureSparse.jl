@@ -401,11 +401,50 @@ Galen (clock-locked) re-measurements, in order:
   concrete, scoped, evidence-backed candidate for whoever picks up PureBLAS's QR
   tuning next — not guessed, grounded in this session's own faer-source reading.
 
-Next: root-cause the 1%-density regression (needs profiling, not another blind
-re-run) before further amalgamation/panel-size tuning; task 16e's actual amalgamation
-threshold retune (§A8, faer's graded 4-tier schedule) is still fully open; the gate's
-own noise floor at small/medium scale needs a longer/more-sampled run before any
-single verdict there is trusted.
+**2026-07-15: 1%-density regression ROOT-CAUSED AND FIXED — PureSparse now beats faer
+at BOTH densities, decisively.** Diagnosed by directly comparing `F.pbs` panel-width
+histograms across three git revisions (pre-port, buggy mechanical-port draft, the
+first bug-fix) on the identical 7000×4000 @1% matrix — not guessed. Two real bugs:
+
+1. The first bug-fix commit (which correctly removed an erroneous inner sub-blocking
+   loop) over-corrected by ALSO deleting `_qr_faer_block_size`/`NBf` entirely. Re-
+   reading faer's actual source (qr.rs:609-613, the symbolic-time per-front
+   `max_block_size` computation, together with :1260-1265, its use in the split
+   trigger) showed `max_block_size` legitimately feeds the split-trigger threshold —
+   only a SEPARATE, group-local `bs` re-derivation (which feeds `qr_in_place`'s own
+   internal recursive blocking, genuinely out of scope) has no counterpart here.
+   Restored `_qr_faer_block_size`/`NBf`, correctly scoped to the split-trigger only
+   this time.
+2. The real culprit: `cap_trigger` included a row-count term (`(idx-k) >= NB`) that
+   faer's own condition **does not have at all**, and that has no storage
+   justification — `ws.wy.V`'s row capacity is `fsym.max_front_rows`, not `NB`; only
+   the column/T-matrix dimension is `NB`-bounded. At 1% density, measured: ~13 rows
+   share each distinct min-col on average (COLAMD-ordered 7000×4000 @1%) — row count
+   accumulates far faster than column span, so the erroneous row-count trigger fired
+   almost immediately regardless of `split_jump`, capping nearly every group to a
+   handful of columns (measured: 491 panels, median width 1, 83% width-1). Removing
+   it: 37 panels, median width 32 (every panel hits the full NB width, zero width-1),
+   `qr!` 12.58s→2.11s locally (~6x) on the regressed case.
+
+Galen (clock-locked) confirmation, 7000×4000, before → after this fix:
+| | 1% density | 10% density |
+|---|---|---|
+| **PureSparse frontal** | 8.7-9.4s → **1.78s** | 2.3s → **0.99s** |
+| faer | 4.02s | 4.34s |
+| SPQR | 5.25s | 5.79s |
+| **PureSparse vs faer** | was ~2.2x slower → now **~2.3x faster** | was ~1.8x faster → now **~4.4x faster** |
+
+The gate set also jumped: `iii_flop_rich` (the stratum where faer's architectural
+edge lives) went from 0-2/4 across every prior run this session to a clean **4/4**
+(`dense_arrow_n800x200_d8dense`: 5.7ms→2.4ms; `random_tall_n1200x300_d05`:
+10.2ms→4.2ms) — overall gate 3-4/16 → **6/16**, the best of the session.
+
+Next: `ii_sparse_R` (0/6) and stratum-(i) tiny-matrix noise are still open; task 16e's
+amalgamation retune (§A8) is now lower priority given amalgamation was directly
+tested and ruled out as the 1%-density cause (collapsing to 1 front measured SLOWER,
+not faster, in the course of this investigation) — the panel-split fix above was the
+real lever. The gate's own noise floor at small/medium scale still needs a longer/
+more-sampled run before any single verdict there is trusted.
 
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
