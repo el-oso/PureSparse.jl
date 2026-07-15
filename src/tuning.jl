@@ -88,6 +88,22 @@ const QR_TOL_MULT = @load_preference("qr_tol_mult", 8.0)::Float64
 # Column-singleton pre-elimination magnitude threshold = this × τ (design_qr.md §2.3).
 const QR_SINGLETON_MULT = @load_preference("qr_singleton_mult", 1.0)::Float64
 
+# `qr(A; method=:auto)`'s :column-vs-:frontal split (design_qr_m5b.md §A5.6): predictor
+# is `sym.flops / sym.nnzR` (both already computed by `symbolic_qr` before either
+# numeric path runs, no extra work to obtain), `:frontal` when the ratio exceeds this.
+# Provenance: the PREDICTOR (not this number) is faer 0.24.1's own choice for its
+# simplicial-vs-supernodal QR dispatch (`flops/nnz`, sparse/linalg/qr.rs — faer is
+# MIT-licensed, freely readable, unlike the CHOLMOD/SuiteSparse GPL prohibition,
+# CLAUDE.md req 1); faer's own threshold constant is `40.0`
+# (`QR_SUPERNODAL_RATIO_FACTOR`, sparse/linalg/mod.rs). Independently verified here,
+# not blindly copied: measuring this ratio against measured :column-vs-:frontal cold
+# times on the M5 gate set (task 16e, galen, 2026-07-15) showed a clean, wide
+# separation — every :column-winning matrix sat at ratio ≤ 7.0, every :frontal-winning
+# matrix at ratio ≥ 863 — so any threshold in that gap works on this data; faer's own
+# 40.0 is kept rather than picking an arbitrary round number in the gap, since it's
+# the one with independent (non-PureSparse) grounding.
+const QR_AUTO_METHOD_RATIO = @load_preference("qr_auto_method_ratio", 40.0)::Float64
+
 # COLAMD dense-row/column withholding multipliers (design_qr.md §2.2 pt 5). D1: this is
 # a REUSE of the existing AMD dense-row heuristic shape (`max(16, mult*sqrt(n))`,
 # ultimately sourced to the AMD package User Guide, design.md §2.2 pt 6), not an

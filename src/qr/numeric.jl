@@ -104,11 +104,12 @@ compare timings with/without the optimization).
   (§A7.3/§A5.6 — P2 only gates uniformity of the frontal path, never blocks Float64).
   `singletons` has no effect here: the frontal path never carries singletons
   (`sym.n1 == 0` always, §A1.2).
-- `:auto` — **NOT YET CALIBRATED**: §A5.6 specifies an empirical front-quality
-  threshold to be measured on the M5 gate set (task 17's galen/wintermute sweep), not
-  guessed (CLAUDE.md's "don't guess — check" rule applies to a load-bearing gate
-  threshold same as any other empirical claim); until that sweep lands, `:auto`
-  behaves identically to `:column`.
+- `:auto` — dispatches on `sym.flops / sym.nnzR` (both already computed by
+  [`symbolic_qr`](@ref), no extra numeric work), `:frontal` when the ratio exceeds
+  [`QR_AUTO_METHOD_RATIO`](@ref) (task 16e, `tuning.jl` — measured on the M5 gate
+  set, not guessed: every gate matrix where `:column` won sat at ratio ≤ 7, every
+  matrix where `:frontal` won sat at ratio ≥ 863, a wide margin). Non-Float64 `T`
+  always uses `:column` regardless of the ratio (P2 not yet landed).
 
 Singletons are exploited ONLY in the `:column` path, never in [`symbolic_qr`](@ref)/
 [`qr!`](@ref)'s reuse path (§2.3: "a singleton set chosen for A's values is invalid
@@ -121,6 +122,11 @@ function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Not
         singletons::Bool = true, method::Symbol = :column) where {T,Ti<:Integer}
     method in (:column, :frontal, :auto) ||
         throw(ArgumentError("qr: method must be :column, :frontal, or :auto, got :$method"))
+    if method === :auto && T === Float64
+        sym = symbolic_qr(A; ordering)
+        ratio = sym.flops / max(sym.nnzR, 1)
+        method = ratio > QR_AUTO_METHOD_RATIO ? :frontal : :column
+    end
     if method === :frontal && T === Float64
         return qr_frontal(A; ordering, tol)
     end

@@ -266,10 +266,17 @@ end
     Ffront = PureSparse.qr(A; ordering = PureSparse.NaturalOrdering(), method = :frontal)
     @test Ffront isa PureSparse.QRFrontFactor{Float64}
 
-    # :auto is NOT YET CALIBRATED (§A5.6 — the threshold is a task-17 measured
-    # deliverable, not a guess); until that sweep lands it must equal :column exactly.
+    # :auto dispatches on sym.flops/sym.nnzR vs QR_AUTO_METHOD_RATIO (task 16e) — this
+    # tiny worked-example matrix has a low ratio (like every :column-winning gate
+    # matrix measured), so :auto must pick :column here.
     Fauto = PureSparse.qr(A; ordering = PureSparse.NaturalOrdering(), method = :auto)
     @test Fauto isa PureSparse.QRFactor{Float64}
+
+    # a denser, flop-rich matrix (high flops/nnzR) must route :auto to :frontal
+    rng2 = MersenneTwister(2)
+    Adense = sprand(rng2, 60, 20, 0.4)
+    Fauto_dense = PureSparse.qr(Adense; ordering = PureSparse.NaturalOrdering(), method = :auto)
+    @test Fauto_dense isa PureSparse.QRFrontFactor{Float64}
 
     # non-Float64 T + method=:frontal silently falls back to :column (P2 not yet landed)
     Af32 = SparseMatrixCSC{Float32}(A)
