@@ -10,8 +10,11 @@
 #
 # Structure map (faer qr.rs line ranges → here):
 #   1246-1265  panel split rule: scan rows in min-col-sorted order; a panel ends
-#              before the first row whose LOCAL min-col jumps ≥ max(1, bs÷2) past
-#              the panel's reference min-col (or at the row-list sentinel). NOTE
+#              before the first row whose LOCAL min-col jumps ≥ max(1, NBf÷2) past
+#              the panel's reference min-col (or at the row-list sentinel), where NBf
+#              is the FRONT's own size-tiered `recommended_block_size` (computed once
+#              per front at qr.rs:609-613, `_qr_faer_block_size` here) — NOT a flat
+#              constant: a huge front tolerates a bigger jump before splitting. NOTE
 #              this is a COLUMN-index jump — the pre-port code broke panels on a
 #              staircase ROW-count jump, a mis-reading of the same faer heuristic
 #              (design_qr_m5b.md §A5.3's transcription).
@@ -21,25 +24,29 @@
 #              fold into the next panel; with no rows supporting them they die as
 #              zero columns there — faer's dense QR skips them via rank detection,
 #              here the pivotal dead test / `hi < k` skip does, same net effect).
-#   1278-1279  per-panel block size bs = min(front max, tier(nrows, ncols)) — faer
-#              feeds this ONLY into `qr_in_place`'s OWN recursive internal blocking
-#              (factor.rs:137-256, the dense-kernel INTERNALS §A7.4 places out of
-#              scope — PureBLAS's single-level `wy_t!`/`wy_apply!` substitute for the
-#              whole `qr_in_place` call). `block_count` — and therefore the stored
-#              tau_block_size/nrows/ncols triple the solve replay walks — increments
-#              exactly ONCE per faer split-rule GROUP (qr.rs:1283), not once per bs
-#              sub-chunk: an earlier draft of this port added an inner bs-sized
-#              sub-loop here, silently multiplying the number of `wy_t!`/`wy_apply!`
-#              calls (many tiny 4-8-wide blocks instead of one per group) — a real
-#              bug caught by Chairmarks (qr! regressed ~2x across the gate set,
-#              solve! too, before this was found and reverted). One split-rule GROUP
-#              = one stored panel here, exactly as it was pre-port; only the split
-#              RULE (row-based faer min-col jump, not the pre-port's column-based
-#              stair jump) changed. `bs` itself is therefore not translated at all —
-#              it has no counterpart at PureSparse's single-level orchestration
-#              layer, consistent with design_qr_m5b.md §A8's own call-out that
-#              per-panel NB re-derivation is "a refinement on top, not a missing
-#              mechanism."
+#   1276-1279  per-GROUP block size bs = min(NBf, tier(nrows, ncols)) — a SEPARATE
+#              re-derivation from NBf above, feeding ONLY `qr_in_place`'s OWN
+#              recursive internal blocking (factor.rs:137-256, the dense-kernel
+#              INTERNALS §A7.4 places out of scope — PureBLAS's single-level
+#              `wy_t!`/`wy_apply!` substitute for the whole `qr_in_place` call).
+#              `block_count` — and therefore the stored tau_block_size/nrows/ncols
+#              triple the solve replay walks — increments exactly ONCE per faer
+#              split-rule GROUP (qr.rs:1283), not once per bs sub-chunk: an earlier
+#              draft of this port added an inner bs-sized sub-loop here, silently
+#              multiplying the number of `wy_t!`/`wy_apply!` calls (many tiny 4-8-wide
+#              blocks instead of one per group) — a real bug caught by Chairmarks
+#              (qr! regressed ~2x across the gate set, solve! too). That draft's FIX
+#              over-corrected: it deleted `_qr_faer_block_size`/NBf ENTIRELY, which
+#              also silently shrank the split-trigger threshold back to a flat
+#              constant (the workspace's storage-capacity NB, unrelated to front
+#              size) — regressing wall-time ~2x on a 7000×4000 @ 1% density case
+#              specifically (galen, measured: 4.6s pre-regression → 8.7-9.4s), traced
+#              to 83% of panels collapsing to width 1 (measured via `F.pbs`
+#              histograms across three git revisions, `ROADMAP.md`'s own account).
+#              Re-reading faer's actual source (qr.rs:609-613 AND :1260-1265 together,
+#              not just the inner-loop site) confirms `max_block_size`/NBf legitimately
+#              feeds the split trigger and only the group-local `bs` re-derivation (2)
+#              has no counterpart here — restored accordingly.
 #   1288-1304  the group's blocked QR + trailing applies. faer: `qr_in_place(left)`,
 #              then one block-sequence apply to `right` (all front columns past the
 #              group). Here: scalar reflector loop over the WHOLE group (rank-policy-
@@ -101,9 +108,11 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
     frowlo = Int(fsym.frowptr2[f])
     colslo = Int(fsym.fcolptr[f])
     NB = size(ws.Tm, 1)
-    split_jump = max(1, NB ÷ 2)   # faer qr.rs:1261-1265 (max_block_size ↦ NB — see the
-                                   # header's note on why per-group tiering isn't
-                                   # translated at this orchestration layer)
+    NBf = _qr_faer_block_size(m_f, n_f)   # faer qr.rs:609-613, per-front (NOT clamped
+                                           # to NB: the split-trigger threshold isn't a
+                                           # storage constraint, only the group WIDTH
+                                           # below is — see the header's account)
+    split_jump = max(1, NBf ÷ 2)   # faer qr.rs:1260-1265
 
     # elimination-order bookkeeping: local front-column of the t-th elimination
     # (t = 1..e_f), used by the post-loop R harvest and pass-up below.
@@ -122,10 +131,20 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
         # F.fmincol holds assembly's LOCAL min-cols (ascending) until pass-up
         # rewrites the survivor tail to global columns after this loop.
         idx_min_col = idx <= m_f ? Int(F.fmincol[frowlo + idx - 1]) : n_f + 1
-        # split trigger: faer's own condition (qr.rs:1260-1265) OR the NB storage
-        # cap (own necessity, see header) — whichever fires first ends the group.
+        # split trigger: faer's own condition (qr.rs:1260-1265) OR the column-span NB
+        # storage cap (own necessity, see header) — whichever fires first ends the
+        # group. NO row-count term here (an earlier draft's `(idx-k) >= NB` was a
+        # real bug, found via profiling, not faer's own condition and not justified
+        # by any real storage constraint — `ws.wy.V`'s ROW capacity is
+        # `fsym.max_front_rows`, not NB; only its COLUMN capacity is NB-bounded, via
+        # `ncols_grp`'s own clamp below. At low density many rows can share nearby
+        # min-cols (`nrows` growing fast, `span` growing slow); a row-count trigger
+        # fires almost immediately in that regime regardless of `split_jump`,
+        # collapsing every group to a handful of columns — measured directly:
+        # median panel width 1 (83% width-1) on a 7000×4000 @1% matrix, root-caused
+        # by comparing `F.pbs` histograms against pre-port/buggy-draft revisions).
         faer_trigger = idx_min_col == n_f + 1 || idx_min_col >= current_min_col + split_jump
-        cap_trigger = (idx - k) >= NB || (idx_min_col - current_min_col) >= NB
+        cap_trigger = (idx_min_col - current_min_col) >= NB
         if !(faer_trigger || cap_trigger)
             continue
         end

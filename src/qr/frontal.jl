@@ -182,13 +182,39 @@ end
     return nothing
 end
 
-# NOTE: faer's `recommended_block_size` tier function (faer 0.24.1,
-# src/linalg/qr/no_pivoting/factor.rs:91-116) is NOT translated here. faer feeds it
-# only into `qr_in_place`'s OWN recursive internal dense-kernel blocking (out of scope,
-# design_qr_m5b.md §A7.4 — PureBLAS's single-level `wy_t!`/`wy_apply!` substitute for
-# that whole call); it has no counterpart at this single-level orchestration layer.
-# See `_factorize_front!`'s header (frontal_numeric.jl) for the full account of why an
-# earlier draft's translation of it regressed qr! ~2x before being reverted.
+# faer's `recommended_block_size` tier function (faer 0.24.1,
+# src/linalg/qr/no_pivoting/factor.rs:91-116), RE-translated here after a first
+# over-correction removed it entirely (see `_factorize_front!`'s header). Ground truth
+# re-read from faer's actual source (qr.rs:609-613 symbolic-time call site,
+# qr.rs:1260-1265 the split-trigger use): faer calls this tier function TWICE, for two
+# genuinely different purposes, easy to conflate —
+#   1. qr.rs:609-613 (symbolic time): `max_block_size[s] = recommended_block_size(
+#      s_row_count, s_col_count)` — a PER-FRONT value from the front's actual row/col
+#      counts. THIS is what feeds the split-trigger threshold at qr.rs:1260-1265
+#      (`max_block_size / 2`) — i.e. how far a row's min-col may jump before a group
+#      ends is itself SIZE-DEPENDENT (a huge front tolerates bigger jumps before
+#      splitting). `_factorize_front!` calls this ONCE per front as `NBf`.
+#   2. qr.rs:1276-1277 (numeric time, INSIDE the trigger): `bs = recommended_block_size(
+#      left.nrows(), left.ncols())` re-derived PER GROUP, clamped to `max_block_size`,
+#      and fed ONLY into `qr_in_place`'s own internal recursive dense-kernel blocking
+#      (out of scope, §A7.4 — PureBLAS's single-level `wy_t!`/`wy_apply!` substitute
+#      for that whole call) — this is the value the first over-correction wrongly
+#      conflated with (1) and, in the ORIGINAL buggy draft, wrongly used to sub-split a
+#      single stored group into multiple small WY blocks (a real bug, correctly
+#      reverted). Only (2) has no counterpart here; (1) does and was wrongly dropped
+#      alongside it. See `_factorize_front!`'s header for the full account.
+@inline function _qr_faer_block_size(nrows::Int, ncols::Int)
+    prod = nrows * ncols
+    sz = min(nrows, ncols)
+    bs = prod > 8192 * 8192 ? 256 :
+        prod > 2048 * 2048 ? 128 :
+        prod > 1024 * 1024 ? 64 :
+        prod > 512 * 512 ? 48 :
+        prod > 128 * 128 ? 32 :
+        prod > 32 * 32 ? 8 :
+        prod > 16 * 16 ? 4 : 1
+    return max(min(bs, sz), 1)
+end
 
 @inline n_f_of(fsym::QRFrontSymbolic, f::Int) = Int(fsym.fcolptr[f + 1] - fsym.fcolptr[f])
 
