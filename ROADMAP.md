@@ -342,6 +342,71 @@ target). The per-panel block-size TIER value itself (`recommended_block_size`) h
 counterpart at all in the ported orchestration, for the reason above — this is an
 intentional non-translation, not an oversight.
 
+**2026-07-15 follow-up: mechanical port merged to master, bug fix found post-merge and
+also merged, plus StrictMode/trim/@simd hygiene — re-measured on galen (clock-locked).**
+Sequence: merged the mechanical port above (`cfdce7e`) after independent verification;
+the agent then found (in its own follow-up worktree session) and fixed the
+`tau_block_size` mis-translation described above — that fix (`f97e0b0`) was cherry-
+picked onto master separately (`d66fc9f`) since it landed after the first merge. Also
+closed two real gaps this session surfaced: (1) the frontal `qr!` had ZERO StrictMode
+wiring (`check_refactor_shape`/`check_finite`, CLAUDE.md req 6) despite M5a's own
+`qr!` having it since task 10 — fixed, `check_finite` covers `F.rval` only (not
+`F.fval`/`F.tauv`, which are rank-deficiency-upper-bound-sized and can be partially
+unwritten by design; checking them wholesale would false-positive on a correct
+factorization, documented in place); (2) the frontal path had NO `TrimCheck`
+`@validate` roots and no `juliac/entry.jl` smoke coverage at all (design_qr_m5b.md §A9
+point 7, never done) — added both. Also added `@simd` to the three scalar hot loops
+that stay in PureSparse rather than delegate to PureBLAS (`_front_form_reflector!`'s
+scale loop, `_front_apply1!`'s dot-product+SAXPY, `_gather_panel_V!`'s copy) and
+replaced a manual 2D zero-fill with `fill!`. Full suite: 221,656 assertions, 0 new
+failures, throughout (`a2faf9b`).
+
+Galen (clock-locked) re-measurements, in order:
+- **Gate (`qr_gate_galen.json`)**: bounced 3/16 → 4/16 → 3/16 → 2/16 across the four
+  re-runs in this sequence (zero-alloc pass, mechanical port, bug fix, `@simd`) — at
+  this problem scale (matrices from a few hundred to a few thousand rows, sub-
+  millisecond to tens-of-ms per call) `@be`'s per-config sample count is small enough
+  that this bounce is at least partly measurement noise, not all real signal; no
+  single run in this range should be read as the definitive verdict.
+- **7000×4000 (the user's own benchmark target, `faer_vs_puresparse_7000x4000_galen.json`,
+  simplified to 1%/10% density per request), REAL and REPRODUCIBLE (two back-to-back
+  runs agreed to within 1%)**: a striking density-dependent swing appeared once the
+  `tau_block_size` bug was fixed —
+  - **10% density: PureSparse frontal DECISIVELY BEATS faer** — 2.26-2.32s vs faer's
+    4.16-4.25s (~1.8x faster), vs SPQR's 5.71-5.76s (~2.5x faster). This is the best
+    result of the whole M5b effort so far.
+  - **1% density: regressed relative to the pre-bugfix measurement** — 8.7-9.4s,
+    worse than the buggy draft's own 4.60s and worse than pre-mechanical-port's
+    6.97s. `@simd` made no measurable difference either way (scalar loops are a small
+    fraction of total work at this scale, as expected). **Not yet root-caused** — a
+    reasonable hypothesis (not yet verified, do not treat as fact) is that faer's
+    exact column-index-jump split trigger produces many more, smaller staircase
+    groups on this specific low-density near-uniform-random pattern than the old
+    row-count-based heuristic did, since low density means less inter-row column-
+    pattern overlap and therefore larger jumps between consecutive rows' min-cols —
+    each such jump would end a group early. Needs actual profiling (front/panel-count
+    histograms at 1% vs 10% density) before acting on this, not a code change yet.
+- **PureBLAS lever identified, relayed to the user (not acted on here — PureBLAS.jl's
+  repo is off-limits this session, another agent has live work there)**:
+  `PureBLAS.qr_block_size(m, n)` (`wy.jl:113`, what `_qr_faer_block_size`'s removal
+  left as the only block-size input this port uses) ignores its own `m`/`n` args and
+  returns the flat, self-flagged-as-a-shortcut `_QR_NB = 32` (`qr.jl:164`,
+  `ponytail: hand-set for Zen4, tune if needed`) — even though PureBLAS already has a
+  proven, cache-residency-derived formula for the SAME problem on its complex path
+  (`_zqr_nb`, `qr.jl:181-182`, keyed on `_L3_BYTES`), just never extended to the real
+  path `qr_block_size` calls into. Per PureBLAS's own CLAUDE.md req 8 ("every
+  machine-dependent tuning parameter... MUST have a default that is a FORMULA...
+  existing literals... are tech debt to migrate"), and given faer's own analogous
+  `recommended_block_size` (read directly for this port) IS size-tiered, this is a
+  concrete, scoped, evidence-backed candidate for whoever picks up PureBLAS's QR
+  tuning next — not guessed, grounded in this session's own faer-source reading.
+
+Next: root-cause the 1%-density regression (needs profiling, not another blind
+re-run) before further amalgamation/panel-size tuning; task 16e's actual amalgamation
+threshold retune (§A8, faer's graded 4-tier schedule) is still fully open; the gate's
+own noise floor at small/medium scale needs a longer/more-sampled run before any
+single verdict there is trusted.
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
