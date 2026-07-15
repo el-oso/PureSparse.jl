@@ -23,21 +23,55 @@ struct QRFrontWorkspace{T,Ti<:Integer}
     Tm::Matrix{T}
     yqt::Vector{T}
     rhs::Vector{T}
+    # _assemble_front!'s own scratch (design_qr_m5b.md §A5.2 step 2/3), preallocated
+    # to `max_front_rows`/`max_front_cols` capacity so assembly no longer allocates a
+    # fresh `push!`-grown Vector per front — a real per-front allocation cost flagged
+    # as a known gap since task 16a landed, closed here (task 16e's first lever).
+    phys::Vector{Ti}
+    mincol::Vector{Ti}
+    srcfront::Vector{Ti}
+    srcrow::Vector{Ti}
+    slotof::Vector{Ti}
+    acursor::Vector{Ti}
+    # _factorize_front!'s own per-front scratch (same task-16e lever as above)
+    elim_col::Vector{Ti}
+    piv_k::Vector{Ti}
+    piv_rlo::Vector{Ti}
+    # solve!'s own R-space scratch (§A6) — sized once to nb, not per call
+    solve_cc::Vector{T}
+    # apply_Q!'s own per-front panel-boundary scratch (§A6) — worst case one panel
+    # per column, so capacity ncols+1 covers every front.
+    row0s::Vector{Int}
+    tvbases::Vector{Int}
 end
 
 function QRFrontWorkspace{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
     nb = length(fsym.base.parent)
     NB = fsym.max_front_cols == 0 ? 1 : qr_block_size(fsym.max_front_rows, fsym.max_front_cols)
+    mrows = max(fsym.max_front_rows, 1)
+    ncols = max(fsym.max_front_cols, 1)
     return QRFrontWorkspace{T,Ti}(
         zeros(Ti, nb),
         zeros(Ti, nb),
-        Vector{Ti}(undef, max(fsym.max_front_cols + 1, 1)),
-        Vector{Ti}(undef, max(fsym.max_front_cols, 1)),
-        WYApplyWorkspace{T}(max(fsym.max_front_rows, 1), max(NB, 1), max(fsym.max_front_cols, 1)),
+        Vector{Ti}(undef, ncols + 1),
+        Vector{Ti}(undef, ncols),
+        WYApplyWorkspace{T}(mrows, max(NB, 1), ncols),
         Vector{T}(undef, max(NB, 1)),
         Matrix{T}(undef, max(NB, 1), max(NB, 1)),
-        Vector{T}(undef, max(fsym.max_front_rows, 1)),
+        Vector{T}(undef, mrows),
         Vector{T}(undef, fsym.base.m),
+        Vector{Ti}(undef, mrows),
+        Vector{Ti}(undef, mrows),
+        Vector{Ti}(undef, mrows),
+        Vector{Ti}(undef, mrows),
+        Vector{Ti}(undef, mrows),
+        Vector{Ti}(undef, ncols),
+        Vector{Ti}(undef, mrows),
+        Vector{Ti}(undef, max(NB, 1)),
+        Vector{Ti}(undef, max(NB, 1)),
+        Vector{T}(undef, nb),
+        Vector{Int}(undef, ncols + 1),
+        Vector{Int}(undef, ncols + 1),
     )
 end
 

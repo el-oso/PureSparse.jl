@@ -99,3 +99,34 @@ end
     x = PureSparse.solve!(zeros(10), F, b)
     @test normal_eq_resid(A, x, b) < 1e-8
 end
+
+@testitem "qr_frontal numeric: qr!/solve!/apply_Q!/apply_Qt! are zero-allocation warm (design_qr_m5b.md §A9.6, task 16e)" setup=[QRFrontalNumericHelpers] begin
+    using SparseArrays, LinearAlgebra, Random
+
+    for (label, A, tol) in (
+        ("full rank", random_rect_frontal2(MersenneTwister(11), 40, 25, 0.2), nothing),
+        ("rank-deficient", let
+            Ar = random_rect_frontal2(MersenneTwister(777), 20, 10, 0.3)
+            Ar[:, 5] = Ar[:, 3]
+            Ar
+        end, 1e-10),
+    )
+        sym = PureSparse.symbolic_qr(A; ordering = PureSparse.NaturalOrdering())
+        fsym = PureSparse.symbolic_qr_frontal(sym, A; fundamental = false)
+        F = PureSparse.QRFrontFactor{Float64,Int}(fsym)
+        PureSparse.qr!(F, A; tol)   # warm up
+        @test (@allocated PureSparse.qr!(F, A; tol)) == 0
+
+        m, n = size(A)
+        b = randn(MersenneTwister(1), m)
+        x = zeros(n)
+        PureSparse.solve!(x, F, b)   # warm up
+        @test (@allocated PureSparse.solve!(x, F, b)) == 0
+
+        y = randn(MersenneTwister(2), fsym.base.mb)
+        PureSparse.apply_Qt!(y, F)
+        @test (@allocated PureSparse.apply_Qt!(y, F)) == 0
+        PureSparse.apply_Q!(y, F)
+        @test (@allocated PureSparse.apply_Q!(y, F)) == 0
+    end
+end

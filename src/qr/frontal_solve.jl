@@ -111,8 +111,8 @@ function apply_Q!(y::AbstractVector{T}, F::QRFrontFactor{T,Ti}) where {T,Ti<:Int
         panello = Int(fsym.fpanelptr[f])
         tvbase0 = _tauv_base(fsym, f)
         npanel = Int(F.fnpanel[f])
-        row0s = Vector{Int}(undef, npanel + 1)
-        tvbases = Vector{Int}(undef, npanel + 1)
+        row0s = ws.row0s
+        tvbases = ws.tvbases
         row0s[1] = 1
         tvbases[1] = tvbase0
         for pnl in 1:npanel
@@ -223,8 +223,7 @@ function solve!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, b::AbstractVector{
     apply_Qt!(y, F)
     # gather Qᵀb into R's own (block-column) space via fpivotrow (B2's own reasoning,
     # design_qr.md §3.4/§6.2: row k of R lives at physical row fpivotrow[k], not k)
-    cc = Vector{T}(undef, nb)   # correctness-first; zero-alloc is a follow-up (mirrors
-                                # M5a task 7/9/10's own staged discipline)
+    cc = view(F.ws.solve_cc, 1:nb)
     @inbounds for k in 1:nb
         piv = F.fpivotrow[k]
         cc[k] = piv == 0 ? zero(T) : y[piv]

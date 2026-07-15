@@ -27,19 +27,19 @@ function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
     # step 2: gather incoming rows — A-rows (ascending pivotal column, ascending
     # physical row) then children (ascending front order; each child's own survivor
     # rows are ALREADY sorted and CONTIGUOUS in gather order, tracked via
-    # childrange below so step 4 can build cg2l once per child).
-    mmax_f = Int(fsym.fmmax[f])
-    phys = Vector{Ti}(undef, 0); sizehint!(phys, mmax_f)
-    mincol = Vector{Ti}(undef, 0); sizehint!(mincol, mmax_f)
-    srcfront = Vector{Ti}(undef, 0); sizehint!(srcfront, mmax_f)   # 0 = A-row
-    srcrow = Vector{Ti}(undef, 0); sizehint!(srcrow, mmax_f)        # original row (A-row) or child-local row
+    # childrange below so step 4 can build cg2l once per child). Scratch arrays are
+    # preallocated to `max_front_rows` capacity in `ws` (task 16e's first lever) —
+    # filled by explicit cursor rather than `push!`, so this is allocation-free.
+    phys = ws.phys; mincol = ws.mincol; srcfront = ws.srcfront; srcrow = ws.srcrow
+    t = 0
     @inbounds for k in fsym.fsuper[f]:(fsym.fsuper[f + 1] - 1)
         for physp in fsym.arowptr[k]:(fsym.arowptr[k + 1] - 1)
-            push!(phys, Ti(physp))              # PHYSICAL row label (1..mb) — what
+            t += 1
+            phys[t] = Ti(physp)                 # PHYSICAL row label (1..mb) — what
                                                  # solve's shared y vector is indexed by
-            push!(mincol, ws.g2l[k])
-            push!(srcfront, zero(Ti))
-            push!(srcrow, sym.rperm[physp])     # ORIGINAL row — for the row-form value lookup
+            mincol[t] = ws.g2l[k]
+            srcfront[t] = zero(Ti)               # 0 = A-row
+            srcrow[t] = sym.rperm[physp]         # ORIGINAL row — for the row-form value lookup
         end
     end
     @inbounds for cp in fsym.fchildptr[f]:(fsym.fchildptr[f + 1] - 1)
@@ -47,14 +47,15 @@ function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
         r_c = Int(F.fr[c])
         e_c = Int(F.fe[c])   # NOT F.fm[c]: rows (e_c+1):fm(c) are all-zero residue
         crowlo = Int(fsym.frowptr2[c])
-        for t in (r_c + 1):e_c
-            push!(phys, F.frowind[crowlo + t - 1])
-            push!(mincol, ws.g2l[F.fmincol[crowlo + t - 1]])
-            push!(srcfront, Ti(c))
-            push!(srcrow, Ti(t))
+        for rowt in (r_c + 1):e_c
+            t += 1
+            phys[t] = F.frowind[crowlo + rowt - 1]
+            mincol[t] = ws.g2l[F.fmincol[crowlo + rowt - 1]]
+            srcfront[t] = Ti(c)
+            srcrow[t] = Ti(rowt)
         end
     end
-    m_f = length(phys)
+    m_f = t
 
     # step 3: staircase counting sort by local min-col (stable within each bucket,
     # since we scatter in gather order — A-rows before children, ascending within
@@ -68,8 +69,8 @@ function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
     @inbounds for j in 1:n_f
         count[j] = zero(Ti)
     end
-    @inbounds for mc in mincol
-        count[mc] += one(Ti)
+    @inbounds for tt in 1:m_f
+        count[mincol[tt]] += one(Ti)
     end
     @inbounds for j in 2:n_f
         count[j] += count[j - 1]
@@ -77,19 +78,19 @@ function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
     @inbounds for j in 1:n_f
         ws.stair[j] = count[j]
     end
-    cursor = Vector{Ti}(undef, n_f)
+    cursor = ws.acursor
     cursor[1] = one(Ti)
     @inbounds for j in 2:n_f
         cursor[j] = count[j - 1] + one(Ti)
     end
     rowlo = Int(fsym.frowptr2[f])
-    slotof = Vector{Ti}(undef, m_f)
-    @inbounds for t in 1:m_f
-        mc = Int(mincol[t])
+    slotof = ws.slotof
+    @inbounds for tt in 1:m_f
+        mc = Int(mincol[tt])
         slot = cursor[mc]
-        F.frowind[rowlo + slot - 1] = phys[t]
+        F.frowind[rowlo + slot - 1] = phys[tt]
         F.fmincol[rowlo + slot - 1] = Ti(mc)
-        slotof[t] = slot
+        slotof[tt] = slot
         cursor[mc] += one(Ti)
     end
 

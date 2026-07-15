@@ -32,7 +32,7 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
 
     # elimination-order bookkeeping: local front-column of the t-th elimination
     # (t = 1..e_f), used only by pass-up below — small, front-width-bounded scratch.
-    elim_col = Vector{Ti}(undef, min(m_f, n_f))
+    elim_col = ws.elim_col
 
     k = 1
     j = 1
@@ -48,8 +48,8 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
     # site; harvesting inline against pre-update Ff was a real bug, caught by
     # comparing this front's R against the M5a column-QR oracle: only each row's
     # OWN diagonal matched, every later-column entry in that row was wrong).
-    piv_k = Vector{Ti}(undef, NB)
-    piv_rlo = Vector{Ti}(undef, NB)
+    piv_k = ws.piv_k
+    piv_rlo = ws.piv_rlo
     @inbounds while j <= n_f && k <= m_f
         j2 = _panel_extent(j, n_f, stair, NB)
         panel_start_k = k
