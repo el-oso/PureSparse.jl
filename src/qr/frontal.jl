@@ -35,8 +35,6 @@ struct QRFrontWorkspace{T,Ti<:Integer}
     acursor::Vector{Ti}
     # _factorize_front!'s own per-front scratch (same task-16e lever as above)
     elim_col::Vector{Ti}
-    piv_k::Vector{Ti}
-    piv_rlo::Vector{Ti}
     # solve!'s own R-space scratch (§A6) — sized once to nb, not per call
     solve_cc::Vector{T}
     # apply_Q!'s own per-front panel-boundary scratch (§A6) — worst case one panel
@@ -67,8 +65,6 @@ function QRFrontWorkspace{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
         Vector{Ti}(undef, mrows),
         Vector{Ti}(undef, ncols),
         Vector{Ti}(undef, mrows),
-        Vector{Ti}(undef, max(NB, 1)),
-        Vector{Ti}(undef, max(NB, 1)),
         Vector{T}(undef, nb),
         Vector{Int}(undef, ncols + 1),
         Vector{Int}(undef, ncols + 1),
@@ -182,18 +178,27 @@ end
     return nothing
 end
 
-# Panel column extent: grow from `j` while width < NB, or the staircase jump from the
-# panel's own start exceeds max(1, NB÷2) (faer's split rule, qr.rs — cited heuristic,
-# design_qr_m5b.md §A5.3, adopted as-is; a free tunable, revisit only on measurement).
-@inline function _panel_extent(j::Int, n_f::Int, stair::AbstractVector{Ti}, NB::Int) where {Ti}
-    j2 = j
-    stair0 = stair[j]
-    @inbounds while j2 < n_f
-        (j2 - j + 1) >= NB && break
-        (stair[j2 + 1] - stair0) >= max(1, NB ÷ 2) && break
-        j2 += 1
-    end
-    return j2 + 1   # exclusive upper bound, matching design's [j, j2) convention
+# faer's dense-QR block-size schedule — mechanical translation of
+# `linalg::qr::no_pivoting::factor::recommended_block_size` (faer 0.24.1,
+# src/linalg/qr/no_pivoting/factor.rs:91-116, MIT — the permitted-source category of
+# design_qr_m5b.md §0/§11; constants are faer's own, cited, not SuiteSparse-derived).
+# faer's sparse numeric loop derives a per-front maximum from this at symbolic time
+# (qr.rs:609-613) and re-derives a per-panel size at each staircase panel
+# (qr.rs:1278-1279); `_factorize_front!` mirrors both call sites, additionally clamping
+# to PureBLAS's `qr_block_size` NB (the symbolic T-slab / workspace capacity ceiling,
+# `symbolic_qr_frontal`'s `ftauptr` sizing — untouchable here, so fronts big enough
+# that faer would pick a block > NB are clamped to NB).
+@inline function _qr_faer_block_size(nrows::Int, ncols::Int)
+    prod = nrows * ncols
+    sz = min(nrows, ncols)
+    bs = prod > 8192 * 8192 ? 256 :
+        prod > 2048 * 2048 ? 128 :
+        prod > 1024 * 1024 ? 64 :
+        prod > 512 * 512 ? 48 :
+        prod > 128 * 128 ? 32 :
+        prod > 32 * 32 ? 8 :
+        prod > 16 * 16 ? 4 : 1
+    return max(min(bs, sz), 1)
 end
 
 @inline n_f_of(fsym::QRFrontSymbolic, f::Int) = Int(fsym.fcolptr[f + 1] - fsym.fcolptr[f])

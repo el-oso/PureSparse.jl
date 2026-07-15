@@ -10,6 +10,18 @@
 # (§A6) — they carry no information for assembly's own VALUE scatter, which instead
 # reads directly from either the block's row-form (A-rows) or the child's OWN stored
 # front rectangle (child rows), tracked separately below during the gather.
+#
+# faer correspondence (documented equivalence, deliberately NOT restructured in the
+# M5b mechanical port of qr.rs's numeric core): faer PUSHES survivor row ids/min-cols
+# into the parent's row arrays at child pass-up time (qr.rs:1357-1371) and re-sorts
+# the whole per-front list at front start with a comparison argsort (qr.rs:1123-1151);
+# this file PULLS from children at front start and staircase-sorts with a stable
+# counting sort (design_qr_m5b.md §A5.2 step 3's cited equivalence — same sorted
+# result, allocation-free, deterministic). Value scatter: faer iterates parent rows ×
+# child row map (qr.rs:1199-1214, direct assignment per row's min-col tail); here the
+# child's survivor rows are iterated directly with the same ≥min-col tail rule —
+# identical entries moved. A-row scatter from the row-form of A is faer's AT scatter
+# (qr.rs:1152-1167).
 
 function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
     fsym = F.fsym
@@ -94,9 +106,10 @@ function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
         cursor[mc] += one(Ti)
     end
 
-    # step 4: zero the USED extent, then scatter values in GATHER order (grouped by
-    # source: A-rows, then each child's contiguous block — cg2l is built once per
-    # child, not once per row).
+    # step 4: zero the USED extent (see `qr!`'s header note on why this stays
+    # per-front/used-extent rather than faer's one-shot full-capacity fill), then
+    # scatter values in GATHER order (grouped by source: A-rows, then each child's
+    # contiguous block — cg2l is built once per child, not once per row).
     Fused = view(Ff_full, 1:m_f, 1:n_f)
     @inbounds for jcol in 1:n_f, i in 1:m_f
         Fused[i, jcol] = zero(T)
