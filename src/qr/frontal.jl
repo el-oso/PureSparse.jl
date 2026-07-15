@@ -178,28 +178,13 @@ end
     return nothing
 end
 
-# faer's dense-QR block-size schedule — mechanical translation of
-# `linalg::qr::no_pivoting::factor::recommended_block_size` (faer 0.24.1,
-# src/linalg/qr/no_pivoting/factor.rs:91-116, MIT — the permitted-source category of
-# design_qr_m5b.md §0/§11; constants are faer's own, cited, not SuiteSparse-derived).
-# faer's sparse numeric loop derives a per-front maximum from this at symbolic time
-# (qr.rs:609-613) and re-derives a per-panel size at each staircase panel
-# (qr.rs:1278-1279); `_factorize_front!` mirrors both call sites, additionally clamping
-# to PureBLAS's `qr_block_size` NB (the symbolic T-slab / workspace capacity ceiling,
-# `symbolic_qr_frontal`'s `ftauptr` sizing — untouchable here, so fronts big enough
-# that faer would pick a block > NB are clamped to NB).
-@inline function _qr_faer_block_size(nrows::Int, ncols::Int)
-    prod = nrows * ncols
-    sz = min(nrows, ncols)
-    bs = prod > 8192 * 8192 ? 256 :
-        prod > 2048 * 2048 ? 128 :
-        prod > 1024 * 1024 ? 64 :
-        prod > 512 * 512 ? 48 :
-        prod > 128 * 128 ? 32 :
-        prod > 32 * 32 ? 8 :
-        prod > 16 * 16 ? 4 : 1
-    return max(min(bs, sz), 1)
-end
+# NOTE: faer's `recommended_block_size` tier function (faer 0.24.1,
+# src/linalg/qr/no_pivoting/factor.rs:91-116) is NOT translated here. faer feeds it
+# only into `qr_in_place`'s OWN recursive internal dense-kernel blocking (out of scope,
+# design_qr_m5b.md §A7.4 — PureBLAS's single-level `wy_t!`/`wy_apply!` substitute for
+# that whole call); it has no counterpart at this single-level orchestration layer.
+# See `_factorize_front!`'s header (frontal_numeric.jl) for the full account of why an
+# earlier draft's translation of it regressed qr! ~2x before being reverted.
 
 @inline n_f_of(fsym::QRFrontSymbolic, f::Int) = Int(fsym.fcolptr[f + 1] - fsym.fcolptr[f])
 

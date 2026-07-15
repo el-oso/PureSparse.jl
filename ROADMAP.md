@@ -286,6 +286,62 @@ still open: strata-(i) tiny-matrix losses are noise-level (~0.05-0.15ms vs SPQR'
 PureSparse's own fixed per-call overhead (COLAMD/symbolic setup cost), a genuinely
 separate investigation from the frontal-vs-column architecture question.
 
+**2026-07-15: mechanical port of faer's supernodal QR numeric core landed
+(`src/qr/frontal{,_numeric,_solve}.jl`)** — per user authorization (explicit, after
+the SuiteSparse-AMD/COLAMD risk was flagged and the user chose the safe scope: symbolic
+layer and ordering untouched, only the dense per-front factorization orchestration and
+solve replay ported). Faithful translation of
+`factorize_supernodal_numeric_qr_impl`'s dense phase (faer 0.24.1 `qr.rs:1246-1344`)
+onto PureSparse's own symbolic layer and PureBLAS's `wy_t!`/`wy_apply!` — faer's
+dense-KERNEL internals (`qr_in_place`'s own recursive blocking) are explicitly NOT
+translated (§A7.4's boundary; PureBLAS's single-level compact-WY kernels substitute).
+What IS translated: the staircase panel-split rule (row-scan, min-col-jump trigger,
+`max(1, blocksize÷2)`), the block loop, the two trailing applies, post-factorization R
+harvest, and pass-up bookkeeping. Every translated block cites its faer `qr.rs`
+line range in a header comment in `frontal_numeric.jl`.
+
+One real, load-bearing bug found and fixed mid-port (caught by Chairmarks, not
+guessed): the first-draft translation misread faer's per-group `tau_block_size`
+(qr.rs:1278-1279, the tier `recommended_block_size` value) as something that should
+sub-split each staircase GROUP into multiple small (4-8-wide) WY blocks. It does not —
+faer's own `block_count` increments exactly ONCE per staircase group (qr.rs:1283); the
+tier value is fed only into `qr_in_place`'s own out-of-scope internal recursive
+blocking, never used to multiply the number of `wy_t!`/`wy_apply!` calls at the
+orchestration layer this port lives at. The buggy draft regressed `qr!` and `solve!`
+by roughly 2x across the whole gate matrix set (measured, not assumed) before this was
+found; fixed by dropping the inner sub-loop entirely and doing ONE `wy_t!`+`wy_apply!`
+per staircase group, capped at the symbolic/workspace's NB storage capacity (the same
+role the pre-port code's width cap played — own necessity, since PureSparse's
+single-level WY block has no internal recursive absorption for an over-wide group the
+way faer's `qr_in_place` does). A second, smaller regression from the same draft (an
+attempted translation of faer's one-shot `householder_val.fill(zero())`,
+qr.rs:1064-1066) was also reverted: faer's per-supernode capacity is exact (no rank
+detection), so a one-shot zero costs exactly what's touched; PureSparse's `fmmax_f` is
+a rank-deficiency-aware UPPER BOUND (§A3.2) that can exceed actual usage — the
+pre-port per-front used-extent-only zero stays.
+
+Verified: full suite (`Pkg.test`-equivalent `runtests(PureSparse)`) passes at
+221,656/221,656 assertions, both with and without `--check-bounds=yes`; the
+zero-alloc gate (`qr!`/`solve!`/`apply_Q!`/`apply_Qt!` warm) still holds. Directional
+benchmark (`benchmark/qr_matrices.jl` gate set, this dev container — NOT clock-locked,
+numbers are directional only) shows the flop-rich stratum genuinely improving over the
+pre-port frontal code (`random_tall_n1200x300_d05`: qr! -39%, solve! -48%;
+`dense_arrow_n800x200_d8dense`: solve! -28%) — the stratum where faer's real ~20-30%
+architectural edge was measured (task 17's gate run above) — with strata (i)/(ii)
+roughly flat (within this machine's noise floor). Not yet re-run on galen/wintermute
+(clock-locked); task 17's full gate re-run is still the next real verdict.
+
+Left out (deliberately, not chased): faer's own `colamd` module (SuiteSparse-AMD/
+COLAMD BSD port) was never read for this task, per the explicit scope boundary —
+ordering stays PureSparse's own independently-derived COLAMD/AMD, completely
+untouched. faer's dense-kernel internals (`qr_in_place`'s recursive blocking,
+`apply_block_householder_*`'s internals) were skimmed only enough to identify where
+PureBLAS's `wy_t!`/`wy_apply!` substitute — not mechanically translated (§A7.4 is
+explicit that this boundary is PureBLAS's own proven kernels, not a re-derivation
+target). The per-panel block-size TIER value itself (`recommended_block_size`) has no
+counterpart at all in the ported orchestration, for the reason above — this is an
+intentional non-translation, not an oversight.
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-

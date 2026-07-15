@@ -10,33 +10,45 @@
 #
 # Structure map (faer qr.rs line ranges → here):
 #   1246-1265  panel split rule: scan rows in min-col-sorted order; a panel ends
-#              before the first row whose LOCAL min-col jumps ≥ max(1, NBf÷2) past
+#              before the first row whose LOCAL min-col jumps ≥ max(1, bs÷2) past
 #              the panel's reference min-col (or at the row-list sentinel). NOTE
 #              this is a COLUMN-index jump — the pre-port code broke panels on a
-#              staircase ROW-count jump and capped width at NB, a mis-reading of
-#              the same faer heuristic (design_qr_m5b.md §A5.3's transcription);
-#              faer panels are uncapped in width and sub-blocked internally.
+#              staircase ROW-count jump, a mis-reading of the same faer heuristic
+#              (design_qr_m5b.md §A5.3's transcription).
 #   1266-1269  panel extents: nrows = all unconsumed rows before the boundary row;
 #              ncols = min(nrows, min-col span). Columns are consumed contiguously
 #              from the column cursor regardless of staircase gaps (a gap's columns
 #              fold into the next panel; with no rows supporting them they die as
 #              zero columns there — faer's dense QR skips them via rank detection,
 #              here the pivotal dead test / `hi < k` skip does, same net effect).
-#   1278-1279  per-panel block size bs = min(front max NBf, tier(nrows, ncols)) —
-#              `_qr_faer_block_size`, frontal.jl.
-#   1288-1304  the panel's blocked QR + trailing applies. faer: `qr_in_place(left)`
-#              (internally blocked at bs), then one block-sequence apply to `right`
-#              (all front columns past the panel), chunked at bs
-#              (householder.rs:790-807). Here: per bs-block, scalar reflector loop
-#              (rank-policy-coupled, stays in PureSparse per §A7.4) + `wy_t!` +
-#              TWO `wy_apply!('T')` calls — (a) remaining panel columns (faer's
-#              in-`qr_in_place` trailing update, factor.rs:241-249), (b) the
-#              trailing right. Interleaving (b) per block instead of batching all
-#              blocks afterward applies the identical operands in the identical
-#              order (right is disjoint from the panel, applies commute across
-#              disjoint column sets) while letting the gathered V panel be reused —
-#              PureBLAS's `wy_apply!` reads an explicit-unit V copy by contract
-#              (wy.jl header), where faer reads reflectors in place.
+#   1278-1279  per-panel block size bs = min(front max, tier(nrows, ncols)) — faer
+#              feeds this ONLY into `qr_in_place`'s OWN recursive internal blocking
+#              (factor.rs:137-256, the dense-kernel INTERNALS §A7.4 places out of
+#              scope — PureBLAS's single-level `wy_t!`/`wy_apply!` substitute for the
+#              whole `qr_in_place` call). `block_count` — and therefore the stored
+#              tau_block_size/nrows/ncols triple the solve replay walks — increments
+#              exactly ONCE per faer split-rule GROUP (qr.rs:1283), not once per bs
+#              sub-chunk: an earlier draft of this port added an inner bs-sized
+#              sub-loop here, silently multiplying the number of `wy_t!`/`wy_apply!`
+#              calls (many tiny 4-8-wide blocks instead of one per group) — a real
+#              bug caught by Chairmarks (qr! regressed ~2x across the gate set,
+#              solve! too, before this was found and reverted). One split-rule GROUP
+#              = one stored panel here, exactly as it was pre-port; only the split
+#              RULE (row-based faer min-col jump, not the pre-port's column-based
+#              stair jump) changed. `bs` itself is therefore not translated at all —
+#              it has no counterpart at PureSparse's single-level orchestration
+#              layer, consistent with design_qr_m5b.md §A8's own call-out that
+#              per-panel NB re-derivation is "a refinement on top, not a missing
+#              mechanism."
+#   1288-1304  the group's blocked QR + trailing applies. faer: `qr_in_place(left)`,
+#              then one block-sequence apply to `right` (all front columns past the
+#              group). Here: scalar reflector loop over the WHOLE group (rank-policy-
+#              coupled, stays in PureSparse per §A7.4) + one `wy_t!` + TWO
+#              `wy_apply!('T')` calls — (a) trailing panel columns beyond the group
+#              (none — a group already spans up to the NB storage cap, see below),
+#              (b) the trailing right (all front columns past the group, faer's
+#              qr.rs:1295-1304 role). PureBLAS's `wy_apply!` reads an explicit-unit V
+#              copy by contract (wy.jl header), where faer reads reflectors in place.
 #   1310-1324  R harvest: one post-factorization pass copying the retired rows'
 #              upper trapezoid out of the front (faer copies rows 0..min(m,ncols)
 #              triangularly into L=Rᵀ; here elimination t's row goes to the padded
@@ -45,7 +57,7 @@
 #   1325-1344  pass-up min-col rewrite (see the pass-up block below).
 #
 # Deliberate deviations from faer (each because faer has NO rank detection in this
-# layer — it assumes every panel consumes exactly ncols rows):
+# layer — it assumes every group consumes exactly ncols rows):
 #   - dead-pivot mechanics (SPQR-paper Heath handling, §A5.4): the row cursor k
 #     advances only per LIVE reflector, so `nrows = idx - k` generalizes faer's
 #     `idx - current_start`; dropped-mass/n_dead/fpivotrow accounting is ours.
@@ -53,10 +65,18 @@
 #     max(row index, original min-col) (qr.rs:1331-1344) — a safe left-conservative
 #     approximation that is only exact at full rank; ours is exact under dead
 #     pivots too and was already tested.
-#   - per-reflector row extents use the staircase (hi = stair[jj]) for formation
-#     and the scalar in-block applies — rows below stair[jj] are structurally zero
-#     in column jj, so this is bit-identical to faer's full-panel-height reflector
-#     with less work; the BLOCKED applies span the full panel height like faer's.
+#   - per-reflector row extents use the staircase (hi = stair[jj]) for formation —
+#     rows below stair[jj] are structurally zero in column jj, so this is
+#     bit-identical to faer's full-panel-height reflector with less work; the
+#     BLOCKED applies span the full group height like faer's.
+#   - GROUP WIDTH IS ADDITIONALLY CAPPED AT NB (the symbolic/workspace T-slab
+#     capacity, `fsym.ftauptr`'s `NB*min(mmax_f,n_f)` sizing, frontal_symbolic.jl) —
+#     own necessity, not faer's: faer's groups are uncapped because an over-wide
+#     group just means more INTERNAL recursive blocking inside `qr_in_place`
+#     (unbounded, since that call owns its own scratch); here a group IS the WY
+#     block (no internal recursion, §A7.4), so its T slab must fit the capacity the
+#     symbolic pass already committed to. The pre-port code had the identical cap
+#     (`_panel_extent`'s `(j2-j+1) >= NB` check) for the same underlying reason.
 
 # Full front factorization + harvest + pass-up bookkeeping. Returns (dropped mass²,
 # dead-pivot count) — front-level stats are accumulated by the caller.
@@ -81,12 +101,9 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
     frowlo = Int(fsym.frowptr2[f])
     colslo = Int(fsym.fcolptr[f])
     NB = size(ws.Tm, 1)
-    # faer's per-front maximum block size (qr.rs:609-613 computes it at symbolic time
-    # from the front's exact row/col counts; here numeric-time from the actual m_f —
-    # same tier function), clamped to the symbolic/workspace capacity NB (see
-    # `_qr_faer_block_size`'s header note).
-    NBf = min(NB, _qr_faer_block_size(m_f, n_f))
-    split_jump = max(1, NBf ÷ 2)   # faer qr.rs:1261-1265
+    split_jump = max(1, NB ÷ 2)   # faer qr.rs:1261-1265 (max_block_size ↦ NB — see the
+                                   # header's note on why per-group tiering isn't
+                                   # translated at this orchestration layer)
 
     # elimination-order bookkeeping: local front-column of the t-th elimination
     # (t = 1..e_f), used by the post-loop R harvest and pass-up below.
@@ -94,125 +111,115 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
 
     k = 1                  # row cursor: next unconsumed row (faer current_start, row role)
     j = 1                  # column cursor (faer current_start, column role)
-    current_min_col = 1    # the panel's reference local min-col (faer qr.rs:1247)
+    current_min_col = 1    # the group's reference local min-col (faer qr.rs:1247)
     npanel = 0
     r_live = 0
     dropped_sq = zero(T)
     n_dead_front = 0
-    ttaucur = Int(fsym.ftauptr[f])   # cursor into F.ftau's per-block T storage
+    ttaucur = Int(fsym.ftauptr[f])   # cursor into F.ftau's per-panel T storage
     @inbounds for idx in 1:(m_f + 1)
         # faer qr.rs:1249-1259: row idx's local min-col, sentinel past the last row.
         # F.fmincol holds assembly's LOCAL min-cols (ascending) until pass-up
         # rewrites the survivor tail to global columns after this loop.
         idx_min_col = idx <= m_f ? Int(F.fmincol[frowlo + idx - 1]) : n_f + 1
-        # faer's split condition (qr.rs:1260-1265)
-        if !(idx_min_col == n_f + 1 || idx_min_col >= current_min_col + split_jump)
+        # split trigger: faer's own condition (qr.rs:1260-1265) OR the NB storage
+        # cap (own necessity, see header) — whichever fires first ends the group.
+        faer_trigger = idx_min_col == n_f + 1 || idx_min_col >= current_min_col + split_jump
+        cap_trigger = (idx - k) >= NB || (idx_min_col - current_min_col) >= NB
+        if !(faer_trigger || cap_trigger)
             continue
         end
         nrows = idx - k                              # unconsumed rows k..idx-1 (qr.rs:1266)
         span = idx_min_col - current_min_col
-        ncols_grp = min(nrows, span)                 # qr.rs:1268-1269
-        current_min_col = idx_min_col                # qr.rs:1305
+        ncols_grp = min(nrows, span, NB)              # qr.rs:1268-1269 + the NB cap
+        current_min_col = idx_min_col                 # qr.rs:1305 (raw row min-col, not
+                                                       # j+ncols_grp — see header: faithful
+                                                       # to faer's own gap-carry quirk)
         ncols_grp <= 0 && continue
         row_hi = idx - 1
-        j1 = j + ncols_grp - 1   # ≤ n_f: j ≤ current_min_col_old and ncols_grp ≤ span
+        j1 = j + ncols_grp - 1   # ≤ n_f, since j ≤ current_min_col_old and ncols_grp ≤ span
                                  # imply j1 ≤ idx_min_col - 1 ≤ n_f (faer's own
                                  # current_start ≤ current_min_col invariant)
-        bs = min(NBf, _qr_faer_block_size(nrows, ncols_grp))   # qr.rs:1278-1279
-        b0 = j
-        while b0 <= j1
-            b1 = min(b0 + bs - 1, j1)
-            panel_start_k = k
-            mp = row_hi - panel_start_k + 1   # block row extent: full panel height
-                                              # below the cursor, like faer's `left`
-            mp <= 0 && break                  # rows exhausted (dead-pivot deficit)
-            Vv = view(ws.wy.V, 1:mp, 1:(b1 - b0 + 1))
-            fill!(Vv, zero(T))
-            pcount = 0
-            for jj in b0:b1
-                hi = min(Int(stair[jj]), m_f)
-                hi < k && continue   # no unconsumed support (staircase-gap column)
-                xnorm = nrm2(view(Ff, k:hi, jj))
-                is_pivotal = jj <= p_f
-                if is_pivotal && (xnorm == zero(T) || (tau > zero(T) && xnorm <= tau))
-                    dropped_sq += xnorm * xnorm
-                    n_dead_front += 1
-                    continue   # k does NOT advance; no reflector; column jj contributes nothing
-                end
-                local_tau = if xnorm == zero(T)
-                    zero(T)   # B3: trivial identity reflector (non-pivotal exact-zero column)
-                else
-                    _front_form_reflector!(Ff, k, hi, jj, xnorm)
-                end
-                pcount += 1
-                Vv[k - panel_start_k + 1, pcount] = one(T)
-                for i in (k + 1):hi
-                    Vv[i - panel_start_k + 1, pcount] = Ff[i, jj]
-                end
-                ws.tau_panel[pcount] = local_tau
-                F.tauv[ftaubase] = local_tau
-                F.elimcol[ftaubase] = Ti(jj)
-                ftaubase += 1
-                elim_col[k] = Ti(jj)
-
-                # scalar apply to the REMAINING in-BLOCK columns (faer's unblocked
-                # leaf role, factor.rs:64-82; block-confined like factor.rs:170-253's
-                # recursion width — the block's own trailing columns are handled by
-                # the wy_apply! below, exactly geqrf!'s proven single-level shape)
-                if local_tau != zero(T)
-                    for jcol in (jj + 1):b1
-                        _front_apply1!(Ff, k, hi, jj, jcol, local_tau)
-                    end
-                end
-
-                if is_pivotal
-                    r_live += 1
-                    gk = fsym.fcolind[colslo + jj - 1]
-                    F.fpivotrow[gk] = F.frowind[frowlo + k - 1]
-                end
-                # Ff[k,jj] is LEFT holding beta (LAPACK's own in-place dlarfg convention),
-                # not restored to an implicit 1: solve-phase V-gather hardcodes the unit
-                # diagonal itself (`_gather_panel_V!`, frontal_solve.jl) rather than
-                # reading it from Ff, so nothing downstream needs this position to read
-                # back as 1 — and for a NON-pivotal column, this is exactly the reduced
-                # value the PARENT front's C-block pass-up reads (`_assemble_front!`'s
-                # child-gather loop, via `Fc[crow, jc]`) once this row survives to
-                # r_live+1:e_f; overwriting it here was a real bug (silently corrupting
-                # every survivor row's own mincol entry before it ever reached the parent).
-                k += 1
+        panel_start_k = k
+        mp = row_hi - panel_start_k + 1
+        Vv = view(ws.wy.V, 1:mp, 1:(j1 - j + 1))
+        fill!(Vv, zero(T))
+        pcount = 0
+        for jj in j:j1
+            hi = min(Int(stair[jj]), m_f)
+            hi < k && continue   # no unconsumed support (staircase-gap column)
+            xnorm = nrm2(view(Ff, k:hi, jj))
+            is_pivotal = jj <= p_f
+            if is_pivotal && (xnorm == zero(T) || (tau > zero(T) && xnorm <= tau))
+                dropped_sq += xnorm * xnorm
+                n_dead_front += 1
+                continue   # k does NOT advance; no reflector; column jj contributes nothing
             end
-            if pcount > 0
-                Vp = view(Vv, 1:mp, 1:pcount)
-                Tv = view(ws.Tm, 1:pcount, 1:pcount)
-                wy_t!(Tv, Vp, view(ws.tau_panel, 1:pcount), view(ws.wy.G, 1:pcount, 1:pcount))
-                # (a) block → remaining PANEL columns (faer's in-qr_in_place trailing
-                #     update, factor.rs:241-249)
-                if b1 < j1
-                    wy_apply!('T', view(Ff, panel_start_k:row_hi, (b1 + 1):j1), Vp, Tv, ws.wy)
-                end
-                # (b) block → trailing right, all front columns past the panel
-                #     (faer's post-panel sequence apply, qr.rs:1295-1304 chunked at bs
-                #     via householder.rs:790-807 — interleaved per block here, same
-                #     operands in the same order; see the header's structure map)
-                if j1 < n_f
-                    wy_apply!('T', view(Ff, panel_start_k:row_hi, (j1 + 1):n_f), Vp, Tv, ws.wy)
-                end
-                npanel += 1
-                # block descriptor triple — faer's tau_block_size/householder_nrows/
-                # householder_ncols records (qr.rs:1280-1282), consumed by the solve
-                # replay exactly as faer's apply replays them (qr.rs:783-804)
-                F.pnrows[panelbase + npanel - 1] = Ti(mp)
-                F.pncols[panelbase + npanel - 1] = Ti(pcount)
-                F.pbs[panelbase + npanel - 1] = Ti(pcount)
-                # persist T for the solve-phase replay (§A5.3: "compact-WY T's are STORED,
-                # not rebuilt per solve") — pcount×pcount, packed block-by-block into the
-                # front's ftau slab (sized NB*min(mmax_f,n_f) >= Σ pcount² since pcount<=NB).
-                for cc in 1:pcount, rr in 1:pcount
-                    F.ftau[ttaucur + (cc - 1) * pcount + rr - 1] = Tv[rr, cc]
-                end
-                ttaucur += pcount * pcount
+            local_tau = if xnorm == zero(T)
+                zero(T)   # B3: trivial identity reflector (non-pivotal exact-zero column)
+            else
+                _front_form_reflector!(Ff, k, hi, jj, xnorm)
             end
-            b0 = b1 + 1
+            pcount += 1
+            Vv[k - panel_start_k + 1, pcount] = one(T)
+            for i in (k + 1):hi
+                Vv[i - panel_start_k + 1, pcount] = Ff[i, jj]
+            end
+            ws.tau_panel[pcount] = local_tau
+            F.tauv[ftaubase] = local_tau
+            F.elimcol[ftaubase] = Ti(jj)
+            ftaubase += 1
+            elim_col[k] = Ti(jj)
+
+            # scalar apply to the REMAINING in-GROUP columns (faer's unblocked leaf
+            # role, factor.rs:64-82 — the group's own trailing columns; the trailing
+            # RIGHT (columns past the whole group) is handled by the wy_apply! below,
+            # exactly geqrf!'s proven single-level shape)
+            if local_tau != zero(T)
+                for jcol in (jj + 1):j1
+                    _front_apply1!(Ff, k, hi, jj, jcol, local_tau)
+                end
+            end
+
+            if is_pivotal
+                r_live += 1
+                gk = fsym.fcolind[colslo + jj - 1]
+                F.fpivotrow[gk] = F.frowind[frowlo + k - 1]
+            end
+            # Ff[k,jj] is LEFT holding beta (LAPACK's own in-place dlarfg convention),
+            # not restored to an implicit 1: solve-phase V-gather hardcodes the unit
+            # diagonal itself (`_gather_panel_V!`, frontal_solve.jl) rather than
+            # reading it from Ff, so nothing downstream needs this position to read
+            # back as 1 — and for a NON-pivotal column, this is exactly the reduced
+            # value the PARENT front's C-block pass-up reads (`_assemble_front!`'s
+            # child-gather loop, via `Fc[crow, jc]`) once this row survives to
+            # r_live+1:e_f; overwriting it here was a real bug (silently corrupting
+            # every survivor row's own mincol entry before it ever reached the parent).
+            k += 1
+        end
+        if pcount > 0
+            Vp = view(Vv, 1:mp, 1:pcount)
+            Tv = view(ws.Tm, 1:pcount, 1:pcount)
+            wy_t!(Tv, Vp, view(ws.tau_panel, 1:pcount), view(ws.wy.G, 1:pcount, 1:pcount))
+            # group → trailing right, all front columns past the group (faer's
+            # post-group sequence apply, qr.rs:1295-1304)
+            if j1 < n_f
+                wy_apply!('T', view(Ff, panel_start_k:row_hi, (j1 + 1):n_f), Vp, Tv, ws.wy)
+            end
+            npanel += 1
+            # block descriptor triple — faer's tau_block_size/householder_nrows/
+            # householder_ncols records (qr.rs:1280-1282), consumed by the solve
+            # replay exactly as faer's apply replays them (qr.rs:783-804)
+            F.pnrows[panelbase + npanel - 1] = Ti(mp)
+            F.pncols[panelbase + npanel - 1] = Ti(pcount)
+            F.pbs[panelbase + npanel - 1] = Ti(pcount)
+            # persist T for the solve-phase replay (§A5.3: "compact-WY T's are STORED,
+            # not rebuilt per solve") — pcount×pcount, packed panel-by-panel into the
+            # front's ftau slab (sized NB*min(mmax_f,n_f) >= Σ pcount² since pcount<=NB).
+            for cc in 1:pcount, rr in 1:pcount
+                F.ftau[ttaucur + (cc - 1) * pcount + rr - 1] = Tv[rr, cc]
+            end
+            ttaucur += pcount * pcount
         end
         j = j1 + 1
     end
