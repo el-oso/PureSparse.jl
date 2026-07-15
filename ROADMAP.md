@@ -565,6 +565,23 @@ abspath(PROGRAM_FILE) == @__FILE__`, which is never true when the file is loaded
 `julia -e 'include("script.jl")'`. Neither is a PureSparse code defect; both are
 recorded here as galen-specific operational gotchas for future sessions.
 
+Re-ran the flagship 7000×4000 comparison (`benchmark/faer_vs_puresparse_7000x4000.jl`,
+galen, now with the geqrf fix live) to check where it *would* show up — the gate's own
+matrices are all too small. Result, PS frontal cold median vs faer/SPQR:
+
+| density | PS frontal | faer | SPQR | vs faer | vs SPQR |
+|---|---|---|---|---|---|
+| 1% | 1713.6ms | 4039.4ms | 5237.9ms | 2.36× | 3.06× |
+| 10% | 893.7ms | 4214.3ms | 5657.5ms | **4.72×** | 6.33× |
+
+vs the pre-fix numbers from the session that landed the panel-split root-cause fix
+(1.78s / 0.99s), this is ~4% faster at 1% and ~10% faster at 10% — small but real, and
+the 10%-density margin over faer improved past the previously reported ceiling
+(4.4×→4.72×). Confirms the geqrf `_qr_nb` fix's benefit is real but scale-gated: it
+shows up on the large dense panels this flagship case exercises, not on the gate's
+small/medium matrix set. `PS column` remains unusably slow here as expected (61-65s —
+this is exactly the flop-rich regime `:auto`/`:frontal` exists to avoid).
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
