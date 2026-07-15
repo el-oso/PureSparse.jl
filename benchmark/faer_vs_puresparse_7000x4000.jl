@@ -21,11 +21,18 @@ _median_time(b) = median(_times(b))
 
 const FAER_LIB = joinpath(homedir(), "Documents", "claude", "BlazingPorts.jl", "bench",
     "rust_compare", "rust", "target", "release", "libblazing_compare.so")
+# `faer_sparse_qr_factor` (BlazingPorts.jl, factorize-only — `std::hint::black_box` as
+# the dead-code-elimination guard instead of a real solve). The original
+# `faer_sparse_qr` times factorize+solve_lstsq (a solve was the only way faer's Qr
+# type could be forced to stay live before this fix, since it exposes no direct `.R()`
+# accessor) — NOT a fair comparator against `_ps_frontal_cold`/`_spqr_cold` below,
+# which are factorize-only. Found and fixed 2026-07-15 while investigating an
+# apparent 4-5x PureSparse margin over faer that turned out to be partly this.
 @noinline function _faer_sparse_qr_cold(A::SparseMatrixCSC)
     m, n = size(A)
     colptr0 = Csize_t.(A.colptr .- 1)
     rowval0 = Csize_t.(A.rowval .- 1)
-    return ccall((:faer_sparse_qr, FAER_LIB), Float64,
+    return ccall((:faer_sparse_qr_factor, FAER_LIB), Float64,
         (Csize_t, Csize_t, Csize_t, Ptr{Csize_t}, Ptr{Csize_t}, Ptr{Float64}),
         m, n, nnz(A), colptr0, rowval0, A.nzval)
 end
