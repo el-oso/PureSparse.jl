@@ -252,3 +252,35 @@ end
     @test allocs == 0
 end
 
+@testitem "qr: method kwarg dispatch (design_qr_m5b.md §A5.6)" begin
+    using Random, SparseArrays, LinearAlgebra
+
+    I = [1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7]
+    J = [1, 2, 4, 1, 2, 5, 2, 4, 3, 4, 3, 5, 4, 5, 4]
+    rng = MersenneTwister(1)
+    A = sparse(I, J, randn(rng, length(I)) .+ 3.0, 7, 5)
+
+    Fcol = PureSparse.qr(A; ordering = PureSparse.NaturalOrdering())
+    @test Fcol isa PureSparse.QRFactor{Float64}
+
+    Ffront = PureSparse.qr(A; ordering = PureSparse.NaturalOrdering(), method = :frontal)
+    @test Ffront isa PureSparse.QRFrontFactor{Float64}
+
+    # :auto is NOT YET CALIBRATED (§A5.6 — the threshold is a task-17 measured
+    # deliverable, not a guess); until that sweep lands it must equal :column exactly.
+    Fauto = PureSparse.qr(A; ordering = PureSparse.NaturalOrdering(), method = :auto)
+    @test Fauto isa PureSparse.QRFactor{Float64}
+
+    # non-Float64 T + method=:frontal silently falls back to :column (P2 not yet landed)
+    Af32 = SparseMatrixCSC{Float32}(A)
+    Ffallback = PureSparse.qr(Af32; ordering = PureSparse.NaturalOrdering(), method = :frontal)
+    @test Ffallback isa PureSparse.QRFactor{Float32}
+
+    @test_throws ArgumentError PureSparse.qr(A; ordering = PureSparse.NaturalOrdering(), method = :bogus)
+
+    b = Float64.(1:7)
+    xcol = PureSparse.solve!(zeros(5), Fcol, b)
+    xfront = PureSparse.solve!(zeros(5), Ffront, b)
+    @test norm(xcol - xfront) < 1e-10
+end
+
