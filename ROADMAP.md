@@ -472,6 +472,30 @@ re-chases them without new evidence):
   loss is `:column`'s (M5a, already gated/shipped) own fixed per-call overhead at
   noise-level margins (~0.04-0.15ms either way) — not a frontal-path defect to fix.
 
+**2026-07-15, further `banded_ls_n1500x500_bw15` digging (still 0/6 `ii_sparse_R`,
+the worst-remaining offender at ~5-8x behind SPQR — unlike `grid_ls`, this one did
+NOT meaningfully improve from the panel-split fix): two more hypotheses tested and
+ruled out, both by direct local measurement, no single bug found this pass.**
+- **NBf floor hypothesis (wrong, reverted):** this matrix's fronts are tiny (max
+  25 cols × 65 rows — SMALLER than the workspace's own NB=32!), so
+  `_qr_faer_block_size` naturally returns a tiny tier (4), giving `split_jump=2` —
+  aggressive splitting. Reasoned that since PureSparse (unlike faer) has no scalar
+  fallback for small tiers — it always pays `wy_t!`/`wy_apply!`'s BLAS-3 dispatch
+  cost regardless of `NBf` — flooring `NBf` at `NB` (forcing wider groups, fewer
+  calls) should help. Tested directly: REGRESSED (0.4695ms → 0.5683ms locally).
+  Root cause of the regression: banded structure means true row support is tightly
+  localized per column; forcing wider groups pulls in rows with no real overlap,
+  paying extra padding-zero flops that outweigh the saved call count. Reverted
+  immediately; `git diff` confirmed clean before moving on.
+- **Sampling profile** (`Profile.@profile` over 20000 warm `qr!` calls): no single
+  dominant hotspot — samples split roughly evenly across reflector formation
+  (`nrm2`+`_front_form_reflector!`), the in-group scalar apply (`_front_apply1!`),
+  `wy_t!`, and `wy_apply!`. Consistent with a genuine constant-factor cost from many
+  small BLAS-3 call pairs (34 fronts × ~4 panels ≈ 136 `wy_t!`/`wy_apply!` pairs on
+  operands this small) rather than one fixable algorithmic bug — the same territory
+  as the `qr_block_size` gap already relayed to (and now being worked on by) the
+  PureBLAS-side agent; may improve here too once that lands, not verified yet.
+
 **Side note (2026-07-14): PureKLU.jl (SciML, pure-Julia sparse LU) surfaced by the
 user as a possible reference — MIT-licensed, so unlike CHOLMOD/SuiteSparse it is NOT
 subject to the clean-room read-prohibition (CLAUDE.md req 1's ban is SuiteSparse-
