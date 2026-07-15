@@ -5,8 +5,14 @@ using Chairmarks: @be
 
 LinearAlgebra.BLAS.set_num_threads(1)
 
-const SAMPLES = 15
-const SECONDS = 2.0
+# SECONDS must comfortably exceed SAMPLES × the slowest PLOTTED series' median (faer/SPQR
+# run ~4-6s/call at this size): at the old SECONDS=2.0, faer/SPQR each got exactly 1
+# sample (Chairmarks completes an in-progress rep before checking budget, so a 2.0s
+# budget against a 4-6s call always yields n=1) — a degenerate, non-distributional
+# violin/boxplot. `ps_column` (~60-65s/call) still bottoms out near 1 sample regardless
+# of any reasonable budget here; it isn't plotted, so that's fine.
+const SAMPLES = 8
+const SECONDS = 50.0
 _times(b) = Float64[s.time for s in b.samples]
 _median_time(b) = median(_times(b))
 
