@@ -60,6 +60,33 @@ function _gather_panel_V!(F::QRFrontFactor{T,Ti}, f::Int, pnl::Int, row0::Int, m
     return Vv
 end
 
+# Scalar-front replay (F.fscalar[f], tuning.jl QR_FRONTAL_UNBLOCKED_THRESHOLD):
+# elimination t's reflector applied directly from Ff (never gathered into a V
+# matrix — there is no stored T/panel for a scalar front to gather against). Uses
+# the FULL m_f row range rather than tracking each column's own row extent: Ff[i,jj]
+# for i beyond that column's true structural support is exactly zero (assembly's
+# zero-init, `_assemble_front!` step 4, never touched past there by anything else),
+# so the reflector's implicit v is correctly zero there too — extending the range to
+# m_f changes no arithmetic, only adds provably-zero terms, and needs no extra
+# per-elimination row-extent bookkeeping (`stair` is a transient, per-front-during-
+# qr! workspace array, stale by solve time — the same reasoning `_gather_panel_V!`
+# already relies on `F.pnrows`, not `stair`, for the blocked case). Each H_t is
+# self-adjoint (H = I - tau·v·vᵀ, real, symmetric), so the SAME formula applies for
+# both apply_Qt! and apply_Q! — only the iteration order over t differs.
+@inline function _scalar_apply_to_vec!(yqt::AbstractVector{T}, Ff::AbstractMatrix{T}, t::Int, m_f::Int, jj::Int, local_tau::T) where {T}
+    local_tau == zero(T) && return nothing
+    dot = yqt[t]
+    @inbounds @simd for i in (t + 1):m_f
+        dot += Ff[i, jj] * yqt[i]
+    end
+    kk = -local_tau * dot
+    yqt[t] += kk
+    @inbounds @simd for i in (t + 1):m_f
+        yqt[i] += kk * Ff[i, jj]
+    end
+    return nothing
+end
+
 @inline function _panel_T(F::QRFrontFactor{T,Ti}, f::Int, pnl::Int) where {T,Ti<:Integer}
     fsym = F.fsym
     panello = Int(fsym.fpanelptr[f])
@@ -91,18 +118,27 @@ function apply_Qt!(y::AbstractVector{T}, F::QRFrontFactor{T,Ti}) where {T,Ti<:In
         for i in 1:m_f
             yqt[i] = y[F.frowind[frowlo + i - 1]]
         end
-        panello = Int(fsym.fpanelptr[f])
         tvbase = _tauv_base(fsym, f)
-        row0 = 1
-        for pnl in 1:Int(F.fnpanel[f])
-            mp = Int(F.pnrows[panello + pnl - 1])
-            pb = Int(F.pbs[panello + pnl - 1])
-            Vp = _gather_panel_V!(F, f, pnl, row0, mp, tvbase)
-            Tv = _panel_T(F, f, pnl)
-            yb = reshape(view(yqt, row0:(row0 + mp - 1)), mp, 1)
-            wy_apply!('T', yb, Vp, Tv, ws.wy)
-            row0 += pb
-            tvbase += pb
+        if F.fscalar[f]
+            Ff = _front_view(F, f)
+            e_f = Int(F.fe[f])
+            for t in 1:e_f
+                jj = Int(F.elimcol[tvbase + t - 1])
+                _scalar_apply_to_vec!(yqt, Ff, t, m_f, jj, F.tauv[tvbase + t - 1])
+            end
+        else
+            panello = Int(fsym.fpanelptr[f])
+            row0 = 1
+            for pnl in 1:Int(F.fnpanel[f])
+                mp = Int(F.pnrows[panello + pnl - 1])
+                pb = Int(F.pbs[panello + pnl - 1])
+                Vp = _gather_panel_V!(F, f, pnl, row0, mp, tvbase)
+                Tv = _panel_T(F, f, pnl)
+                yb = reshape(view(yqt, row0:(row0 + mp - 1)), mp, 1)
+                wy_apply!('T', yb, Vp, Tv, ws.wy)
+                row0 += pb
+                tvbase += pb
+            end
         end
         for i in 1:m_f
             y[F.frowind[frowlo + i - 1]] = yqt[i]
@@ -128,24 +164,34 @@ function apply_Q!(y::AbstractVector{T}, F::QRFrontFactor{T,Ti}) where {T,Ti<:Int
         for i in 1:m_f
             yqt[i] = y[F.frowind[frowlo + i - 1]]
         end
-        panello = Int(fsym.fpanelptr[f])
-        tvbase0 = _tauv_base(fsym, f)
-        npanel = Int(F.fnpanel[f])
-        row0s = ws.row0s
-        tvbases = ws.tvbases
-        row0s[1] = 1
-        tvbases[1] = tvbase0
-        for pnl in 1:npanel
-            row0s[pnl + 1] = row0s[pnl] + Int(F.pbs[panello + pnl - 1])
-            tvbases[pnl + 1] = tvbases[pnl] + Int(F.pbs[panello + pnl - 1])
-        end
-        for pnl in npanel:-1:1
-            mp = Int(F.pnrows[panello + pnl - 1])
-            row0 = row0s[pnl]
-            Vp = _gather_panel_V!(F, f, pnl, row0, mp, tvbases[pnl])
-            Tv = _panel_T(F, f, pnl)
-            yb = reshape(view(yqt, row0:(row0 + mp - 1)), mp, 1)
-            wy_apply!('N', yb, Vp, Tv, ws.wy)
+        if F.fscalar[f]
+            Ff = _front_view(F, f)
+            tvbase = _tauv_base(fsym, f)
+            e_f = Int(F.fe[f])
+            for t in e_f:-1:1
+                jj = Int(F.elimcol[tvbase + t - 1])
+                _scalar_apply_to_vec!(yqt, Ff, t, m_f, jj, F.tauv[tvbase + t - 1])
+            end
+        else
+            panello = Int(fsym.fpanelptr[f])
+            tvbase0 = _tauv_base(fsym, f)
+            npanel = Int(F.fnpanel[f])
+            row0s = ws.row0s
+            tvbases = ws.tvbases
+            row0s[1] = 1
+            tvbases[1] = tvbase0
+            for pnl in 1:npanel
+                row0s[pnl + 1] = row0s[pnl] + Int(F.pbs[panello + pnl - 1])
+                tvbases[pnl + 1] = tvbases[pnl] + Int(F.pbs[panello + pnl - 1])
+            end
+            for pnl in npanel:-1:1
+                mp = Int(F.pnrows[panello + pnl - 1])
+                row0 = row0s[pnl]
+                Vp = _gather_panel_V!(F, f, pnl, row0, mp, tvbases[pnl])
+                Tv = _panel_T(F, f, pnl)
+                yb = reshape(view(yqt, row0:(row0 + mp - 1)), mp, 1)
+                wy_apply!('N', yb, Vp, Tv, ws.wy)
+            end
         end
         for i in 1:m_f
             y[F.frowind[frowlo + i - 1]] = yqt[i]

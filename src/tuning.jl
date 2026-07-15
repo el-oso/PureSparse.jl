@@ -104,6 +104,23 @@ const QR_SINGLETON_MULT = @load_preference("qr_singleton_mult", 1.0)::Float64
 # the one with independent (non-PureSparse) grounding.
 const QR_AUTO_METHOD_RATIO = @load_preference("qr_auto_method_ratio", 40.0)::Float64
 
+# Frontal path's small-front scalar fallback threshold (design_qr_m5b.md §A5.3 —
+# added post-close, 2026-07-15): a front with `m_f*n_f` below this uses a pure
+# column-by-column scalar Householder pass (no `wy_t!`/`wy_apply!` calls at all)
+# instead of the staircase-blocked WY-group loop. Provenance: faer 0.24.1's own
+# `qr_in_place`/`qr_in_place_blocked` (src/linalg/qr/no_pivoting/factor.rs:137-158)
+# recursively drops to `qr_in_place_unblocked` (a pure scalar loop, zero BLAS-3 calls)
+# whenever the REMAINING sub-problem's element count falls below
+# `QrParams::auto().blocking_threshold = 48*48 = 2304` (factor.rs:131) — i.e. faer
+# itself never calls a blocked kernel on a problem this small. Root-caused via direct
+# profiling (`banded_ls_n1500x500_bw15`'s fronts: max 25×65=1625 elements, well under
+# faer's own threshold) that PureSparse was paying `wy_t!`/`wy_apply!`'s BLAS-3
+# dispatch cost on problems faer itself would never block. Threshold kept at faer's
+# own value rather than re-derived, matching this project's precedent
+# (`QR_AUTO_METHOD_RATIO`'s own reasoning) — re-verify empirically before trusting
+# it to extrapolate past the matrices it was found on.
+const QR_FRONTAL_UNBLOCKED_THRESHOLD = @load_preference("qr_frontal_unblocked_threshold", 2304)::Int
+
 # COLAMD dense-row/column withholding multipliers (design_qr.md §2.2 pt 5). D1: this is
 # a REUSE of the existing AMD dense-row heuristic shape (`max(16, mult*sqrt(n))`,
 # ultimately sourced to the AMD package User Guide, design.md §2.2 pt 6), not an

@@ -95,6 +95,14 @@ mutable struct QRFrontFactor{T<:Real,Ti<:Integer} <: AbstractSparseFactor{T}
                       # (reading past it hits garbage assembly-time LOCAL mincols, a
                       # real bug: BoundsError/segfault when misread as a global column).
     fnpanel::Vector{Ti}
+    fscalar::Vector{Bool}   # true: this front used the small-front scalar fallback
+                            # (tuning.jl QR_FRONTAL_UNBLOCKED_THRESHOLD, faer's own
+                            # qr_in_place_unblocked precedent) — no WY panels stored
+                            # for it (fnpanel[f]==0), solve replay walks F.elimcol/
+                            # F.tauv column-by-column instead of via _gather_panel_V!/
+                            # wy_apply!. Distinct from "fnpanel==0 because every column
+                            # was dead" (a legitimate blocked-path outcome) — checking
+                            # this flag rather than fnpanel==0 avoids that ambiguity.
     pnrows::Vector{Ti}
     pncols::Vector{Ti}
     pbs::Vector{Ti}
@@ -130,6 +138,7 @@ function QRFrontFactor{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
         zeros(Ti, fsym.nfront),
         zeros(Ti, fsym.nfront),
         zeros(Ti, fsym.nfront),
+        zeros(Bool, fsym.nfront),
         Vector{Ti}(undef, Int(fsym.fpanelptr[end] - 1)),
         Vector{Ti}(undef, Int(fsym.fpanelptr[end] - 1)),
         Vector{Ti}(undef, Int(fsym.fpanelptr[end] - 1)),

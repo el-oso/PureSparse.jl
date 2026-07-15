@@ -108,23 +108,68 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
     frowlo = Int(fsym.frowptr2[f])
     colslo = Int(fsym.fcolptr[f])
     NB = size(ws.Tm, 1)
-    NBf = _qr_faer_block_size(m_f, n_f)   # faer qr.rs:609-613, per-front (NOT clamped
-                                           # to NB: the split-trigger threshold isn't a
-                                           # storage constraint, only the group WIDTH
-                                           # below is — see the header's account)
-    split_jump = max(1, NBf ÷ 2)   # faer qr.rs:1260-1265
 
     # elimination-order bookkeeping: local front-column of the t-th elimination
     # (t = 1..e_f), used by the post-loop R harvest and pass-up below.
     elim_col = ws.elim_col
 
     k = 1                  # row cursor: next unconsumed row (faer current_start, row role)
-    j = 1                  # column cursor (faer current_start, column role)
-    current_min_col = 1    # the group's reference local min-col (faer qr.rs:1247)
     npanel = 0
     r_live = 0
     dropped_sq = zero(T)
     n_dead_front = 0
+
+    if m_f * n_f < QR_FRONTAL_UNBLOCKED_THRESHOLD
+        # SMALL-FRONT SCALAR FALLBACK (tuning.jl QR_FRONTAL_UNBLOCKED_THRESHOLD):
+        # faer's own qr_in_place/qr_in_place_blocked (factor.rs:137-158) recursively
+        # drops to qr_in_place_unblocked — a pure column-by-column scalar Householder
+        # pass, zero BLAS-3 calls — whenever the remaining sub-problem's element count
+        # falls under QrParams::auto().blocking_threshold=2304 (factor.rs:131); i.e.
+        # faer itself never calls a blocked kernel on a front this small. Mirrored
+        # here: process columns 1..n_f sequentially, apply each formed reflector
+        # immediately to ALL remaining front columns (not just an in-group range), no
+        # wy_t!/wy_apply! at all. F.fscalar[f] flags this for solve-phase replay.
+        F.fscalar[f] = true
+        @inbounds for jj in 1:n_f
+            hi = min(Int(stair[jj]), m_f)
+            hi < k && continue
+            xnorm = k > hi ? zero(T) : nrm2(view(Ff, k:hi, jj))
+            is_pivotal = jj <= p_f
+            if is_pivotal && (xnorm == zero(T) || (tau > zero(T) && xnorm <= tau))
+                dropped_sq += xnorm * xnorm
+                n_dead_front += 1
+                continue
+            end
+            local_tau = if xnorm == zero(T)
+                zero(T)
+            else
+                _front_form_reflector!(Ff, k, hi, jj, xnorm)
+            end
+            F.tauv[ftaubase] = local_tau
+            F.elimcol[ftaubase] = Ti(jj)
+            ftaubase += 1
+            elim_col[k] = Ti(jj)
+            if local_tau != zero(T)
+                for jcol in (jj + 1):n_f
+                    _front_apply1!(Ff, k, hi, jj, jcol, local_tau)
+                end
+            end
+            if is_pivotal
+                r_live += 1
+                gk = fsym.fcolind[colslo + jj - 1]
+                F.fpivotrow[gk] = F.frowind[frowlo + k - 1]
+            end
+            k += 1
+        end
+    else
+
+    NBf = _qr_faer_block_size(m_f, n_f)   # faer qr.rs:609-613, per-front (NOT clamped
+                                           # to NB: the split-trigger threshold isn't a
+                                           # storage constraint, only the group WIDTH
+                                           # below is — see the header's account)
+    split_jump = max(1, NBf ÷ 2)   # faer qr.rs:1260-1265
+    j = 1                   # column cursor (faer current_start, column role)
+    current_min_col = 1     # the group's reference local min-col (faer qr.rs:1247)
     ttaucur = Int(fsym.ftauptr[f])   # cursor into F.ftau's per-panel T storage
     @inbounds for idx in 1:(m_f + 1)
         # faer qr.rs:1249-1259: row idx's local min-col, sentinel past the last row.
@@ -242,6 +287,7 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
         end
         j = j1 + 1
     end
+    end
 
     e_f = k - 1
 
@@ -309,6 +355,9 @@ function qr!(F::QRFrontFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothin
     fill!(F.fm, zero(Ti))
     fill!(F.fr, zero(Ti))
     fill!(F.fe, zero(Ti))
+    fill!(F.fscalar, false)   # deterministic per front (m_f*n_f is structural, fixed
+                              # across refactors of the same pattern) — reset anyway
+                              # for defensive clarity, matching fm/fr/fe's own reset.
     fill!(F.rval, zero(T))
 
     seq = 0
