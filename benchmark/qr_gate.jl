@@ -55,6 +55,7 @@ _median_time(b) = median(_times(b))
 @noinline _ps_cold_nosing(A, ordering) = PureSparse.qr(A; ordering, singletons = false)
 @noinline _ps_warm!(F, A) = PureSparse.qr!(F, A)
 @noinline _ps_solve(F, b) = F \ b
+@noinline _ps_frontal_cold(A, ordering) = PureSparse.qr(A; ordering, method = :frontal)
 @noinline _spqr_cold(A; ordering = SparseArrays.SPQR.ORDERING_DEFAULT) = SparseArrays.qr(A; ordering)
 @noinline _spqr_solve(F, b) = F \ b
 @noinline _ata_cholesky_cold(A) = PureSparse.cholesky(sparse(A' * A); ordering = PureSparse.AMDOrdering())
@@ -117,6 +118,24 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
 
     b_solve = @be _ps_solve($F1, $b) seconds = SECONDS samples = SAMPLES evals = 1
     result["ps_solve"] = _median_time(b_solve)
+
+    # --- config 1b: PureSparse QR :frontal (cold, M5b — design_qr_m5b.md §A5.6) ---
+    # Same ordering as the :column arm above (COLAMDOrdering for "own", the SPQR-
+    # matched GivenOrdering for "same-perm"); the frontal path never carries
+    # singletons (§A1.2), so there is no ps_singletons split here. Guarded like the
+    # AᵀA/faer context arms below: this is a NEW code path under active development,
+    # a genuine error on some gate matrix shouldn't crash the whole run.
+    try
+        b_frontal = @be _ps_frontal_cold($A, $ps_ordering) seconds = SECONDS samples = SAMPLES evals = 1
+        Ffrontal = PureSparse.qr(A; ordering = ps_ordering, method = :frontal)
+        result["ps_frontal_cold"] = _median_time(b_frontal)
+        result["ps_frontal_rank"] = Ffrontal.stats.rank
+        b_frontal_solve = @be _ps_solve($Ffrontal, $b) seconds = SECONDS samples = SAMPLES evals = 1
+        result["ps_frontal_solve"] = _median_time(b_frontal_solve)
+    catch e
+        result["ps_frontal_cold"] = nothing
+        result["ps_frontal_error"] = sprint(showerror, e)
+    end
 
     # --- warm qr! (n1==0 forced, reported not gated) ---
     b_cold_ns = @be _ps_cold_nosing($A, $ps_ordering) seconds = SECONDS samples = SAMPLES evals = 1
@@ -203,23 +222,31 @@ end
 
 function print_verdict(payload)
     results = payload["results"]
-    println("\n=== M5 sparse QR wall-time gate (design_qr.md §9.3) — cold, median seconds ===")
-    println(rpad("matrix", 26), rpad("stratum", 14), rpad("arm", 10), rpad("PS qr()", 12),
-        rpad("SPQR", 12), rpad("faer", 12), "gate(1<2)")
+    println("\n=== M5 sparse QR wall-time gate (design_qr.md §9.3 / design_qr_m5b.md §A5.6) — cold, median seconds ===")
+    println(rpad("matrix", 26), rpad("stratum", 14), rpad("arm", 10), rpad("PS column", 12),
+        rpad("PS frontal", 12), rpad("SPQR", 12), rpad("faer", 12), "gate(best PS<SPQR)")
     npass = 0; ntotal = 0
     by_stratum = Dict{String,Tuple{Int,Int}}()
     for r in results
         ntotal += 1
-        pass = r["ps_cold"] < r["spqr_cold"]
+        # the gate is on the BEST of PureSparse's own methods (§A5.6's whole premise:
+        # a real caller picks whichever wins, exactly what :auto will automate once
+        # its threshold is calibrated) — :column alone is the pre-M5b gate, kept as a
+        # column in the table for comparison, not the pass/fail criterion by itself.
+        ps_frontal = get(r, "ps_frontal_cold", nothing)
+        best_ps = isnothing(ps_frontal) ? r["ps_cold"] : min(r["ps_cold"], ps_frontal)
+        pass = best_ps < r["spqr_cold"]
         pass && (npass += 1)
         s = r["stratum"]
         (np, nt) = get(by_stratum, s, (0, 0))
         by_stratum[s] = (np + (pass ? 1 : 0), nt + 1)
         faer_str = isnothing(get(r, "faer_cold", nothing)) ? "n/a" :
             string(round(r["faer_cold"] * 1000; digits = 3)) * "ms"
+        frontal_str = isnothing(ps_frontal) ? "n/a" : string(round(ps_frontal * 1000; digits = 3)) * "ms"
         println(
             rpad(r["matrix"], 26), rpad(r["stratum"], 14), rpad(r["arm"], 10),
             rpad(string(round(r["ps_cold"] * 1000; digits = 3)) * "ms", 12),
+            rpad(frontal_str, 12),
             rpad(string(round(r["spqr_cold"] * 1000; digits = 3)) * "ms", 12),
             rpad(faer_str, 12),
             pass ? "PASS" : "fail",
@@ -230,10 +257,10 @@ function print_verdict(payload)
         (np, nt) = by_stratum[s]
         println("  ", rpad(s, 16), "$np / $nt")
     end
-    println("\n$npass / $ntotal matrix-arm combinations strictly faster than SuiteSparseQR (cold).")
+    println("\n$npass / $ntotal matrix-arm combinations: best-of(PS column, PS frontal) strictly faster than SuiteSparseQR (cold).")
     println("Design_qr.md §9.3 M5 closeout gate requires: EVERY stratum passes, both arms —")
-    println("no fudge factor. A stratum loss triggers M5b (multifrontal, §7).")
-    println(npass == ntotal ? "OVERALL: PASS (M5 gate met, M5b not required)" : "OVERALL: NOT YET PASSING")
+    println("no fudge factor.")
+    println(npass == ntotal ? "OVERALL: PASS (M5 gate met)" : "OVERALL: NOT YET PASSING")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
