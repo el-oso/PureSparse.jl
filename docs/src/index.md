@@ -20,7 +20,7 @@ are closed** — each against its own non-negotiable wall-time gate (median Pure
 faster than the SuiteSparse+OpenBLAS baseline, own-ordering **and** under an identical
 permutation), verified on clock-locked hardware and cross-checked against dense `BigFloat`
 and SuiteSparse output oracles. See [Benchmarking](benchmarking.md) for the numbers. M6 (GPU,
-CUDA weak-dep extension) is the remaining milestone.
+CUDA weak-dep extension — renumbered from the original M3) is the remaining milestone.
 
 ```julia
 using PureSparse, SparseArrays
