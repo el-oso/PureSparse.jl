@@ -1,14 +1,61 @@
 # PureSparse.jl — GPU offload (M6) design
 
-**Status: v2 (2026-07-17).** v1 → two independent blind adversarial reviews (Opus-family:
-3 BLOCKER/9 DEFECT/3 NIT; Fable: 3 BLOCKER/8 DEFECT/7 NIT, non-overlapping except two shared
-BLOCKERs) → this v2. Supersedes design.md §8 and the stale ROADMAP `### M3` (which
-contradicted each other). This is the single live GPU design; it takes the same v1→review→v2
-path design.md and design_qr.md took. v2 additionally folds a **verified Phase-0 result that
-flips the kernel strategy** (§3).
+**Status: v3 (2026-07-17).** v1 → 2 blind reviews → v2 → 2 more blind reviews (Opus + Fable,
+each verified against source) → this v3. The v2 reviews **converged**: both independently found
+the same two BLOCKERs (the cross-frontier upload/concurrency model; the M6b inertia mechanism),
+neither a wording fix. v3 reworks those two areas and folds the defects. Supersedes design.md §8
+and the stale ROADMAP `### M3`. Same v1→review process design.md and design_qr.md took, one round
+deeper (the GPU failure domain — async execution, device memory, remote-only verification —
+earned it).
 
-Inputs: Fable's M6 architecture review; the Phase-0 measurement pass on galen; two user
-decisions (scope = Cholesky+LDLᵀ; kernel = pure-primary, Option 1); the two v1 reviews.
+Inputs: Fable's M6 architecture review; the Phase-0 measurement pass on galen (incl. the verified
+pure-kernel win, §0); user decisions (scope = Cholesky+LDLᵀ; kernel = pure-primary, Option 1);
+four adversarial reviews across two rounds.
+
+## §0′ Changelog v2 → v3 (both reviewers converged — fixes are well-determined)
+
+**BLOCKER 1 [both] — upload/concurrency model was self-contradictory.** A cross-frontier CPU
+panel is consumed by *every* GPU ancestor on its etree chain (k≥2 is the common case, since
+upward closure makes all of a boundary node's ancestors GPU), at separated schedule points — so
+v2's "upload once + freed-after-consume ring" could not hold, and the per-*supernode* upload
+barrier risked deadlock/OOM. **v3 fix (§5.3/§5.4):** the granularity is per-*descendant* — each
+descendant-update kernel waits on that descendant's own upload event — and cross-frontier boundary
+panels are **persisted device-resident for the whole refactor** (uploaded genuinely once, freed at
+end), with a Σ-over-boundary-panels **budget term** (symbolic-time computable) replacing the ring.
+No barrier, no ring, no deadlock; "upload once" becomes literally true.
+
+**BLOCKER 2 [both] — M6b inertia mechanism was non-equivalent and destroyed the req-8 report.**
+`ldlt.jl` classifies inertia on the **pre-perturbation** pivot (with a running-`dmax` zero test),
+then overwrites `dvec` with the regularized value — so reducing inertia from the final `d_dvec`
+gives tautological *forced* signs, defeating the whole point (IPOPT consumers read *observed*
+inertia). And the running-global-`dmax` is a sequential cross-supernode dependency concurrency
+can't reproduce. **v3 fix (§6):** the device block-LDL runs the signed-regularization column loop
+itself and emits per-supernode pre-perturbation stats `(n_pos,n_neg,n_zero,n_perturbed,max_pert,
+dmin,dmax)` into a device stats array reduced once at end (like `d_devinfo`); the zero-test is
+redefined **order-free** (per-supernode-local `dmax`, delta-anchored) and recorded as amendment E;
+`ascale` computed host-side during the A-staging pass.
+
+**DEFECTs folded:** kernel β=0 must **overwrite** (BLAS semantics; `0*NaN=NaN` corrupts the
+uninitialized `d_cbuf`) — stated as a kernel requirement + fixed in the ext (§3/§4.1); the
+syrk-shape is **not** an epilogue-arg freebie (triangular masking is real kernel work — but the
+full-gemm-overwrites-unused-upper approach is legitimate since the diagonal block's strict-upper
+is never read, so M6a uses that, §3); the pure flip "dissolves the vendor-binary objection" claim
+**scoped** to the flop-dominant trailing update (M6a still uses cuSOLVER for the pivoted diagonal
+factorization, §0/§3); D2H/H2D priced at **pageable** bandwidth unless host storage is pinned/
+registered (§7, budgeted §5.3); §9.A host bound restated `≤ c·(#GPU launches)` not constant;
+hybrid **CPU-side** pivot failure must sync both streams before early-return (§4.3) + new amendment
+D; §4.2 scatter uses per-pair `ir`/`rs` (pattern-only, host-precomputed, uploaded once), `relmap`
+dropped (it's a transient, not a pattern array), bytes budgeted (§5.3); §5.2 "puncture" option
+**deleted** (it would create the device→host edge the invariant forbids); §8 adds a
+**multi-threaded CHOLMOD** context arm (single-thread gate else reads as GPU-vs-one-core), and a
+**multi-device** confirmation note (galen + a coming neuromancer eGPU → the two-host gate bar; an
+AMD eGPU would also verify the KA portability claim). **NITs:** median not min for the gate (§8);
+complex excluded by scope not cuSOLVER capability (§1); `§5.2` cites the etree row-subtree property
+(not §3.4 superset); workspace stored as element counts (§2.3); added M6b `GPULDLFactor` sketch +
+`W=L21·D` staging buffer term (§2.3/§6); hybrid-driver pseudocode (§5.5).
+
+Inputs to v2 (unchanged, for the record): Fable's M6 architecture review; the Phase-0 measurement
+pass on galen; two user decisions; the two v1 reviews.
 
 ---
 
@@ -76,10 +123,11 @@ by "not what Julia ships," not clean-room.
   a delta — but it reuses M6a's frontier, scheduler, uploads, and gemm/syrk kernels; the new
   work is the device diagonal-block LDL + D-scaled panel update + `dvec` residency.
 - **Element types:** Float64 is the gated path. Float32 works (pure kernels are generic-`T`;
-  cuSOLVER `potrf`/`trsm` support F32). Any other `T` (Duals, BigFloat, complex) **falls back
-  to the CPU path** via dispatch — cuSOLVER can't run them and the interim `potrf`/`trsm` are
-  vendor-typed; the pure gemm/syrk are generic but the diagonal factorization is not, until
-  §6's pure device-LDL/potrf lands. Stated so the generic-`T` promise isn't overclaimed.
+  cuSOLVER `potrf`/`trsm` support F32). Other `T` (Duals, BigFloat) **fall back to the CPU
+  path** via dispatch — the interim cuSOLVER `potrf`/`trsm` don't run them and the pure diagonal
+  factorization isn't built until §6. Complex is excluded by **scope**, not capability (cuSOLVER
+  *does* support `Complex{F32,F64}` potrf) — SPD/SQD Hermitian GPU factorization is a later
+  increment. Stated so the generic-`T` promise isn't overclaimed.
 - **OUT of M6:** sparse QR (different multifrontal-WY arch; gate already closed vs SPQR).
   Simplicial update/downdate (latency-bound; stays CPU). Device solves (§7 — solves stay CPU
   in M6; the gate accounts for the factor D2H).
@@ -122,20 +170,29 @@ GPUSymbolic{Ti}                         # immutable, shared by reference
   backend::KA.Backend
   on_gpu::Vector{Bool}    (host)        #   frontier membership per supernode (§5.2)
   gpu_order::Vector{Ti}   (host)        #   GPU supernodes in ascending-finalize order
-  d_rowind, d_rowptr, d_super, d_snode_of, d_relmap   (device)  # pattern arrays, uploaded once
+  boundary::Vector{Ti}    (host)        #   CPU supernodes with a GPU ancestor (§5.3 persist set)
+  d_rowind, d_rowptr, d_super, d_snode_of  (device)  # pattern arrays, uploaded once
+  d_irrs                  (device)      #   per-cross-edge ir/rs scatter structure (§4.2)
   d_amap                  (device)      #   assembly map A-values → panels
-  workspace_bytes::Int    (host)        #   pre-sized device workspace need (§5.3)
+  workspace_elts::NTuple  (host)        #   pre-sized device workspace ELEMENT counts (×sizeof(T)
+                                        #   at factor construction — NIT: Ti-param, not bytes)
 
-GPUSupernodalFactor{T,Ti}
+GPUSupernodalFactor{T,Ti}               # (M6a, LLᵀ)
   sym::GPUSymbolic{Ti}
   d_nzval::CuVector{T}    (device)      #   the factor L (device-resident)
   d_cbuf::CuMatrix{T}     (device)      #   scatter workspace, max_extend_rows² (§5.3)
+  d_boundbuf::CuVector{T} (device)      #   persisted boundary panels, Σ_boundary bytes (§5.3)
   d_potrf_ws::CuVector{T} (device)      #   pre-allocated cuSOLVER potrf workspace (§9.A)
   d_devinfo::CuVector{Cint} (device)   #   pivot-failure flags, one per GPU supernode (§4.3)
-  d_uploadbuf::CuVector{T} (device)    #   bounded ring for CPU-descendant panel uploads (§5.3)
-  host_mirror::SupernodalFactor{T,Ti}  #   filled on make-solve-ready (§7); solves run here
+  host_mirror::SupernodalFactor{T,Ti}  #   CUDA.register'd; filled on make-solve-ready (§7)
   ok::Bool, fail_col::Ti  (host)       #   resolved post-hoc from d_devinfo (§4.3)
   streams::NTuple{2,CuStream}          #   compute + upload streams (§5.4)
+
+GPULDLFactor{T,Ti}                      # (M6b, LDLᵀ) — adds to the LLᵀ layout:
+  d_dvec::CuVector{T}     (device)      #   the diagonal D (device-resident)
+  d_wd::CuMatrix{T}       (device)      #   W = L21·D staging, ws.cd analogue, col-chunked (§6)
+  d_stats::CuVector{...}  (device)      #   per-supernode pre-perturbation inertia stats (§6/§9.E)
+  # inertia/n_perturbed/max_pert resolved post-hoc from d_stats (NOT from d_dvec — §9.E)
 ```
 
 ## §3 Kernel strategy (Option 1: pure-primary)
@@ -146,10 +203,15 @@ Dense per-supernode work on device goes through a small interface —
 
 - **Pure KA kernels (default, shipped hot path):** the verified 4×4-register-blocked
   `muladd` kernel (§0) for the **trailing update** (gemm/syrk — the flop-dominant step, where
-  the 1.14× win is), generic over `T`, portable (AMD/Intel via KA). A **syrk-shaped variant**
-  (compute only the lower/upper block for the symmetric self-update) and the `alpha=-1,beta=1`
-  epilogue (the actual `C -= A·Bᵀ` update) are the two productization deltas — both already
-  supported by the kernel's epilogue args.
+  the 1.14× win is), generic over `T`, portable (AMD/Intel via KA). The `alpha=-1,beta=1`
+  epilogue (`C -= A·Bᵀ`) **is** an epilogue-arg (verified, relerr 0 on galen), with the
+  hard requirement that **β=0 OVERWRITES** (not `0*C`, which is `NaN` on an uninitialized
+  `d_cbuf` — design.md §4.3 relies on this; fixed in the ext). The **syrk symmetric self-update
+  is done by the full gemm kernel** (`B=A`) which harmlessly overwrites the never-read strict-
+  upper of the diagonal block (legitimate — `ldlt.jl`/`llt.jl` never store/read it — at ~2× flops
+  on the *small* diagonal block only); a triangular-masked syrk variant is a **real kernel change**
+  (group-index masking, *not* an epilogue arg — v3, Opus/Fable DEFECT), deferred as an
+  optimization, not claimed as free.
 - **cuSOLVER `potrf`/`trsm` (interim) for the small diagonal blocks:** the diagonal
   factorization and off-diagonal solve are low-flop (the diagonal block is `nscol×nscol`,
   typically ≪ the trailing update). Pure device `potrf`/`trsm` are a **follow-up** (§6 needs a
@@ -190,10 +252,12 @@ scatter kernel.
 `ir`/`rs` run-detection scan and the k1-split/contiguity decision are **pattern-only and
 refactor-invariant**, so they are computed **once on the host** at `GPUSymbolic` build time
 and stored (host keeps the pattern → **zero pattern H2D per refactor**, satisfying §9.A's
-"0 pattern H2D" gate). The device scatter kernel consumes device copies (`d_relmap` for the
-final scatter target map; `ir`/`rs` uploaded once as device arrays). The scatter kernel itself
-is a simple indexed add (pure Julia — it is the sparse part, and it is genuinely a trivial
-kernel *given* the precomputed run structure; the non-trivial scan is host-side and one-time).
+"0 pattern H2D" gate). The resolved target rows `ir` + run structure `rs` (per cross-edge) are
+uploaded once as `d_irrs` (§2.3/§5.3 — budgeted). **v3 (Fable DEFECT):** `relmap` is dropped —
+it's a per-supernode *transient* (`relmap[row]=k`, refilled every supernode), not a pattern
+array, so "uploaded once" was meaningless; the precomputed `ir` already *is* the resolved scatter
+targets. The scatter kernel is a simple indexed add (pure Julia — the sparse part, trivial
+*given* the precomputed run structure; the non-trivial scan is host-side and one-time).
 
 ### §4.3 Failure semantics (pivot detection) — Fable BLOCKER
 `cholesky!` sets `F.ok=false`, records `fail_col`, and returns early on a non-SPD pivot.
@@ -202,10 +266,15 @@ cuSOLVER `potrf` reports failure via a **device** `devinfo`. To avoid a per-supe
 supernode writes its `potrf` result into its own slot of `d_devinfo` (pre-allocated, one Cint
 per GPU supernode); the whole array is D2H'd **once** at the end of `cholesky!`. `F.ok` and
 `fail_col` are resolved post-hoc: `ok = all(devinfo .== 0)`; `fail_col` = the column offset of
-the lowest-index failed supernode. **Amended semantics (user-visible, → §9):** on the GPU
-path a failed pivot does **not** early-return — later supernodes still compute (possibly on
-NaNs). This matches "basic solution / query `issuccess` before use" discipline but differs
-from the CPU early-return; `check_finite` is the backstop. Recorded on the §9 sign-off list.
+the lowest-index failed **GPU** supernode. **Amended semantics (amendment D):** on the GPU path
+a failed pivot does **not** early-return — later supernodes still compute. **`check_finite` is
+NOT a valid backstop (v3, both reviewers):** cuSOLVER `potrf` on a non-SPD block reports `info>0`
+but can leave *finite-but-wrong* values (not NaN), which propagate through trailing updates and
+pass a finiteness check — so `d_devinfo` is the **sole** failure signal (and StrictMode's
+`check_finite` is off in the gate config anyway). **Hybrid CPU-side failure:** a CPU supernode
+that fails (`llt.jl` early-returns) must **synchronize both streams first** (in-flight GPU kernels
+are writing into `F`'s buffers), then set `fail_col` reconciled against the GPU set (min of the
+CPU failure column and the lowest failed GPU supernode). Recorded as amendment D.
 
 ## §5 Memory model + frontier + concurrency
 
@@ -215,43 +284,59 @@ staging because descendant panels are already resident.
 
 ### §5.2 Upward-closed etree frontier (replaces `gpu_flop_threshold=2e9`)
 At `symbolic` time: mark each supernode with (update+factor) flops ≥ `frontier_cutoff`, then
-take the **upward closure** in the supernodal etree. **Fable verified** the key property: every
-update target of supernode `d` is `snode_of[r]` for `r ∈ rowind(d)`, which by the §3.4 superset
-invariant is an *ancestor* of `d` — so an upward-closed GPU set **never emits a device→host
-update edge**. Traffic is therefore one-way (CPU→GPU only) and once-only (§5.4). The single
-tunable is `frontier_cutoff`; its default comes from the Phase-0 measured CPU-vs-GPU per-shape
-crossover on galen (§8.3), with a derivation comment. **Honesty (Opus DEFECT):** upward closure
-can pull a small, low-flop supernode onto the GPU if it sits above a heavy subtree; "small
-stays on CPU" holds only for nodes *not* on a GPU-ancestor path. Near-root supernodes are
-typically dense so this is usually negligible; the frontier builder may *puncture* the closure
-for a trivially-small near-root node by keeping it on CPU and uploading its (small) panel —
-measured, not assumed.
+take the **upward closure** in the supernodal etree. The key property (both reviewers confirmed
+sound): every update target of supernode `d` is `snode_of[r]` for a below-diagonal row `r ∈
+rowind(d)`, which by the **etree row-subtree property** (a below-diagonal row index of column
+`j` is an etree *ancestor* of `j` — the standard sparse-Cholesky fact, not §3.4's pattern-
+superset invariant) is an ancestor of `d`. So an upward-closed GPU set **never emits a
+device→host update edge**: all cross-frontier edges point CPU→GPU. This is what makes the
+traffic one-way. The single tunable is `frontier_cutoff`; its default comes from the Phase-0
+measured CPU-vs-GPU per-shape crossover on galen (§8.3), with a derivation comment.
+**Honesty (Opus):** upward closure can pull a small, low-flop supernode onto the GPU if it sits
+above a heavy subtree; "small stays on CPU" holds only for nodes *not* on a GPU-ancestor path.
+Near-root supernodes are typically dense so this is usually negligible. **v3: the v2 "puncture"
+escape hatch is deleted** — keeping a near-root node on CPU while its descendants are GPU would
+create exactly the device→host update edge the invariant (and §10.2's executable check) forbids;
+if that optimization is ever wanted it must be the fully-specified "GPU-assembled, CPU-factored"
+node (panel stays device-resident, GPU descendants update it there, D2H once, factor on CPU),
+out of scope for M6.
 
-### §5.3 Capacity (reworded — not "exact")
-Budget against **queried** free memory (`CUDA.available_memory()` on galen: ~11.57 GiB after
-context) at device-buffer-allocation time, with a stated safety margin: `d_nzval` (nnzL·8) +
-`d_cbuf` (`max_extend_rows²`·8 — note: `ws.c` in `types.jl` is sized `max_extend_rows²`;
-`max_update_size` is a *diagnostic*, not a bound — v1 error fixed) + `d_potrf_ws` (cuSOLVER
-`bufferSize` over supernode shapes, §9.A) + `d_uploadbuf` (bounded ring for CPU-descendant
-panels, sized `max_extend_rows × max_gpu_panel_cols`, freed-after-consume — so uploaded panels
-are NOT a growing term; "upload once" means once *per refactor into the ring*, consumed then
-reused) + A-values pinned staging (nnz(A)·8). If the sum exceeds free-memory−margin, **fall
-back to the CPU path loudly** (`@warn` + return a CPU factor) — the *loudness* is the
-guarantee, never an OOM at factor time.
+### §5.3 Capacity + the persisted boundary-panel budget (v3 — replaces the ring)
+The cross-frontier upload model is **persist, not ring** (BLOCKER 1 fix). A **boundary** CPU
+supernode is one with ≥1 below-diagonal row updating a GPU supernode; by §5.2 all of its
+ancestors are then GPU, so its whole factored panel is read by several GPU ancestors at
+separated schedule points. v3: each boundary panel is uploaded **once** (genuinely) when the CPU
+finalizes it, kept **device-resident** for the rest of the refactor (`d_boundbuf`, a
+symbolic-time-sized arena), and freed at refactor end. This makes "upload once" literally true,
+needs no slot-reuse protocol, and cannot deadlock. The boundary set and its total bytes
+`Σ_boundary (nsrow·ncol·sizeof(T))` are **computable at symbolic time** (pattern-only).
 
-### §5.4 Stream/event concurrency (Opus BLOCKER — the barrier)
-Two streams: `compute` (GPU supernode work) and `upload` (async H2D of finalized CPU-side
-descendant panels). Left-looking finalizes each panel before any consumer reads it *on a
-single processor*; with concurrency that ordering must be **enforced**, not assumed: (1) when a
-CPU subtree finalizes a panel that a GPU ancestor consumes, the host enqueues its H2D on
-`upload` and records a `CuEvent`; (2) a GPU supernode `s`'s first update kernel is enqueued on
-`compute` only after `compute` waits on the events of all its CPU-descendant uploads
-(`CUDA.wait(event, compute)`). This is a DAG of stream dependencies mirroring the etree edges
-crossing the frontier. Cost: the events are cheap; the real constraint is that a GPU supernode
-cannot start until its cross-frontier descendants are uploaded — which the frontier's
-upward-closure already batches (all cross-edges enter the GPU set from below, once). "race-free
-by construction" is replaced by "race-free under this explicit event DAG," and §10.2 adds an
-executable upload-once + ordering check.
+Budget against **queried** free memory (`CUDA.available_memory()` on galen ≈ 11.57 GiB after
+context) at device-buffer-allocation time, with a safety margin:
+`d_nzval` (nnzL·`sizeof(T)`) + `d_cbuf` (`max_extend_rows²`·`sizeof(T)` — verified: `ws.c` in
+`types.jl` is `(max_extend_rows,max_extend_rows)`; `max_update_size` is a diagnostic, not a
+bound) + `d_boundbuf` (the Σ_boundary term above) + `d_irrs` (per-cross-edge `ir`/`rs` scatter
+structure, §4.2, pattern-only, uploaded once; Σ-over-cross-edges bytes, symbolic-computable) +
+`d_potrf_ws` (cuSOLVER `bufferSize` over supernode shapes, §9.A) + M6b: `d_wd`
+(`W=L21·D` staging, the device analogue of `ws.cd`, `max_extend_rows²` **column-chunked** since
+`ncol_d` is unbounded — §6) + pinned staging for A-values H2D and the `host_mirror` D2H (§7). If
+the sum exceeds free-memory−margin, **fall back to the CPU path loudly** (`@warn` + CPU factor)
+— loudness is the guarantee, never an OOM at factor time.
+
+### §5.4 Stream/event concurrency — per-descendant dependency (v3, BLOCKER 1 fix)
+Two streams: `compute` (GPU supernode work) and `upload` (async H2D of finalized boundary
+panels). The dependency is **per-descendant, not per-supernode** (v2's per-supernode barrier —
+"wait on *all* of `s`'s uploads before `s`'s first kernel" — forced every boundary panel of `s`
+resident at once and risked deadlock). v3: (1) when the CPU finalizes a boundary panel `d`, the
+host enqueues its H2D on `upload` and records a `CuEvent e_d`; (2) each individual
+descendant-update kernel `s -= d`-contribution on `compute` is preceded by `CUDA.wait(e_d,
+compute)` — it waits only on **that** descendant's upload. The single `compute` stream serializes
+GPU supernodes in ascending finalize order (so GPU→GPU descendant ordering is free); the
+per-`e_d` waits enforce CPU→GPU ordering. The DAG is acyclic (waits only go `compute ← upload`)
+→ **deadlock-free**. "race-free by construction" is replaced by "race-free under this explicit
+per-descendant event DAG"; §10.2 adds the executable upload-once + ordering check. Host-side
+merge for solves: CPU subtrees factor directly into `host_mirror.nzval`; only the GPU-slice is
+D2H'd at make-solve-ready (§7).
 
 ## §6 M6b — LDLᵀ device slice (real work, not a delta)
 
@@ -266,22 +351,43 @@ CPU**. So "diagonal LDL on CPU, offload the rest" is impossible. The honest devi
 - **Device D-scaled panel solve.** The below-diagonal panel `L21` = `A21·L11⁻ᵀ·D⁻¹` via a
   device unit-`trsm` (against `L11`) + a `D⁻¹` column-scale kernel (pure, generic-`T`).
 - **Device `L·D` trailing update.** The descendant update uses `L21·D·L21ᵀ` — one extra
-  column-scale (`W = L21·D`, a `dvec`-slice broadcast) before the pure gemm/syrk. `dvec`
-  lives on device (`d_dvec`); D-slices are pushed H2D once per refactor with the pattern.
-- **Inertia:** `(n_pos,n_neg,n_zero)` reduced from `d_dvec` signs on device, D2H'd once
-  (like `d_devinfo`).
+  column-scale (`W = L21·D`, a `dvec`-slice broadcast into `d_wd`, the `ws.cd` analogue,
+  column-chunked per §5.3) before the pure gemm/syrk. `d_dvec` lives on device.
+- **Signed regularization + inertia (v3, BLOCKER 2 fix).** Regularization is **not** separable
+  from the diagonal-block factorization: in `ldlt.jl` the regularized `dⱼ` feeds the Schur
+  complement of later columns *in the same block*, and inertia is classified on the
+  **pre-perturbation** pivot. So the device block-LDL must run the signed-regularization column
+  loop itself, and for each pivot emit — **before** perturbing it — its sign/magnitude classified
+  against the zero test into a per-supernode device stats record
+  `(n_pos, n_neg, n_zero, n_perturbed, max_pert, dmin, dmax)`. These are reduced once at the end
+  (like `d_devinfo`) into `FactorStats`. Deriving inertia from the final `d_dvec` (post-
+  regularization) is **wrong** — it returns the tautological *forced* signs and voids req 8's
+  observed-inertia contract that IPOPT-style consumers depend on. Two concurrency-forced
+  semantics changes, recorded as **amendment E**: (i) the CPU path's zero test uses a
+  **running-global** `dmax` across the whole factorization — a sequential cross-supernode
+  dependency concurrency can't reproduce — so the device test is redefined **order-free**
+  (per-supernode-local `dmax`, delta-anchored: `adⱼ ≤ ζ·max(dmaxₗₒ𝒸ₐₗ, δ)`); (ii) `δ =
+  LDLT_DELTA·ascale` where `ascale = max|assembled A|` is computed **host-side** during the
+  A-value staging pass (host has `A.nzval`; O(nnz), free).
 
-This keeps §5's one-way/once-only traffic for `ldlt!` (only the small diag block round-trips,
-bounded; the tall panel stays device-resident). It is **new numeric code with its own
-BigFloat/CPU-`ldlt` oracle and its own zero-alloc gate** — M6b, sequenced after M6a's gate.
+This keeps §5's one-way traffic for `ldlt!` (only the small `nscol×nscol` diag block round-trips
+if the device block-LDL kernel isn't used; the tall panel stays device-resident). It is **new
+numeric code with its own `GPULDLFactor` type (§2.3), BigFloat/CPU-`ldlt` oracle, inertia-match
+test, and zero-alloc gate** — M6b, sequenced after M6a's gate.
 
 ## §7 Solves + the D2H (Fable BLOCKER)
 
 Factor is device-resident; solves run on CPU after a **make-solve-ready** step that D2H's the
-GPU-slice of the factor into `host_mirror`. Reconciled cost: at galen's measured **pinned**
-D2H bandwidth (Phase-0: 13.4 GB/s; v1's "170 ms for 4 GB" was wrong — 4 GB ÷ 13.4 GB/s ≈
-300 ms), a device factor of `g` GB costs `g/13.4` s to make solve-ready. **This recurs per
-warm refactor** in the IPM loop (each refactor invalidates the mirror). Therefore:
+GPU-slice of the factor into `host_mirror`. **Pinning (v3, Fable/Opus DEFECT):** `host_mirror`'s
+storage is `CUDA.register`ed (or a pinned bounce buffer) so the D2H hits pinned bandwidth;
+**pageable** D2H runs ~0.5–0.7× of pinned, so an unpinned mirror would understate the cost that
+sits inside the gated region. The pinned mirror bytes are added to the §5.3 budget. Reconciled
+cost: at galen's measured pinned D2H (Phase-0: 13.4 GB/s; v1's "170 ms for 4 GB" was wrong —
+4 GB ÷ 13.4 GB/s ≈ 300 ms), a device factor of `g` GB costs `g/13.4` s to make solve-ready.
+Also recurring per refactor: the A-value **H2D** for device assembly (`nnz(A)·sizeof(T)`, pinned)
+— §9.A gates "0 *pattern* H2D," not zero value H2D; both the D2H and this H2D appear in the §7/§8
+per-cycle economics. **This recurs per warm refactor** in the IPM loop (each refactor invalidates
+the mirror). Therefore:
 - The gate's timed region **includes** make-solve-ready (§8.1) — the GPU arm is not credited a
   free D2H.
 - An **IPM-cycle context arm** (§8.2) reports refactor+D2H+solve×k both ways, so the per-cycle
@@ -309,9 +415,22 @@ make-solve-ready**:
    AND under an identical `GivenOrdering(p)` permutation** (req 2's mandatory same-perm arm —
    restored; v1 dropped it).
 
+All gate numbers are **medians** (CLAUDE.md benchmarking; the `min`-based Phase-0 kernel numbers
+were fine for the wide-margin flip decision but the gate must not inherit them).
+
 ### §8.2 Context arms (reported, not gated)
 cuDSS (NVIDIA sparse, black-box, like faer for QR); pure-vs-cuBLAS kernel attribution (§3);
-the §7 IPM-cycle cost both ways.
+the §7 IPM-cycle cost both ways; **multi-threaded CHOLMOD+OpenBLAS** (Opus DEFECT — the gate is
+single-thread-CPU per req 2, which is the correct *contractual* comparison but reads as
+GPU-vs-one-core; this arm shows GPU-vs-best-CPU so the headline isn't misread).
+
+### §8.2a Multi-device confirmation (the two-host gate bar)
+Every prior PureSparse gate verdict required **two clock-locked hosts** ([[reference_benchmark_machines]]).
+For M6 the second GPU host is a **neuromancer eGPU** (planned). Two cases: an **NVIDIA** eGPU gives
+a second CUDA data point + the two-host confirmation; an **AMD** eGPU additionally **verifies the
+KernelAbstractions portability claim** (the pure kernel running on ROCm — currently theoretical,
+KA==CUDA measured only on NVIDIA). Until the second host exists, galen is the sole gate host and
+that limitation is stated in the verdict, not hidden.
 
 ### §8.3 Stratum spec (pin criteria BEFORE measuring — anti-cherry-pick)
 Selected now, not after GPU numbers exist: SPD + SQD problems, `nnzL·8 + workspace ≤ ~9 GB`,
@@ -324,23 +443,43 @@ baselines are the remaining Phase-0 item, run BEFORE the frontier cutoff is fixe
 
 **A — req 5 (zero-alloc) on GPU.** Verbatim `@allocated==0` is impossible (kernel launches
 allocate host bytes; cuSOLVER queries workspace). Proposed: *"warm `cholesky!`/`ldlt!` on a
-GPU factor: **0 device-pool allocations after setup** (cuSOLVER workspace + `devinfo` +
-`cbuf` + upload ring pre-allocated at factor construction via `bufferSize`; low-level cuSOLVER
-API, not the auto-workspace wrappers) AND **0 pattern H2D** (§4.2); host bytes per warm
-refactor **≤ a constant independent of n and nsuper** (launch bookkeeping only — measured on
-galen, gated as a ceiling, not merely reported)."* The host-side floor is measured first
-(remaining Phase-0), then gated.
+GPU factor: **0 device-pool allocations after setup** (cuSOLVER workspace + `devinfo` + `cbuf`
++ boundary arena + stats arrays pre-allocated at factor construction via `bufferSize`; low-level
+cuSOLVER API, not the auto-workspace wrappers) AND **0 pattern H2D** (§4.2); host bytes per warm
+refactor **≤ `c_launch · (#GPU kernel launches)`** with `c_launch` a measured per-launch
+constant (v3, Opus/Fable DEFECT — the count scales with #GPU-supernodes, so a bound *independent
+of nsuper* is the wrong shape; if a zero-host-alloc launch path is demonstrated first, gate that
+instead)."* The per-launch floor is measured first (remaining Phase-0), then gated as a ceiling.
 
 **B — req 2 (gate baseline) on GPU.** The §8.1 three-clause gate, including the restored
-`GivenOrdering` same-perm arm and the refactor+D2H timed region.
+`GivenOrdering` same-perm arm and the refactor+make-solve-ready timed region.
 
 **C — dense-kernel exclusivity on device.** CLAUDE.md says CPU dense work goes *exclusively*
 through PureBLAS. Proposed: *"dense per-supernode work goes through PureBLAS on CPU and through
 the §3 pure-KA device-kernel interface on device; cuSOLVER `potrf`/`trsm` are an explicit
 interim for the small diagonal blocks (Float32/64), replaced by pure device kernels when §6's
 device factorization lands; cuBLAS is a reference/baseline backend, never the default hot
-path."* (The pure-primary flip makes this largely self-satisfying — the shipped hot-path
-kernel is ours.)
+path."* **Scope honesty (v3, Opus):** the pure-primary flip makes the *flop-dominant trailing
+update* ours, but M6a's gate still closes with cuSOLVER doing the actual pivoted diagonal
+factorization — so "M6a closes on a pure kernel" is true only for the trailing update; the
+diagonal `potrf`/`trsm` remain a vendor interim through M6a.
+
+**D — GPU failure semantics (v3, referenced by §4.3).** *"On a GPU factor, a non-SPD pivot does
+**not** early-return (deferred batched `d_devinfo`, one D2H at end; `ok`/`fail_col` resolved
+post-hoc as the lowest-index failed supernode). `check_finite` is **not** a backstop (cuSOLVER
+leaves finite-but-wrong values, and StrictMode checks are off in the gate config) — `d_devinfo`
+is the sole failure signal. In the hybrid loop a **CPU-side** failure early-returns only after
+synchronizing both streams, and `fail_col` reconciles the CPU failure column against the GPU
+set."*
+
+**E — LDLᵀ inertia + order-free zero test (v3, referenced by §6).** *"Device inertia is emitted
+per-supernode from the **pre-perturbation** pivot into a stats array reduced once (not derived
+from the regularized `d_dvec`); the zero-pivot test is redefined order-free (per-supernode-local
+`dmax`, delta-anchored) since the CPU path's running-global `dmax` is a sequential dependency
+concurrency can't reproduce. `n_perturbed`/`max_perturbation` are tracked the same way; `ascale`
+is a host-side O(nnz) pass during A-staging."* This is a user-visible numerical-semantics change
+(the observed inertia and the regularization decisions can differ in tie cases from the CPU
+path's global-`dmax` ordering) — hence an explicit amendment, not a silent reinterpretation.
 
 ## §10 Correctness + invariants
 
@@ -354,8 +493,11 @@ sweep; `--check-bounds=yes` device run; StrictMode preconditions on the device p
 Cheap symbolic-time assertions turning §5's prose into gates:
 - **Upward-closure:** `∀ s ∈ GPU-set, ∀ r ∈ rowind(s): snode_of[r] ∈ GPU-set` (no
   device→host update edge). O(nnz-pattern).
-- **Upload-once:** a per-refactor counter asserts each CPU-descendant panel consumed by a GPU
-  ancestor is H2D'd exactly once (§5.4).
+- **Upload-once:** a per-refactor counter asserts each **boundary** CPU panel (§5.3) is H2D'd
+  **exactly once** and stays resident until refactor end (the persist model, §5.3) — not
+  re-uploaded per (descendant, ancestor) edge.
+- **Boundary budget:** the Σ-over-boundary-panels bytes computed at symbolic time equals the
+  actual peak `d_boundbuf` occupancy (no growth).
 - **Solve-ready:** after make-solve-ready, `host_mirror` equals a full-CPU factor within §10.1.
 
 ## §11 Trim + zero-alloc
