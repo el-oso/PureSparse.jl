@@ -252,6 +252,34 @@ end
     @test allocs == 0
 end
 
+@testitem "qr!: zero-allocation at larger sizes, swept across seeds (task #48 regression)" begin
+    # This is a targeted regression test for a bug the 20×12 case above cannot catch:
+    # the row-subtree gather (numeric.jl step 2) called `sort!` with Base's DEFAULT
+    # algorithm, which auto-selects RadixSort for `Int` arrays above a small size
+    # heuristic — RadixSort allocates scratch buffers. Since the row-subtree length
+    # is a per-column, per-matrix quantity (not the array's static length), whether
+    # any column crosses that heuristic is DATA-dependent — most matrices at 20×12
+    # never do, so the single fixed small case above passed while larger/denser
+    # matrices allocated 500-4000+ bytes depending on the exact values (found via
+    # Profile.Allocs, not visible from a single seed). Fixed by pinning
+    # `alg=InsertionSort` (verified zero-alloc at any size) in numeric.jl. Sweeping
+    # several sizes/densities/seeds here, not just one, since the failure is exactly
+    # the kind that hides behind a single lucky case.
+    using Random, SparseArrays
+    for (m, n, density, seed) in [
+            (100, 50, 0.1, 2), (100, 50, 0.1, 8), (200, 50, 0.1, 3),
+            (800, 300, 0.02, 1), (800, 300, 0.02, 5),
+        ]
+        rng = MersenneTwister(seed)
+        A = sprand(rng, m, n, density) + sparse(1:n, 1:n, 1.0, m, n)
+        F = PureSparse.qr(A; ordering = PureSparse.COLAMDOrdering(), tol = 0, singletons = false)
+        A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .* 1.01)
+        PureSparse.qr!(F, A2; tol = 0)   # warm up
+        allocs = @allocated PureSparse.qr!(F, A2; tol = 0)
+        @test allocs == 0
+    end
+end
+
 @testitem "qr: method kwarg dispatch (design_qr_m5b.md §A5.6)" begin
     using Random, SparseArrays, LinearAlgebra
 

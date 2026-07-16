@@ -216,7 +216,17 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Rea
                 node = sym.parent[node]
             end
         end
-        sort!(view(tsub, 1:len))
+        # `alg=InsertionSort` pins a zero-alloc algorithm (design's zero-alloc gate,
+        # CLAUDE.md req 5): Base's default `sort!` picks RadixSort for `Int` arrays
+        # above a size heuristic, and RadixSort allocates scratch buffers
+        # (`Base.Sort.make_scratch`) — since `len` here is a per-column row-subtree
+        # size (small, bounded by tree depth, not array length), it crosses that
+        # threshold on some columns of some matrices but not others, causing the
+        # allocation to be silently data-dependent (found via Profile.Allocs, not
+        # visible from a single small test-suite-sized matrix). InsertionSort is
+        # O(len²) but len is small here by construction, and it never allocates at
+        # any size (verified directly).
+        sort!(view(tsub, 1:len); alg = InsertionSort)
 
         # --- Step 3: apply prior reflectors ---
         for t in 1:len
