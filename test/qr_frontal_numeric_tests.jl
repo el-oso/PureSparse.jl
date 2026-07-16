@@ -197,3 +197,54 @@ end
     Rf = dense_R_frontal(Ff)
     @test maximum(abs.(Rf' * Rf .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
 end
+
+@testitem "qr_frontal P2: generic over real isbits T — Float32/Float16 + AD (ForwardDiff.Dual)" setup=[QRFrontalNumericHelpers] begin
+    using SparseArrays, LinearAlgebra, Random, ForwardDiff
+    ord = PureSparse.COLAMDOrdering()
+
+    # `_frontal_capable` gate (P2): real isbits in; complex (needs conjugate Householder)
+    # and BigFloat (non-isbits, the front's pointer storage can't hold it) out.
+    @test PureSparse._frontal_capable(Float64)
+    @test PureSparse._frontal_capable(Float32)
+    @test PureSparse._frontal_capable(Float16)
+    @test PureSparse._frontal_capable(typeof(ForwardDiff.Dual(1.0, 1.0)))
+    @test !PureSparse._frontal_capable(ComplexF64)
+    @test !PureSparse._frontal_capable(BigFloat)
+
+    # Float32/Float16 route to :frontal (not silently to :column) and factor correctly.
+    # atol is precision-appropriate: eps(Float16) ≈ 1e-3, so ~1e-2 on RᵀR is machine-level.
+    for (T, atol) in ((Float32, 1.0e-3), (Float16, 5.0e-2))
+        rng = MersenneTwister(5)
+        Af = sprand(rng, 30, 16, 0.3) + sparse(1:16, 1:16, 1.0, 30, 16)
+        A = SparseMatrixCSC(30, 16, Af.colptr, Af.rowval, T.(Af.nzval))
+        F = PureSparse.qr(A; method = :frontal, ordering = ord)
+        @test F isa PureSparse.QRFrontFactor{T}          # actually took the frontal path
+        R = Float64.(dense_R_frontal(F))
+        Ad = Matrix(Float64.(A))[:, F.fsym.base.cperm]
+        @test maximum(abs.(R' * R .- Ad' * Ad)) < atol * max(1, norm(Ad)^2)
+    end
+
+    # AD (the CLAUDE.md req-3 target): a least-squares solve differentiated THROUGH the
+    # frontal QR must match a finite difference — i.e. the whole factorize+solve is
+    # ForwardDiff-traceable, the point of "generic over T". Full-rank (added diagonal) so
+    # the solution is smooth in θ (no rank-drop discontinuity).
+    rng = MersenneTwister(6)
+    m, n = 40, 20
+    P = sprand(rng, m, n, 0.3) + sparse(1:n, 1:n, 1.0, m, n)
+    base = copy(P.nzval)
+    pert = randn(rng, length(base))
+    b0 = randn(rng, m)
+    function ls_sum(θ::S) where {S}
+        nz = S.(base) .+ θ .* S.(pert)
+        A = SparseMatrixCSC(m, n, P.colptr, P.rowval, nz)
+        F = PureSparse.qr(A; method = :frontal, ordering = ord)
+        x = PureSparse.solve!(zeros(S, n), F, S.(b0))
+        return sum(x)
+    end
+    θ0 = 0.7
+    d_ad = ForwardDiff.derivative(ls_sum, θ0)   # traced through the frontal factorization
+    h = 1.0e-6
+    d_fd = (ls_sum(θ0 + h) - ls_sum(θ0 - h)) / (2h)
+    @test isapprox(d_ad, d_fd; rtol = 1.0e-4)
+    @test isfinite(d_ad) && d_ad != 0
+end

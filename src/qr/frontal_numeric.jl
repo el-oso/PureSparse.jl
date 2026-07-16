@@ -397,7 +397,7 @@ function qr!(F::QRFrontFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothin
     F.stats.flops = fsym.fflops
     F.stats.rank = rank
     F.stats.n_dead = n_dead
-    F.stats.dropped_norm = Float64(sqrt(dropped_sq))
+    F.stats.dropped_norm = _stat_f64(sqrt(dropped_sq))
     F.ok = true
     # check_finite(F.fval, ...)/check_finite(F.tauv, ...) are NOT mirrored from M5a's
     # own qr! (which checks its rval/vval analogues) — both fval and tauv are sized to

@@ -1017,6 +1017,32 @@ the closest it has been all session; `grid_ls_40x30`'s single-sample noise and a
 fresh multi-sample confirmation are the natural next steps before considering
 `ii_sparse_R` fully closed alongside `i_singleton`.
 
+**2026-07-16 (M5b P2 LANDED — the frontal path is now generic over real isbits `T`,
+AD-traceable; no new kernel was needed).** Scoped by the user to the real-generic/AD
+target (CLAUDE.md req 3), not complex/BigFloat. Key finding: PureBLAS's `gemm!` had
+*already* become generic (AD-traceable triple-loop for non-BLAS `T`) and `wy_t!`/
+`wy_apply!` are `AbstractMatrix{T}`-generic and call it — so the frontal numeric loop +
+kernels were already generic; the only barrier was the `T === Float64` routing gate.
+Empirically scoped first (all measured, not assumed): Float64/Float32/Float16 factor
+correctly through `:frontal`; BigFloat SEGFAULTS (non-isbits — pointer-based front
+storage); ComplexF64 BoundsErrors (real-reflector storage assumption + needs conjugate
+Householder). So: relaxed the gate to `_frontal_capable(T) = isbitstype(T) && T <: Real`
+(`Float32`/`Float16`/`ForwardDiff.Dual` route to `:frontal`; complex/BigFloat fall to the
+generic `:column`). Found + fixed one real Float64 hardcoding: `QRStats.dropped_norm =
+Float64(sqrt(dropped_sq))` (a rank diagnostic, off the differentiable path) broke Duals
+because `Float64(::ForwardDiff.Dual)` is deliberately undefined — replaced with
+`_stat_f64` (base `Float64(::Real)`) plus a weak-dep `ext/PureSparseForwardDiffExt.jl`
+supplying the Dual primal, so `src` keeps NO ForwardDiff dependency (trim-safe: the
+extension is never in the `--trim` path; base `_stat_f64` is a plain `Float64` cast).
+Verified: the CLAUDE.md req-3 headline — a least-squares solve differentiated THROUGH the
+frontal QR (`ForwardDiff.derivative`) matches a central finite difference (rtol 1e-4);
+plus Float32/Float16 `RᵀR = AᵀA` at precision-appropriate tolerance; new test item
+"P2: generic over real isbits T", 12/12. ForwardDiff added as a TEST dep + a weakdep
+(UUID from the resolver, not guessed). ComplexF64 (task #54) and BigFloat (task #55) are
+filed follow-ups, both out of the AD scope. **This closes the last substantive M5
+engineering gap** — only the §10 closeout-checklist verification remains before M5 is a
+fully-stamped milestone.
+
 **2026-07-16 (7000×4000 perf autopsy — the tie with faer is the honest ceiling, not a
 gap we can close from the PureSparse side).** Chased where the ~6.5s goes after the
 flagship re-measure showed parity with faer (not the withdrawn 2-6×). Findings, all

@@ -818,17 +818,27 @@ per PureBLAS methodology. Migration follow-up (PureBLAS-side, non-blocking for M
 re-point `geqrf!`'s inline update and `svd.jl`'s `_apply_reflectors_left!` at the
 extracted kernels to avoid triplicated T-recurrences.
 
-### A7.3 P2 — generic-`T` unblocked QR
+### A7.3 P2 — generic-`T` unblocked QR — LANDED 2026-07-16 (real isbits `T`)
 
-`qr_unblocked!(A::AbstractMatrix{T}, tau::AbstractVector{T}) where {T<:Real}` —
-generic scalar path (potrf!-precedent in the same file family; `cabi_lapack.jl:14`
-documents today's Float64-only status). Blocked generic falls out if `gemm!`/`trmm!`/
-`syrk!` generic paths hold up — their signatures are `AbstractMatrix`-generic
-(verified: `gemm.jl:2063`, `level3.jl:1004/2741`) but **generic-`T` correctness/perf
-through these exact call shapes must be verified at P2 implementation time, not
-assumed here.** Until P2 lands, non-Float64 `qr` routes to `:column` (§A5.6), which
-is generic today — so P2 gates only req-3 uniformity of the *frontal* path, not M5b's
-Float64 gate.
+**Resolution: no new kernel was needed.** By P2 implementation time PureBLAS's `gemm!`
+already dispatched a generic AD-traceable triple-loop for non-BLAS `T` (`gemm.jl`:
+"complex / Dual / any other `T<:Number` … take the generic triple-loop, correct +
+AD-traceable"), and `wy_t!`/`wy_apply!` are `AbstractMatrix{T}`-generic and call it. So
+the frontal numeric loop + PureBLAS kernels are *already* generic; P2 reduced to
+relaxing the routing gate. Implemented as `_frontal_capable(T) = isbitstype(T) && T<:Real`
+(`src/qr/numeric.jl`): `Float32`/`Float16`/`ForwardDiff.Dual` route to `:frontal`,
+verified correct — including the req-3 headline, a least-squares solve differentiated
+*through* the frontal factorization matching finite differences
+(`test/qr_frontal_numeric_tests.jl`, "P2: generic over real isbits T"). One Float64
+hardcoding (`QRStats.dropped_norm`, a rank diagnostic — off the differentiable path)
+blocked `ForwardDiff.Dual` (`Float64(::Dual)` is deliberately undefined); resolved with
+`_stat_f64` + a weak-dep `ext/PureSparseForwardDiffExt.jl` so `src` keeps no ForwardDiff
+dependency.
+
+Out of P2 scope (filed follow-ups): **`ComplexF64`** needs conjugate-transpose Householder
+(the frontal path's real reflectors give a `BoundsError`/wrong result) and **`BigFloat`**
+is non-isbits so the front's pointer-based dense storage can't hold it (segfaults) — both
+still route to `:column`, which stays the generic fallback.
 
 ### A7.4 Explicitly out of P-scope
 

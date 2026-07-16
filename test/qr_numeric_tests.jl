@@ -307,10 +307,14 @@ end
     Fauto_dense = PureSparse.qr(Adense; ordering = PureSparse.NaturalOrdering(), method = :auto)
     @test Fauto_dense isa PureSparse.QRFrontFactor{Float64}
 
-    # non-Float64 T + method=:frontal silently falls back to :column (P2 not yet landed)
+    # P2 (§A7.3, landed): real isbits T (Float32/Float16/AD-Dual) now ROUTE to :frontal
+    # (was a :column fallback before P2); non-capable T (complex, BigFloat) still fall to
+    # :column — the `_frontal_capable` predicate itself is unit-tested in the frontal
+    # "P2: generic over real isbits T" item.
     Af32 = SparseMatrixCSC{Float32}(A)
-    Ffallback = PureSparse.qr(Af32; ordering = PureSparse.NaturalOrdering(), method = :frontal)
-    @test Ffallback isa PureSparse.QRFactor{Float32}
+    Ffront32 = PureSparse.qr(Af32; ordering = PureSparse.NaturalOrdering(), method = :frontal)
+    @test Ffront32 isa PureSparse.QRFrontFactor{Float32}
+    @test !PureSparse._frontal_capable(ComplexF64) && !PureSparse._frontal_capable(BigFloat)
 
     @test_throws ArgumentError PureSparse.qr(A; ordering = PureSparse.NaturalOrdering(), method = :bogus)
 
