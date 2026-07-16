@@ -143,7 +143,8 @@ to compare against the fundamental (3-condition) partition.
 """
 function symbolic_qr_frontal(sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T,Ti};
         fundamental::Bool = false, amalg_cols::NTuple{3,Int} = AMALG_COLS,
-        amalg_zmax::NTuple{3,Float64} = AMALG_ZMAX) where {T,Ti<:Integer}
+        amalg_zmax::NTuple{3,Float64} = AMALG_ZMAX,
+        nb_override::Union{Nothing,Int} = nothing) where {T,Ti<:Integer}
     sym.n1 == 0 || throw(ArgumentError("symbolic_qr_frontal: sym.n1 = $(sym.n1) > 0 — the frontal path factorizes the non-singleton block only"))
     m, n = size(A)
     (m == sym.m && n == sym.n) || throw(DimensionMismatch("symbolic_qr_frontal: size(A) = ($m,$n), expected ($(sym.m),$(sym.n))"))
@@ -211,7 +212,14 @@ function symbolic_qr_frontal(sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T,Ti};
     # real OOB, not a mere over/under-allocation. `min(mmax_f, n_f)` per front bounds the
     # number of eliminations (= Σ pcount over that front's panels); with each pcount ≤ nb,
     # Σ pcount² ≤ nb · Σ pcount ≤ nb · min(mmax_f, n_f), so this budget is exactly right.
-    nb_global = max_front_cols == 0 ? 1 : qr_block_size(max_front_rows, max_front_cols)
+    # `nb_override` (default nothing) forces the panel block size, for block-size
+    # calibration sweeps on large fronts (the qr_block_size default is a general
+    # PureBLAS heuristic; wider panels raise the trailing-update gemm's K-dimension /
+    # arithmetic intensity, which the 7000×4000 profile showed to be the ceiling — see
+    # ROADMAP). Clamped ≥ 1; nothing → the qr_block_size default, bit-identical to prior.
+    nb_global = isnothing(nb_override) ?
+        (max_front_cols == 0 ? 1 : qr_block_size(max_front_rows, max_front_cols)) :
+        max(nb_override, 1)
     @inbounds for f in 1:nfront
         n_f = Int(fcolptr[f + 1] - fcolptr[f])
         ftauptr[f + 1] = ftauptr[f] + Ti(nb_global * min(Int(fmmax[f]), n_f))

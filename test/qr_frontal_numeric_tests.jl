@@ -185,4 +185,15 @@ end
     PureSparse.qr!(F, A)   # warm refactor at nb==16 must at least stay in-bounds
     Rw = dense_R_frontal(F)
     @test maximum(abs.(Rw' * Rw .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
+
+    # front_block_size override (block-size calibration knob, ROADMAP 2026-07-16):
+    # forcing a NON-default panel width must stay correct AND size ws.Tm / the ftau
+    # slab consistently (the single-source-of-truth invariant the OOB fix established,
+    # now driven by the override instead of qr_block_size). Pick a value != default.
+    forced = F.fsym.nb == 48 ? 32 : 48
+    Ff = PureSparse.qr_frontal(A; ordering, front_block_size = forced)
+    @test Ff.fsym.nb == forced
+    @test size(Ff.ws.Tm, 1) == forced
+    Rf = dense_R_frontal(Ff)
+    @test maximum(abs.(Rf' * Rf .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
 end

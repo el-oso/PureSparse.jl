@@ -1017,6 +1017,36 @@ the closest it has been all session; `grid_ls_40x30`'s single-sample noise and a
 fresh multi-sample confirmation are the natural next steps before considering
 `ii_sparse_R` fully closed alongside `i_singleton`.
 
+**2026-07-16 (7000×4000 perf autopsy — the tie with faer is the honest ceiling, not a
+gap we can close from the PureSparse side).** Chased where the ~6.5s goes after the
+flagship re-measure showed parity with faer (not the withdrawn 2-6×). Findings, all
+measured:
+
+- **Ordering is NOT the gap.** PS/SPQR nnz(R) ratio = 1.001 (1%) / 1.000 (10%) — our
+  COLAMD produces bit-competitive fill vs the SuiteSparse C reference (and faer, which
+  also uses COLAMD, confirmed by reading its qr.rs). No fill/ordering deficit exists;
+  the premise "faer's COLAMD is better" is false.
+- **Profile (Julia sampler, both densities identical):** ~97% of time is the numeric
+  factorization; ~93% is inside PureBLAS's `gemm` microkernel, reached entirely through
+  `wy_apply!` (the compact-WY trailing block update, `frontal_numeric.jl:281`). 0%
+  OpenBLAS leakage — PureBLAS genuinely is the kernel. Leaf self-time is the SIMD FMA
+  (`muladd`) in `_microkernel_db!`, with load/store ≈ 45% of FMA cost — the fingerprint
+  of skinny-K gemm (K = panel width), low arithmetic intensity.
+- **NB (panel width) sweep at 7000×4000** (added a `front_block_size` override to
+  `qr_frontal`/`symbolic_qr_frontal`, default `nothing` = qr_block_size, bit-identical):
+  GFlop/s is FLAT — 1%: {16:12.87, 24:12.80, **32:13.01**, 48:12.96, 64:12.96, 96:12.77};
+  10%: flat-to-declining, best at 16-32. `qr_block_size`'s default (32 for these fronts)
+  is already the optimum. Widening does nothing — ~13 GFlop/s is genuinely shape-limited
+  (skinny-K QR trailing updates can't reach square-gemm peak), which is exactly why faer
+  sits at the same rate.
+
+Conclusion: PureSparse matches faer's ordering AND per-flop throughput, and beats SPQR
+~30% per-flop, at this scale. The only remaining lever is the PureBLAS dense-gemm
+microkernel itself (owner pursuing separately as a PureBLAS task) — but even that is
+constrained by the skinny-K shape here, so upside is uncertain. The `front_block_size`
+knob is kept as the re-calibration hook for after any microkernel change (tested:
+`test/qr_frontal_numeric_tests.jl` block-size item, correctness at a forced non-default NB).
+
 **2026-07-16 (flagship 7000×4000 re-measured on the corrected factorization — the old
 "decisive win" was itself a bug artifact).** The prior flagship numbers (PS frontal
 2.3–6.5× faster than faer/SPQR) were withdrawn because they timed the broken blocked
