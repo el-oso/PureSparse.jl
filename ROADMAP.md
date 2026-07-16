@@ -881,6 +881,25 @@ frontal numeric loop, so removing it further is a fill-reduction problem
 (ordering quality), not a waste-removal one — the still-open lever 3 from the
 list above.
 
+Full 16-matrix gate re-run (galen, post-fix, `benchmark/qr_gate.jl`, cold
+median seconds, `benchmark/results/qr_gate_galen.json`) confirms the fix at
+the actual gate level, not just the diagnostic:
+
+```
+grid_ls_70x50  ii_sparse_R  own        5.495ms (PS frontal) vs 8.398ms SPQR  PASS
+grid_ls_70x50  ii_sparse_R  same-perm  4.396ms (PS frontal) vs 7.259ms SPQR  PASS
+```
+
+Both arms now PASS with real margin (PS frontal ~35-40% faster than SPQR),
+not a marginal/noise-level pass. `ii_sparse_R` stands at 5/6 — the remaining
+gap moved to `grid_ls_40x30` same-perm (PS frontal 1.674ms vs SPQR 1.509ms,
+~10% behind), a tight single-sample margin consistent with this stratum's
+established noise floor (`banded_ls`'s own earlier back-and-forth), not
+re-diagnosed this session. Overall gate: still 11/16 (`i_singleton` remains
+2/6, gated behind task #50's same-perm/singleton-peeling issue; `iii_flop_rich`
+remains 4/4, better than H4's "may lose" expectation). `grid_ls_70x50` is now
+solidly closed as an open item.
+
 **2026-07-16 (M1/M2, CLAUDE.md req 5): a real, previously-unverified zero-alloc gap
 found and fixed in `solve!` for `cholesky!`/`ldlt!` — not M5b, but landed via M5b's
 own StrictMode infrastructure being extended to the Cholesky/LDLT paths.** Added
