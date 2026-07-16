@@ -1,6 +1,7 @@
-# StrictMode zero-alloc guarantee for the warm-refactor paths CLAUDE.md req 5 already gates
-# at runtime: cholesky!/ldlt! (M1/M2, both via the shared solve!(::_PanelFactor,...)) and
-# qr!/solve! on the multifrontal (:frontal, M5b) factor. `@assert_noalloc` (StrictMode) is
+# StrictMode zero-alloc guarantee for every warm-refactor entry point CLAUDE.md req 5
+# already gates at runtime: cholesky!/ldlt! (M1/M2, both via the shared
+# solve!(::_PanelFactor,...)), and qr!/solve! on BOTH sparse-QR factor types — QRFactor
+# (M5a :column) and QRFrontFactor (M5b :frontal). `@assert_noalloc` (StrictMode) is
 # used here in EMPIRICAL mode (`static = false`), not the default static AllocCheck all-paths
 # proof — tried `static = true` (the default under analysis="full") first: it correctly proves
 # cholesky!'s call into PureBLAS's `trsm!` -> `_l3_apad` (workspace.jl), a lazily-grown-then-
@@ -97,9 +98,27 @@ println("Auditing PureSparse.ldlt!(::LDLFactor, ::SparseMatrixCSC)...")
 println("Auditing PureSparse.solve!(::Vector, ::LDLFactor, ::Vector)...")
 @assert_noalloc static = false PureSparse.solve!(xldlt, Fldlt, bldlt)
 
+# --- qr! / solve! (QRFactor, M5a :column) ---
+Aqr = sprand(rng, 60, 25, 0.15) + sparse(1:25, 1:25, 1.0, 60, 25)
+ordering = PureSparse.COLAMDOrdering()
+# singletons=false: qr! (refactor) rejects a factor built WITH singleton pre-elimination
+# (design_qr.md §2.3 — a singleton set chosen for A's values is invalid for a refactor's
+# new values), same requirement as the existing @allocated==0 test for this path.
+Fcol = PureSparse.qr(Aqr; ordering, singletons = false)
+Aqr2 = SparseMatrixCSC(Aqr.m, Aqr.n, Aqr.colptr, Aqr.rowval, Aqr.nzval .* (1 .+ 0.01 .* randn(rng, nnz(Aqr))))
+bqr = randn(rng, Aqr.m)
+xqr = zeros(Aqr.n)
+PureSparse.qr!(Fcol, Aqr2)   # warm up
+PureSparse.solve!(xqr, Fcol, bqr)
+
+println("Auditing PureSparse.qr!(::QRFactor, ::SparseMatrixCSC)...")
+@assert_noalloc static = false PureSparse.qr!(Fcol, Aqr2)
+
+println("Auditing PureSparse.solve!(::Vector, ::QRFactor, ::Vector)...")
+@assert_noalloc static = false PureSparse.solve!(xqr, Fcol, bqr)
+
 # --- qr! / solve! (QRFrontFactor, M5b multifrontal) ---
 A = sprand(rng, 60, 25, 0.15) + sparse(1:25, 1:25, 1.0, 60, 25)
-ordering = PureSparse.COLAMDOrdering()
 F = PureSparse.qr_frontal(A; ordering)
 A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .* (1 .+ 0.01 .* randn(rng, nnz(A))))
 b = randn(rng, A.m)
@@ -113,4 +132,4 @@ println("Auditing PureSparse.qr!(::QRFrontFactor, ::SparseMatrixCSC)...")
 println("Auditing PureSparse.solve!(::Vector, ::QRFrontFactor, ::Vector)...")
 @assert_noalloc static = false PureSparse.solve!(x, F, b)
 
-println("PASS: cholesky!/ldlt!/qr!(::QRFrontFactor) and their solve!s are all alloc-free in warmed steady state (StrictMode @assert_noalloc, empirical mode).")
+println("PASS: cholesky!/ldlt!/qr!(::QRFactor)/qr!(::QRFrontFactor) and their solve!s are all alloc-free in warmed steady state (StrictMode @assert_noalloc, empirical mode).")
