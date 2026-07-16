@@ -119,10 +119,10 @@ both [faer](@cite) and SuiteSparseQR outright (galen, clock-locked, cold medians
 ![7000×4000 sparse QR comparison](assets/qr_faer_comparison.png)
 
 **Comparator fairness check (2026-07-15):** the [faer](@cite) side originally timed
-factorize *and* a least-squares solve together (`BlazingPorts.jl`'s shim needed a
+factorize *and* a least-squares solve together (the Rust FFI comparator shim needed a
 solve as a compiler dead-code-elimination guard, since faer's sparse `Qr` exposes no
 direct `.R()` accessor) — not a fair comparison against PureSparse's/SPQR's
-factorize-only wrappers. Fixed by adding `faer_sparse_qr_factor`
+factorize-only wrappers. Fixed by adding a factorize-only variant
 (`std::hint::black_box` as the guard instead) and re-measuring: the corrected numbers
 above are within ~0.7% of the pre-fix ones, confirming the solve was cheap relative
 to the factorization and the original margin wasn't a measurement artifact — but the
