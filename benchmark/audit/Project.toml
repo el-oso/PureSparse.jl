@@ -1,0 +1,21 @@
+# Minimal env for benchmark/audit/strictmode_audit.jl — isolated from test/Project.toml on
+# purpose: PureSparse's qr!/cholesky!/ldlt! call StrictMode's own runtime checks
+# (check_refactor_shape/check_finite, src/strict.jl) internally, so turning checks_enabled=true
+# on in the MAIN test env would contaminate every existing @allocated==0 zero-alloc gate there
+# (CLAUDE.md req 5's own explicit "StrictMode's own runtime checks may allocate and must not be
+# conflated with this gate" — design.md §9.1 D6). This env exists so @assert_noalloc's real
+# static AllocCheck proof can run with checks genuinely on, without touching that gate.
+
+[deps]
+AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+PureSparse = "ec4be3f8-c56a-4afe-9cdb-3d99b644fbd7"
+StrictMode = "0e98b4f4-d0e6-42ac-af0a-707c24852f32"
+
+[sources]
+PureSparse = {path = "../.."}
+
+[preferences.StrictMode]
+analysis = "full"
+checks_enabled = true
+fail_mode = "error"

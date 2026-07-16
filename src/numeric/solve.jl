@@ -117,22 +117,75 @@ function _solve_D!(y::Matrix{T}, F::LDLFactor{T,Ti}) where {T,Ti<:Integer}
 end
 
 function _solve_L!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+    # `y` is `F.ws.rhs` on every internal `solve!` call (the actual hot path CLAUDE.md req 5
+    # gates) — `_solve_L_cached!` then uses the SAME pre-wrapped/preallocated buffers
+    # `panels`/`c` already use elsewhere, zero allocation. `solve_L!` is also exported
+    # directly (split-solve consumers, e.g. iterative refinement) and CAN be called with an
+    # arbitrary caller-owned `y` — dispatching to `_solve_L_generic!` (the original fresh-
+    # wrap/fresh-alloc behavior) there keeps that path's correctness unchanged. Split into
+    # two functions rather than one with an inline branch: `view(ws.c,...)` (SubArray) vs
+    # `Matrix{T}(undef,...)` are different concrete types, so a per-call ternary between them
+    # would make the hot loop's `upd`/`yblk` Union-typed — a real type instability, not just
+    # style (`gemm!` would need dynamic dispatch on every call). Two type-stable functions
+    # avoid that entirely; the `===` check happens ONCE, outside the loop.
+    if y === F.ws.rhs
+        _solve_L_cached!(y, F)
+    else
+        _solve_L_generic!(y, F)
+    end
+    return y
+end
+
+function _solve_L_cached!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr
     rowind = sym.rowind
-    px = sym.px
-    x = F.x
+    ws = F.ws
 
-    GC.@preserve x y begin
+    GC.@preserve y begin
     @inbounds for s in 1:nsuper
         j0 = Int(super[s])
         j1 = Int(super[s + 1]) - 1
         nscol = j1 - j0 + 1
         rp0 = Int(rowind_ptr[s])
         nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = _panelview(x, Int(px[s]), nsrow, nscol)
+        panel = F.panels[s]
+        Ldiag = view(panel, 1:nscol, 1:nscol)
+        yblk = ws.rhs_blocks[s]
+        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
+
+        if nsrow > nscol
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+            nex = nsrow - nscol
+            upd = view(ws.c, 1:nex, 1:1)
+            gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
+            for a in 1:nex
+                ra = _row(rowind, rp0, nscol + a)
+                y[ra] += upd[a, 1]
+            end
+        end
+    end
+    end
+    return y
+end
+
+function _solve_L_generic!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+    sym = F.sym
+    nsuper = sym.nsuper
+    super = sym.super
+    rowind_ptr = sym.rowind_ptr
+    rowind = sym.rowind
+
+    GC.@preserve y begin
+    @inbounds for s in 1:nsuper
+        j0 = Int(super[s])
+        j1 = Int(super[s + 1]) - 1
+        nscol = j1 - j0 + 1
+        rp0 = Int(rowind_ptr[s])
+        nsrow = Int(rowind_ptr[s + 1]) - rp0
+        panel = F.panels[s]
         Ldiag = view(panel, 1:nscol, 1:nscol)
         yblk = _panelview(y, j0, nscol, 1)
         trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
@@ -190,22 +243,66 @@ function _solve_L!(y::Matrix{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
 end
 
 function _solve_Lt!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+    # See `_solve_L!`'s comment: same cached-vs-generic split, same reason (type-stable
+    # `yblk`/`gathered` in each branch, not a Union between SubArray and fresh Matrix).
+    if y === F.ws.rhs
+        _solve_Lt_cached!(y, F)
+    else
+        _solve_Lt_generic!(y, F)
+    end
+    return y
+end
+
+function _solve_Lt_cached!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr
     rowind = sym.rowind
-    px = sym.px
-    x = F.x
+    ws = F.ws
 
-    GC.@preserve x y begin
+    GC.@preserve y begin
     @inbounds for s in nsuper:-1:1
         j0 = Int(super[s])
         j1 = Int(super[s + 1]) - 1
         nscol = j1 - j0 + 1
         rp0 = Int(rowind_ptr[s])
         nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = _panelview(x, Int(px[s]), nsrow, nscol)
+        panel = F.panels[s]
+        Ldiag = view(panel, 1:nscol, 1:nscol)
+        yblk = ws.rhs_blocks[s]
+
+        if nsrow > nscol
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+            nex = nsrow - nscol
+            gathered = view(ws.c, 1:nex, 1:1)
+            for a in 1:nex
+                ra = _row(rowind, rp0, nscol + a)
+                gathered[a, 1] = y[ra]
+            end
+            gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
+        end
+        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
+    end
+    end
+    return y
+end
+
+function _solve_Lt_generic!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+    sym = F.sym
+    nsuper = sym.nsuper
+    super = sym.super
+    rowind_ptr = sym.rowind_ptr
+    rowind = sym.rowind
+
+    GC.@preserve y begin
+    @inbounds for s in nsuper:-1:1
+        j0 = Int(super[s])
+        j1 = Int(super[s + 1]) - 1
+        nscol = j1 - j0 + 1
+        rp0 = Int(rowind_ptr[s])
+        nsrow = Int(rowind_ptr[s + 1]) - rp0
+        panel = F.panels[s]
         Ldiag = view(panel, 1:nscol, 1:nscol)
         yblk = _panelview(y, j0, nscol, 1)
 

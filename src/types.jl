@@ -131,10 +131,25 @@ struct Workspace{T,Ti<:Integer}
     rhs::Vector{T}                # permuted-RHS scratch for solve!, length n — zero-alloc single-
                                    # vector solves (multi-RHS still allocates: nrhs is unbounded,
                                    # not knowable ahead of time)
+    rhs_blocks::Vector{Matrix{T}} # rhs_blocks[s] = unsafe_wrap(rhs @ super[s], nscol_s x 1), built
+                                   # ONCE — the `_solve_L!`/`_solve_Lt!` single-vector sweeps always
+                                   # call with `y === this Workspace's own rhs` (`solve!`'s top-level
+                                   # `y = F.ws.rhs`), never a caller-supplied array directly, so
+                                   # (unlike `F.panels` wrapping the VALUE array, which differs by
+                                   # factor) this can be cached exactly the same way: same technique,
+                                   # same lifetime argument (`rhs`'s identity never changes after
+                                   # this constructor runs, so the wraps never dangle).
 end
 
 function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
     mer = max(sym.max_extend_rows, 1)
+    rhs = Vector{T}(undef, sym.n)
+    rhs_blocks = Vector{Matrix{T}}(undef, sym.nsuper)
+    @inbounds for s in 1:sym.nsuper
+        j0 = Int(sym.super[s])
+        nscol = Int(sym.super[s + 1] - sym.super[s])
+        rhs_blocks[s] = unsafe_wrap(Array, pointer(rhs, j0), (nscol, 1))
+    end
     Workspace{T,Ti}(
         Matrix{T}(undef, mer, mer),
         Matrix{T}(undef, mer, mer),
@@ -144,7 +159,8 @@ function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
         zeros(Ti, sym.nsuper + 1),
         zeros(Ti, sym.nsuper),
         Vector{Ti}(undef, sym.nsuper),
-        Vector{T}(undef, sym.n),
+        rhs,
+        rhs_blocks,
     )
 end
 
