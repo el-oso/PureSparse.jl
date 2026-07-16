@@ -41,4 +41,15 @@ println("gpu_order + boundary consistent ✓")
 println("device-memory budget: total=", round(G.bytes.total/1e6, digits=1), " MB ",
         "(nzval=", round(G.bytes.nzval/1e6,digits=1), " boundbuf=", round(G.bytes.boundbuf/1e6,digits=1), ")")
 
-println("\nALL GPUSymbolic TESTS PASS")
+# 5. device assembly oracle (§4): scatter A.nzval into packed storage via amap, vs CPU
+@assert length(S.amap) == length(A.nzval) "amap length $(length(S.amap)) != nnz(A) $(length(A.nzval))"
+x_cpu = zeros(Float64, G.xlen)
+@inbounds for p in eachindex(A.nzval)
+    m = Int(S.amap[p]); m != 0 && (x_cpu[m] = A.nzval[p])
+end
+d_x = CUDA.zeros(Float64, G.xlen)
+ext.gpu_assemble!(d_x, CuArray(A.nzval), G.d_amap); CUDA.synchronize()
+@assert Array(d_x) == x_cpu "device assembly != CPU assembly"
+println("device assembly matches CPU (", count(!iszero, x_cpu), " nonzeros scattered) ✓")
+
+println("\nALL GPUSymbolic + ASSEMBLY TESTS PASS")

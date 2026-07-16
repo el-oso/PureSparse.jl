@@ -116,6 +116,8 @@ struct GPUSymbolic{Ti,VI}
     d_rowind_ptr::VI
     d_super::VI
     d_snode_of::VI
+    d_amap::VI                    # assembly map A.nzval-position -> x offset (0 = skip), §4/§9.A
+    xlen::Int                     # length of the packed factor storage x (= px[end]-1)
     bytes::NamedTuple             # §5.3 device-memory budget
 end
 
@@ -146,9 +148,41 @@ function gpu_symbolic(A::PureSparse.SparseArrays.SparseMatrixCSC{T,Ti};
     d_rowind_ptr = CuArray(cpu.rowind_ptr)
     d_super = CuArray(cpu.super)
     d_snode_of = CuArray(cpu.snode_of)
+    d_amap = CuArray(cpu.amap)
+    xlen = Int(cpu.px[cpu.nsuper + 1]) - 1        # packed factor storage length
     return GPUSymbolic{Ti,typeof(d_rowind)}(cpu, on_gpu, gpu_order, boundary,
                                             Float64(frontier_cutoff),
-                                            d_rowind, d_rowind_ptr, d_super, d_snode_of, bytes)
+                                            d_rowind, d_rowind_ptr, d_super, d_snode_of,
+                                            d_amap, xlen, bytes)
+end
+
+# ---------------------------------------------------------------------------------------
+# Device assembly (design_gpu.md §4): scatter A.nzval into the packed factor storage `dx` via
+# `amap` (amap[p] = destination offset, 0 = skip). One thread per nonzero — the parallel form
+# of llt.jl's assembly loop (`fill!(x,0); x[amap[p]] = A.nzval[p]`). `dx` must be pre-zeroed
+# (structural-fill positions not touched by amap stay 0). The A-value H2D recurs per refactor
+# (§7); the amap upload is one-time (§9.A "0 pattern H2D").
+@kernel unsafe_indices = true function _assemble!(dx, @Const(nzval), @Const(amap), nnz)
+    p = @index(Global)
+    if p ≤ nnz
+        @inbounds begin
+            m = amap[p]
+            (m != 0) && (dx[m] = nzval[p])
+        end
+    end
+end
+
+"""
+    gpu_assemble!(dx, nzval, amap) -> dx
+
+`dx .= 0; dx[amap[p]] = nzval[p]` for `amap[p] ≠ 0`, on device (design_gpu.md §4).
+"""
+function gpu_assemble!(dx, nzval, amap)
+    fill!(dx, zero(eltype(dx)))
+    backend = get_backend(dx)
+    n = length(nzval)
+    _assemble!(backend, 256)(dx, nzval, amap, n; ndrange = cld(n, 256) * 256)
+    return dx
 end
 
 end # module
