@@ -1017,6 +1017,38 @@ the closest it has been all session; `grid_ls_40x30`'s single-sample noise and a
 fresh multi-sample confirmation are the natural next steps before considering
 `ii_sparse_R` fully closed alongside `i_singleton`.
 
+**2026-07-16 (resolution): both frontal bugs FIXED + verified; first trustworthy M5
+gate under D13 = 13/16.** Bug 1 (ftau OOB) fixed via single-source `QRFrontSymbolic.nb`
+(commit 0364f4b). Bug 2 (blocked path dropped columns past NB per split trigger — one
+panel emitted per trigger instead of ⌈width/NB⌉) root-caused + drafted by a Fable agent,
+INDEPENDENTLY verified here (my own diagnostic, `--check-bounds=yes`: blocked LSQ residual
+60×60 2.8e-3→5.9e-18, 100×80→2.0e-18, 400×384→1.1e-18, matching the `:column` oracle;
+full ranks restored; suite 221669/221669), committed da4a2c3. Regression test's
+correctness checks flipped `@test_broken`→`@test`. Then re-ran the ACTUAL gate on the
+corrected factorization under D13 (neuromancer, clock-locked,
+`benchmark/results/qr_gate_neuromancer.json`):
+
+```
+                          PS front warm    SPQR cold    gate
+banded_ls own             0.345ms          1.602ms      PASS (4.6x)
+banded_ls same-perm       0.344ms          0.919ms      PASS
+grid_ls_40x30 own/sp      1.31ms           2.87/2.32ms  PASS
+grid_ls_70x50 own/sp      4.98/4.97ms      10.72/7.61ms PASS (2.2x)
+dense_arrow own/sp        2.26/1.99ms      4.49/3.72ms  PASS
+random_tall own/sp        8.70/8.78ms      16.94/14.84  PASS
+i_singleton               3/6 (holdout)
+```
+
+`ii_sparse_R` 6/6, `iii_flop_rich` 4/4 — both SOLID and DETERMINISTIC (warm path is
+zero-alloc, so the grid_ls_70x50 GC-bimodality that plagued the cold-vs-cold gate is
+gone by construction — D13's second payoff). Overall 13/16; the 3 failures are all
+`i_singleton` (lp_slack sub-0.25ms matrices where SPQR's C per-call overhead wins — a
+separate, known issue, not a frontal defect). M5 still open on i_singleton, but for the
+first time held open by a REAL, correctly-measured number. Public M5 gate artifact
+(claude.ai/code/artifact/1e1c9658-...) rewritten around this correctness story + the
+first trustworthy numbers; prior 7000×4000 flagship withdrawn (it too timed the broken
+path — re-measurement pending on a 2nd clock-locked host).
+
 **2026-07-16 (CRITICAL, changes the whole M5 picture): the M5b BLOCKED frontal path
 produces NUMERICALLY WRONG results, and every M5 gate number this session was timing
 a broken factorization. Two distinct bugs found, one fixed, one open + delegated.**
