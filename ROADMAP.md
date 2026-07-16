@@ -1017,6 +1017,28 @@ the closest it has been all session; `grid_ls_40x30`'s single-sample noise and a
 fresh multi-sample confirmation are the natural next steps before considering
 `ii_sparse_R` fully closed alongside `i_singleton`.
 
+**2026-07-16 (flagship 7000×4000 re-measured on the corrected factorization — the old
+"decisive win" was itself a bug artifact).** The prior flagship numbers (PS frontal
+2.3–6.5× faster than faer/SPQR) were withdrawn because they timed the broken blocked
+path — which dropped ~2/3 of columns, so it clocked a fraction of the real work.
+Re-measured on neuromancer (clock-locked) after verifying correctness at scale first
+(frontal LSQ residual 1.1e-19 @1% / 3.7e-20 @10%, full rank 4000/4000 — the discipline
+that was missing the first time). Honest numbers (cold factorize-only, faer via the
+factorize-only `faer_sparse_qr_factor` shim, 10/8/10 samples, median):
+
+```
+density   PS frontal   faer          SPQR
+1%        6466ms       6618 (1.02x)  8253 (1.28x)
+10%       6692ms       6929 (1.04x)  8985 (1.34x)
+```
+
+So at 7000×4000 PureSparse's multifrontal QR is essentially TIED with faer (a mature
+Rust lib) and ~30% faster than SuiteSparseQR — a genuine, respectable pure-Julia
+result, but NOT the inflated 2–6× the broken path fabricated. A clean bookend to the
+correctness thesis: the bug made even the flagship look better than reality. Results:
+`benchmark/results/faer_vs_puresparse_7000x4000_neuromancer.json`. Public artifact's
+flagship section restored with these numbers.
+
 **2026-07-16 (M5 GATE MET — 16/16, both clock-locked hosts): warm singleton refactor
 closes `i_singleton`; the M5 closeout wall-time gate PASSES.** Extended `qr!` to
 warm-refactor a singleton-composed factor (`sym.n1>0`) — the last thing blocking the
