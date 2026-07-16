@@ -745,9 +745,74 @@ this pass). `iii_flop_rich` still a clean 4/4.
 worst stratum (0/6 for most of this session) to nearly resolved (5/6, remaining
 gap noise-level) purely from this session's fixes (panel-split trigger, scalar
 fallback, symbolic `sort!` elimination) without any matrix-specific tuning.**
-Next session: diagnose `grid_ls_70x50`'s GC-pause bimodality (the one concrete
-unresolved lead), then a clean multi-run gate confirmation before considering
-`ii_sparse_R` genuinely closed.
+
+**2026-07-16 (later still): `grid_ls_70x50`'s GC-pause bimodality diagnosed —
+CONFIRMED (per-call `Base.gc_num()`/`Base.GC_Diff` deltas, not inferred), traced
+to two allocation sites, root cause is genuine COLAMD-driven elimination fill for
+a 2D-grid matrix under a greedy (non-nested-dissection) ordering, not implementation
+waste — not fixed this session, real levers identified for next time.**
+
+Direct per-call GC instrumentation (500 cold `qr(A; method=:frontal)` calls,
+`Base.gc_num()` before/after each, `Base.GC_Diff` for the delta) confirms the
+bimodality IS GC-pause-driven, unambiguously:
+
+```
+fast calls (293/500): mean time=5.824ms  gc_time=0.0015ms  pause_count=0.00
+slow calls (178/500): mean time=30.661ms gc_time=22.6261ms pause_count=0.57
+                                                            full_sweep=0.24
+allocd per call: IDENTICAL either way, mean=15676.8 KiB (min=max=~15.68 MiB)
+```
+
+The critical fact: allocation VOLUME is constant regardless of fast/slow — this
+isn't "slow calls allocate more," it's purely whether Julia's generational GC
+happens to trigger (and whether it's a cheap minor collection or an expensive
+full sweep, which ~24% of slow calls hit) during that particular call. A GC
+pause alone averages 22.6ms — nearly 4× the ~5.8ms the factorization itself
+takes.
+
+`Profile.Allocs` on a single cold call traced the ~15.3 MiB total to two
+dominant sites (69% of the total between them):
+- `QRFrontFactor{T,Ti}(fsym)` construction (`frontal.jl:130`, the `fval` dense
+  front-value array specifically) — 5.75 MiB, driven by `fsym.nnzVF` (dense
+  front storage, 420725 entries for this matrix).
+- `qr_row_structure`'s `vrowind` array (`symbolic.jl:243`, one single 4.87 MiB
+  allocation) — driven by `sym.nnzV` (623736 entries).
+
+Checked whether this is fixable waste or genuine fill: `nnzV/nnz(A) = 45.3×` —
+a large fill ratio, but this is the well-known signature of a 2D-grid-shaped
+matrix under a greedy minimum-degree-family ordering (COLAMD) rather than
+nested dissection, not an implementation defect — SPQR defaults to the same
+ordering family, so it likely carries comparable internal fill/allocation
+volume for this exact matrix. The actual difference isn't "PureSparse allocates
+more than it should," it's architectural: SPQR is a C library (malloc/free, no
+garbage collector, so it never pays an unpredictable stop-the-world tax no
+matter how much scratch memory it touches), while PureSparse runs on Julia's
+generational GC, which intermittently pays a large, unpredictable pause for
+processing that same allocation volume. This is a genuine Julia-vs-C runtime
+tradeoff for this specific workload shape (many mid-size allocations on a cold,
+one-shot path), not a code bug to patch away.
+
+**Not attempted this session** (real, testable, NOT YET TRIED levers for next
+time, roughly in order of how contained/low-risk they are):
+1. GC tuning (no code change): does `--heap-size-hint` or a periodic explicit
+   `GC.gc(false)` (cheap minor collection, preempting the rarer expensive full
+   sweeps) change the pause-frequency/severity distribution? Purely a runtime
+   flag/measurement question, testable without touching source.
+2. Whether the rewritten `qr_row_structure` (this session's `sort!`-elimination
+   fix) still has any avoidable slack in `vrowind`'s sizing/construction beyond
+   the mathematically-necessary V-pattern — not re-audited since that rewrite
+   landed.
+3. Whether a different ordering (`AMDOrdering` on `AᵀA` instead of the default
+   `COLAMDOrdering`) meaningfully reduces fill for 2D-grid-shaped matrices
+   specifically — would need a careful, isolated evaluation (this project's own
+   ordering-quality-vs-CHOLMOD gate exists for Cholesky, no QR-specific
+   equivalent has been run for THIS comparison) since changing defaults broadly
+   risks regressing other matrix shapes.
+
+Next session: try lever 1 above (GC tuning, no code change, lowest risk) on
+`grid_ls_70x50` and re-measure; if that doesn't move it, levers 2-3. Then a
+clean multi-run gate confirmation before considering `ii_sparse_R` genuinely
+closed.
 
 **2026-07-15: user flagged a suspected apples-to-oranges bug in the faer comparator —
 real, but not the mechanism suspected, and the measured margin holds.** User's
