@@ -1017,6 +1017,45 @@ the closest it has been all session; `grid_ls_40x30`'s single-sample noise and a
 fresh multi-sample confirmation are the natural next steps before considering
 `ii_sparse_R` fully closed alongside `i_singleton`.
 
+**2026-07-16 (M5 GATE MET — 16/16, both clock-locked hosts): warm singleton refactor
+closes `i_singleton`; the M5 closeout wall-time gate PASSES.** Extended `qr!` to
+warm-refactor a singleton-composed factor (`sym.n1>0`) — the last thing blocking the
+gate. D13 gates the warm path, but `qr!` had rejected singleton factors, forcing the
+singleton-dominated stratum onto a `singletons=false` warm path (full work on
+trivially-peelable columns) → `i_singleton` stuck at 3/6. Key realization: the peel
+set's STRUCTURAL half ("exactly one live nonzero") is pattern-only, hence
+refactor-invariant (a refactor shares the pattern by contract); only the magnitude
+test is value-dependent. So warm singleton refactor is safe: reuse the fixed peel set,
+refresh A22's values zero-alloc, re-harvest R11/R12 with a per-pivot magnitude guard
+(a numerically-dead pivot folds into the existing `n_dead`/`dropped_norm` accounting).
+design_qr.md §2.3's one-shot-only restriction lifted (owner-authorized). Implemented by
+a Fable agent (4 pre-alloc `QRFactor` fields at compose time, unified
+`_qr_block_numeric!`), INDEPENDENTLY verified here: warm LSQ residual ~1e-20 matching
+the `:column` oracle (lp_slack_n300x60/n800x150, own + same-perm), rank exact,
+`@allocated qr!`==0, `--check-bounds=yes` clean; the sweep test's oracle change
+(cold-composed vs cold-nosingletons) confirmed legitimate — the two cold paths already
+disagree on 5/294 `tol=0` degenerate matrices ON MASTER, a pre-existing accounting
+difference unrelated to warm reuse. Full suite 222217/222217.
+
+**Gate result (D13, warm PS vs SPQR cold), confirmed on BOTH clock-locked hosts:**
+
+```
+                neuromancer   galen
+i_singleton     6/6           6/6      (was 3/6 — warm singletons closed it)
+ii_sparse_R     6/6           6/6
+iii_flop_rich   4/4           4/4
+OVERALL         16/16 PASS    16/16 PASS
+```
+
+`lp_slack_n800x150` warm `:column` 0.662ms → 0.018ms (10× once warm singletons are on);
+vs SPQR cold 0.18ms. Strata ii/iii are n1==0, structurally unchanged from the 13/16 run.
+Two-host clock-locked confirmation = the project's own bar for a gate verdict
+([[reference_benchmark_machines]]). **M5's wall-time closeout gate (design_qr.md §9.3,
+CLAUDE.md req 2) is MET.** The public artifact (claude.ai/code/artifact/1e1c9658-...)
+updated to 16/16. Remaining before calling the whole M5 MILESTONE closed (vs the gate):
+the still-withdrawn 7000×4000 flagship needs re-measurement on the corrected path, and a
+final design §10 checklist pass — but the non-negotiable perf gate itself is now green.
+
 **2026-07-16 (resolution): both frontal bugs FIXED + verified; first trustworthy M5
 gate under D13 = 13/16.** Bug 1 (ftau OOB) fixed via single-source `QRFrontSymbolic.nb`
 (commit 0364f4b). Bug 2 (blocked path dropped columns past NB per split trigger — one
