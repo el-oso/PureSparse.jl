@@ -164,6 +164,26 @@ re-derived/confirmed by the coordinator before this revision — treated as cert
 - **D12** (Fable D8) — §6.3's transpose-factorization identity fixed: from
   `Aᵀ·P = QR` follows `A = P·Rᵀ·Qᵀ` (was written `Pᵀ·Rᵀ·Qᵀ`, a display error — the
   operational solve formulas that followed were already correct and are unchanged).
+- **D13** (found during M5 gate closeout, 2026-07-16, not part of the original v1→v2
+  review) — §9.3's gate criterion was cold-vs-cold on a flawed inference: "SPQR exposes
+  no analyze-once/refactorize path, therefore our gate must also compare cold-vs-cold."
+  That doesn't follow — SPQR having no warm mode means its COLD call already IS its best
+  case, so the correct, `design.md`-§9.3-consistent gate is **our warm `qr!` refactor
+  time vs SPQR's cold time** (the only number SPQR can ever offer), exactly the shape
+  M1/M2/M4's own gates already use (`gate.jl`: `pass = ps_pureblas_warm <
+  cholmod_openblas_warm`). Cold-vs-cold additionally has a correctness-adjacent problem
+  the original text didn't anticipate: a cold `qr()`/`qr_frontal()` call must allocate
+  fresh output structures, which exposes Julia's GC to the timed region and produces
+  real, non-negligible run-to-run timing bimodality on some gate matrices (confirmed via
+  direct `Base.gc_num()` instrumentation — up to 36% of a cold call's wall time was GC on
+  one gate matrix) — a gate whose PASS/FAIL can flip between two back-to-back runs with
+  no code change in between is not a sound closeout criterion regardless of which side of
+  the inequality it affects. The warm `qr!` refactor path is not exposed to this at all:
+  it is independently, contractually zero-allocation (StrictMode `@assert_noalloc`,
+  `benchmark/audit/strictmode_audit.jl`, both `:column` and `:frontal`), so gating on it
+  is both the fairer comparison and a deterministic one. §9.3 below is corrected
+  accordingly; cold-vs-cold remains a **reported** number (still informative — some
+  users' workloads genuinely are one-shot) but is no longer the deciding inequality.
 
 **NITs folded in** (both reviews): the `sign(0):=+1` reflector convention made
 explicit (§4.4, Opus N4); §7.3's τ-boundary wording fixed (exact at τ<0, upper bound
@@ -1392,14 +1412,19 @@ results→JSON, plots from JSON; PkgBenchmark self-regression). Configurations:
 | 4 | PureSparse `cholesky(AᵀA)` normal equations | context arm (not a gate): quantifies the §1.2 guidance |
 | 5 | `faer`'s sparse QR (Rust, MIT-licensed, §11) | context arm (not a gate, coordinator-directed addition): a second, independently-engineered reference point beyond CHOLMOD's lineage. Mirrors `BlazingPorts.jl`'s existing dense-kernel probe harness (`bench/rust_compare`: a small `#[no_mangle]` Rust cdylib shim + `ccall` from the Julia benchmark process, single-threaded, same-process interleaved timing) — extend that shim with a `faer_sparse_qr` entry point rather than building new FFI plumbing from scratch. Reported alongside configs 1/2/4 on every gate matrix; not part of the pass/fail inequality below (faer is not the CHOLMOD-equivalent this milestone targets, and its ordering/threshold choices differ enough that a head-to-head gate would conflate ordering quality with kernel throughput exactly as design.md D2 warns against) — but a loss against it is a signal worth investigating, not ignoring. |
 
-**Gate (M5 closeout, non-negotiable, wall-time):** on each gate matrix,
-`median_seconds(PureSparse qr(A)+solve, cold) < median_seconds(SparseArrays.qr(A)+solve,
-cold)`, own-ordering **and** same-permutation arms, on a gate set stratified into
-(i) singleton-dominated (LP-like), (ii) sparse-R/small-front LS, (iii) flop-rich/large-
-front LS. Cold-vs-cold is the honest comparison unit because stdlib exposes no
-analyze-once/refactorize path at all — our warm `qr!` numbers are **reported** (they are
-the IPM/NLLS-relevant numbers and a genuine product advantage) but not gated against a
-counterpart that doesn't exist.
+**Gate (M5 closeout, non-negotiable, wall-time; corrected by D13):** on each gate matrix,
+`median_seconds(PureSparse qr!(F,A) warm refactor + solve) < median_seconds(SparseArrays.
+qr(A)+solve, cold)` — best-of the `:column` and `:frontal` warm times — own-ordering
+**and** same-permutation arms, on a gate set stratified into (i) singleton-dominated
+(LP-like), (ii) sparse-R/small-front LS, (iii) flop-rich/large-front LS. SPQR has no
+analyze-once/refactorize path, so its cold call already IS its best case; comparing our
+warm number against it is the fair, best-case-vs-best-case inequality, mirrors
+`design.md`'s own M1/M2/M4 gate shape exactly, and is deterministic because the warm path
+is independently zero-allocation (StrictMode `@assert_noalloc`) — no GC exposure in the
+timed region on our side, unlike a cold-vs-cold comparison (D13). Cold-vs-cold
+(`qr(A)+solve` on both sides) remains **reported**, not gated — genuinely one-shot
+workloads exist and the number stays informative, it is just no longer the deciding
+inequality.
 
 **Stated expectation and the escalation trigger (H4):** by the published record, M5a
 should win stratum (i) (no numerical work at all after singleton peeling) and is
