@@ -476,10 +476,16 @@ set."*
 per-supernode from the **pre-perturbation** pivot into a stats array reduced once (not derived
 from the regularized `d_dvec`); the zero-pivot test is redefined order-free (per-supernode-local
 `dmax`, delta-anchored) since the CPU path's running-global `dmax` is a sequential dependency
-concurrency can't reproduce. `n_perturbed`/`max_perturbation` are tracked the same way; `ascale`
-is a host-side O(nnz) pass during A-staging."* This is a user-visible numerical-semantics change
-(the observed inertia and the regularization decisions can differ in tie cases from the CPU
-path's global-`dmax` ordering) — hence an explicit amendment, not a silent reinterpretation.
+concurrency can't reproduce. `n_perturbed`/`max_perturbation` tracked the same way; `ascale` is a
+host-side O(nnz) pass during A-staging (using the **`amap≠0` filter**, matching `ldlt.jl`'s
+assembly-loop max, not raw `A.nzval`)."* **Scope of the change (v3 focused review — corrected):**
+the order-free test feeds **only the inertia counts** — regularization (`delta`/`target`/`newd`)
+is provably `dmax`-independent, so the **factor L and D are bit-identical** and §10.1's normwise
+oracle is fully preserved. Only `n_pos`/`n_neg`/`n_zero` can diverge, and only in a narrow band
+(`ζ·max(dmaxₗₒ𝒸ₐₗ,δ) < ad_j ≤ ζ·dmax_global`) that opens on heterogeneous-scale KKT blocks. Hence
+the **inertia-match oracle (§10) must run the CPU reference with the same order-free local-`dmax`
+test** (or tolerance the band) — a stock-`ldlt!` inertia comparison would spuriously fail there.
+A user-visible *inertia-report* change (not a factor change), so an explicit amendment.
 
 ## §10 Correctness + invariants
 

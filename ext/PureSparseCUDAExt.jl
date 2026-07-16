@@ -16,6 +16,9 @@ using KernelAbstractions
 using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend
 using Base.Cartesian: @nexprs
 
+# Host-side frontier partition (design_gpu.md §5.2) — pure, no CUDA dep, CPU-unit-testable.
+include("frontier.jl")
+
 # ---------------------------------------------------------------------------------------
 # Pure device GEMM: C = α·A·Bᵀ + β·C   (design_gpu.md §3/§4.1 trailing update)
 #   A is M×K, B is N×K, C is M×N, all column-major (device arrays). The supernode
