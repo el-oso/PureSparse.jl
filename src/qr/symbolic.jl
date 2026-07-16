@@ -183,7 +183,8 @@ first element is the minimum (= `pivotslot[k]`), and each child's survivor subli
 by the same induction. The `vcount` recurrence guarantees the pieces fill the segment
 exactly.
 """
-function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti}) where {Ti<:Integer}
+function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti};
+        build_v::Bool = true) where {Ti<:Integer}
     a = zeros(Ti, n)
     @inbounds for r in 1:m
         k = leftcol[r]
@@ -225,6 +226,21 @@ function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti
         vptr[k + 1] = vptr[k] + vcount[k]
     end
     nnzV = Int(vptr[n + 1] - 1)
+
+    # `build_v=false`: the caller only needs `rperm`/`riperm`/`mb` (row-space physical
+    # numbering) plus `vcount`/`vptr`/`nnzV` (cheap, O(n), feed `flops`/`max_vcol` in
+    # `symbolic_qr` below) — NOT the actual V-pattern contents. This is the M5b
+    # (`:frontal`) path's own case: confirmed by grep across src/qr/frontal*.jl that
+    # NOTHING there ever reads `sym.vrowind`/`sym.pivotslot`/`sym.vptr` (the frontal
+    # numeric loop builds its own front-local V storage via `symbolic_qr_frontal`'s
+    # `fsym.nnzVF`, entirely independent of this). `vrowind` is the single largest
+    # allocation in the whole cold `qr_frontal(A)` call on some matrices (measured:
+    # 4.87 MiB / 45x the input's own nnz on `grid_ls_70x50`, `Profile.Allocs`) — pure
+    # waste for a caller that never reads it. Skipping it removes both that
+    # allocation AND the O(nnzV) child-merge loop that fills it.
+    if !build_v
+        return rperm, riperm, mb, vptr, Ti[], Ti[], vcount
+    end
 
     # Child lists via the same head/next linked-list idiom `postorder` uses; head
     # insertion in descending k yields per-parent lists in ASCENDING child order —
@@ -275,8 +291,19 @@ fully-null rows.
 No default `ordering` yet — the design's stated default is `COLAMDOrdering()`
 (§2.1), landing in a later task; callers must pass one explicitly for now (e.g.
 `AMDOrdering()`, already implemented, §2.2.6).
+
+`build_v=false` skips materializing `vrowind`/`pivotslot` (they come back as empty
+`Ti[]` placeholders) — `nnzV`/`max_vcol`/`flops` stay fully accurate either way
+(computed from `vptr`/`vcount`, not `vrowind`/`pivotslot` themselves). Only for
+callers that provably never read `sym.vrowind`/`sym.pivotslot`/`sym.vptr` afterward
+— currently just `qr_frontal`'s own internal `symbolic_qr` call (confirmed by grep:
+nothing in `src/qr/frontal*.jl` touches those fields; the `:frontal` numeric loop
+uses its own `symbolic_qr_frontal`-built `fsym.nnzVF`/front storage instead). Do NOT
+default this to `false` — the `:column` path (`numeric.jl`, `singletons.jl`,
+`QRWorkspace`) needs the real `vrowind`/`pivotslot` contents.
 """
-function symbolic_qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering) where {T,Ti<:Integer}
+function symbolic_qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering,
+        build_v::Bool = true) where {T,Ti<:Integer}
     m, n = size(A)
     fcperm = order_columns(ordering, m, n, A.colptr, A.rowval)
     fciperm = Vector{Ti}(undef, n)
@@ -304,7 +331,7 @@ function symbolic_qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering) where
 
     _, _, leftcol = row_leftcol(m, n, A.colptr, A.rowval, ciperm)
     rperm0, riperm0, mb, vptr, vrowind, pivotslot, vcount =
-        qr_row_structure(m, n, parent, leftcol)
+        qr_row_structure(m, n, parent, leftcol; build_v)
     # QRSymbolic's rperm/riperm are FULL-space (length m) fields (design_qr.md §1.4);
     # qr_row_structure already returns exactly that shape when n1 == 0 (no singleton
     # rows to prepend) — direct assignment, no further translation needed yet (M5a

@@ -814,6 +814,73 @@ Next session: try lever 1 above (GC tuning, no code change, lowest risk) on
 clean multi-run gate confirmation before considering `ii_sparse_R` genuinely
 closed.
 
+**2026-07-16 (later still): correction to the above — GC tuning was the wrong
+lever, tried and explicitly rejected; the `vrowind`/`pivotslot` allocation was
+NOT genuine required fill, it was waste for this caller. Fixed by skipping its
+construction; verified as a real (not GC-masking) improvement.**
+
+Lever 1 (GC tuning) was tried: `--heap-size-hint=2G` moved GC time from 51.2%
+to only 49.4% of wall time; `--gcthreads=4` changed the pause *shape* but not
+the underlying allocation volume. Neither meaningfully helped, confirming GC
+tuning treats the symptom, not the cause — standing rule now: never reach for
+GC flags to fix an allocation-driven pause, find and remove the allocation
+(saved to memory as `fix-allocation-not-gc`).
+
+Re-investigating with "is this allocation actually used" rather than "is this
+allocation's SIZE justified" (the question the earlier entry above asked)
+surfaced a different, more actionable finding: exhaustive grep across
+`src/qr/frontal*.jl` confirms `sym.vrowind`/`sym.pivotslot`/`sym.vptr` (built
+by `qr_row_structure` inside `symbolic_qr`) are **never read anywhere** on the
+`:frontal` path — the frontal numeric loop builds its own front-local V
+storage via `symbolic_qr_frontal`'s `fsym.nnzVF`, entirely independently.
+`sym.nnzV`/`max_vcol`/`flops` (which `:frontal` DOES use, for its own stats)
+are computed from `vptr`/`vcount` only, never from `vrowind`/`pivotslot`
+directly — so those stay exact even without materializing the arrays. The
+fill itself is genuine (COLAMD's real elimination structure for this matrix
+shape), but computing and storing the V-PATTERN CONTENTS for a caller that
+never consumes them is pure waste, independent of whether the fill amount is
+itself reducible via a better ordering (a separate, still-open question).
+
+Fix: threaded a `build_v::Bool = true` keyword through `qr_row_structure` →
+`symbolic_qr`, defaulting to `true` everywhere (the `:column` path's two call
+sites in `numeric.jl` need the real `vrowind`/`pivotslot` contents and are
+untouched); `qr_frontal`'s own `symbolic_qr` call passes `build_v = false`.
+When `false`, `qr_row_structure` returns empty `Ti[]` placeholders for
+`vrowind`/`pivotslot` instead of running the child-merge loop that fills them.
+
+Verified, not assumed:
+- `sym.nnzV`/`max_vcol`/`flops`/`rperm`/`riperm`/`mb` bit-identical between
+  `build_v=true` and `build_v=false` on `grid_ls_70x50` (direct comparison).
+- Solve correctness: `‖Aᵀr‖ / (‖A‖₁‖r‖) ≈ 8.7e-20` after the fix — unaffected.
+- Full local test suite: 221663/221663 pass (this touches shared symbolic
+  code reused for both QR paths).
+- Cold `qr_frontal(A)` allocation on `grid_ls_70x50` (`@allocated`, 30 calls,
+  local): 14.77 MiB → 9.93 MiB (removes exactly the ~4.84 MiB `vrowind`
+  allocation, matching the earlier `Profile.Allocs` estimate).
+- galen, same `Base.gc_num()`/`GC_Diff` instrumentation as the diagnosis above
+  (500 cold `qr(A; method=:frontal)` calls, back-to-back baseline-then-fix on
+  the SAME synced checkout, no GC flags):
+
+```
+                  baseline (pre-fix)     post-fix
+median time       6.029ms                5.474ms
+mean time         14.494ms               9.16ms
+slow calls (>1.5x median)  33.8%         8.2%
+total gc_time     3796.4ms (52.4%)       1724.1ms (37.6%)
+full sweeps       39                     18
+p90 / p99 / max   20.8 / 92.8 / 101.0ms  7.4 / 87.4 / 99.3ms
+```
+
+Mean time down ~37%, slow (GC-bimodal) call fraction down 4×, GC time share
+down ~15 points, full-sweep count roughly halved — a real reduction from
+removing an actual allocation, not from masking pauses with GC flags. The
+bimodality is NOT fully eliminated (still 8.2% slow calls, still 37.6% GC
+share) — the remaining ~9.93 MiB per cold call (`fval` and other dense front
+storage, driven by real `fsym.nnzVF` fill) is genuinely consumed by the
+frontal numeric loop, so removing it further is a fill-reduction problem
+(ordering quality), not a waste-removal one — the still-open lever 3 from the
+list above.
+
 **2026-07-16 (M1/M2, CLAUDE.md req 5): a real, previously-unverified zero-alloc gap
 found and fixed in `solve!` for `cholesky!`/`ldlt!` — not M5b, but landed via M5b's
 own StrictMode infrastructure being extended to the Cholesky/LDLT paths.** Added

@@ -409,7 +409,12 @@ singleton columns directly, §A1.2).
 """
 function qr_frontal(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering,
         tol::Union{Nothing,Real} = nothing, fundamental::Bool = false) where {T,Ti<:Integer}
-    sym = symbolic_qr(A; ordering)
+    # build_v=false: the frontal numeric loop builds its own front-local V storage via
+    # symbolic_qr_frontal's fsym.nnzVF (line ~384 below) — sym.vrowind/pivotslot/vptr's
+    # contents are never read anywhere in this file. Skipping their construction removes
+    # the single largest allocation in a cold qr_frontal(A) call on some matrices without
+    # affecting sym.nnzV/max_vcol/flops (those come from vptr/vcount, kept either way).
+    sym = symbolic_qr(A; ordering, build_v = false)
     fsym = symbolic_qr_frontal(sym, A; fundamental)
     F = QRFrontFactor{T,Ti}(fsym)
     qr!(F, A; tol)
