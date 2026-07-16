@@ -62,6 +62,39 @@ function boundary_supernodes(on_gpu::AbstractVector{Bool}, nsuper::Integer,
 end
 
 """
+    gpu_device_bytes(super, rowind_ptr, boundary, nnzL, max_extend_rows, elt) -> NamedTuple
+
+Symbolic-time device-memory budget (design_gpu.md §5.3), pattern-only, `elt = sizeof(T)`:
+`nzval` (the device-resident factor L, `nnzL` elts), `cbuf` (scatter workspace,
+`max_extend_rows²`), `boundbuf` (`Σ_{boundary} nsrow·ncol` — persisted boundary panels, §5.3;
+conservative: `nsrow` includes the already-factored diagonal rows ancestors don't read), and
+`total`. Excludes cuSOLVER workspace + pinned staging (added at factor construction from
+`bufferSize`). Used for the capacity check + loud CPU fallback.
+"""
+function gpu_device_bytes(super::AbstractVector, rowind_ptr::AbstractVector,
+                          boundary::AbstractVector, nnzL::Integer,
+                          max_extend_rows::Integer, elt::Integer)
+    nzval = Int(nnzL) * elt
+    cbuf = Int(max_extend_rows)^2 * elt
+    bound = 0
+    @inbounds for s in boundary
+        nsrow = Int(rowind_ptr[s + 1] - rowind_ptr[s])
+        ncol = Int(super[s + 1] - super[s])
+        bound += nsrow * ncol
+    end
+    boundbuf = bound * elt
+    return (; nzval, cbuf, boundbuf, total = nzval + cbuf + boundbuf)
+end
+
+"""
+    gpu_capacity_ok(total_bytes, available_bytes, margin_bytes) -> Bool
+
+`total_bytes ≤ available_bytes − margin_bytes` (design_gpu.md §5.3: budget against *queried*
+free memory with a margin; a false result triggers the loud CPU fallback, never an OOM).
+"""
+gpu_capacity_ok(total::Integer, available::Integer, margin::Integer) = total ≤ available - margin
+
+"""
     frontier_invariant_holds(on_gpu, nsuper, rowind, rowind_ptr, snode_of) -> Bool
 
 Executable check of the §10.2 upward-closure invariant: no GPU supernode has an update edge to

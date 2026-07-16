@@ -75,3 +75,36 @@
         @test isempty(boundary_supernodes(on_gpu, ns, S.rowind, S.rowind_ptr, S.snode_of))
     end
 end
+
+@testitem "GPU device-memory budget (design_gpu.md §5.3)" begin
+    using PureSparse, SparseArrays, LinearAlgebra, Random
+    include(joinpath(@__DIR__, "..", "ext", "frontier.jl"))
+
+    rng = MersenneTwister(0xB0)
+    A = sprand(rng, 600, 600, 0.008); A = A + A' + 1200I
+    S = PureSparse.symbolic(A)
+    ns = S.nsuper
+    on_gpu = Vector{Bool}(undef, ns)
+    elt = sizeof(Float64)
+
+    snflop = [sum(Float64(S.colcount[j])^2 for j in S.super[s]:(S.super[s+1]-1)) for s in 1:ns]
+    midcut = sort(snflop)[cld(ns, 2)]
+    frontier_partition!(on_gpu, ns, S.super, S.sparent, S.colcount, midcut)
+    bnd = boundary_supernodes(on_gpu, ns, S.rowind, S.rowind_ptr, S.snode_of)
+
+    b = gpu_device_bytes(S.super, S.rowind_ptr, bnd, S.nnzL, S.max_extend_rows, elt)
+    @test b.nzval == S.nnzL * elt
+    @test b.cbuf == S.max_extend_rows^2 * elt
+    @test b.boundbuf ≥ 0
+    @test b.total == b.nzval + b.cbuf + b.boundbuf
+
+    # cutoff 0 → all GPU → no boundary panels → boundbuf 0
+    frontier_partition!(on_gpu, ns, S.super, S.sparent, S.colcount, 0.0)
+    bnd0 = boundary_supernodes(on_gpu, ns, S.rowind, S.rowind_ptr, S.snode_of)
+    @test gpu_device_bytes(S.super, S.rowind_ptr, bnd0, S.nnzL, S.max_extend_rows, elt).boundbuf == 0
+
+    # capacity check: fits in plenty, not in a sliver (margin enforced)
+    @test gpu_capacity_ok(b.total, b.total + 1_000_000, 500_000)
+    @test !gpu_capacity_ok(b.total, b.total, 1)          # margin makes an exact fit fail
+    @test !gpu_capacity_ok(b.total, b.total ÷ 2, 0)
+end
