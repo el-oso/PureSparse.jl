@@ -61,7 +61,11 @@ using Base.Cartesian: @nexprs
         gr = br + (tx - 1) * 4 + (i - 1)
         gc = bc + (ty - 1) * 4 + (j - 1)
         if gr < M && gc < N
-            C[gr + 1, gc + 1] = muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+            # β==0 must OVERWRITE (BLAS semantics), not read C — the trailing update scatters
+            # into a freshly-allocated, uninitialized cbuf, and 0*NaN=NaN would corrupt it
+            # (design.md §4.3 relies on overwrite-at-β=0). Both v2 reviewers flagged this.
+            C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
+                                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
         end
     end
 end
