@@ -814,6 +814,46 @@ Next session: try lever 1 above (GC tuning, no code change, lowest risk) on
 clean multi-run gate confirmation before considering `ii_sparse_R` genuinely
 closed.
 
+**2026-07-16 (M1/M2, CLAUDE.md req 5): a real, previously-unverified zero-alloc gap
+found and fixed in `solve!` for `cholesky!`/`ldlt!` — not M5b, but landed via M5b's
+own StrictMode infrastructure being extended to the Cholesky/LDLT paths.** Added
+`benchmark/audit/` (StrictMode `@assert_noalloc`, `checks_enabled=true`, isolated
+from `test/` since `cholesky!`/`ldlt!`/`qr!` call StrictMode's own runtime checks
+internally — mirrors PureFFT.jl's `bench/audit/` precedent). This guarantee is
+strictly stronger than the existing `@allocated == 0` tests (those only prove the
+one input exercised is alloc-free; `@assert_noalloc`'s static AllocCheck mode proves
+every path the compiler can enumerate — though for functions with a lazily-grown-
+then-cached scratch buffer, static mode false-positives on the growth branch
+regardless of warm-up state, the same class PureBLAS's own test suite already
+documented; used `static = false`, the empirical mode, for exactly that reason,
+matching PureBLAS's own precedent).
+
+First run found `solve!` on `SupernodalFactor`/`LDLFactor` allocated **5920 bytes**
+— genuinely never gated before (only `cholesky!`/`ldlt!` themselves had a zero-alloc
+test; nobody had written one for their `solve!`). Root cause: `_solve_L!`/
+`_solve_Lt!` were re-`unsafe_wrap`ping `F.x` fresh every call (instead of the
+already-cached `F.panels`, built once for exactly this — `cholesky!`'s own hot path
+already used it) and allocating a fresh scratch `Matrix` per supernode for the
+off-diagonal update. Fixed both: `F.panels[s]` directly, and a new `Workspace.
+rhs_blocks` field (same caching technique as `F.panels`, wrapping the persistent
+`F.ws.rhs` buffer) plus reuse of the existing `ws.c` scratch (already sized
+`max_extend_rows × max_extend_rows`, more than enough, same bound already proven for
+its factorize-time use) via `view`. Split into `_solve_L_cached!`/`_solve_L_generic!`
+(and the `Lt` equivalents) rather than an inline per-call branch: `view(ws.c,...)`
+(`SubArray`) and `Matrix{T}(undef,...)` are different concrete types, so a ternary
+between them would make the hot loop's `yblk`/`upd` Union-typed — a real type
+instability, not just style. `solve_L!`/`solve_Lt!` are also exported directly
+(split-solve consumers, e.g. iterative refinement) and CAN be called with an
+arbitrary caller-owned vector, not just `F.ws.rhs` — an object-identity check
+(`y === F.ws.rhs`) dispatches to the unchanged generic path there, so that path's
+correctness is untouched.
+
+Verified: `solve!` now 0 bytes for both `cholesky!`/`ldlt!` (was 5920), machine-
+precision residuals unchanged, full `@assert_noalloc` audit passes for all three
+factor types (`cholesky!`, `ldlt!`, `qr!(::QRFrontFactor)`) and their `solve!`s,
+full local suite 221663/221663 assertions unchanged. `qr!`/`solve!` on
+`QRFrontFactor` (M5b) needed no fix — already 0 bytes going in.
+
 **2026-07-15: user flagged a suspected apples-to-oranges bug in the faer comparator —
 real, but not the mechanism suspected, and the measured margin holds.** User's
 hypothesis was that faer materializes explicit Q/R while PureSparse only stores R
