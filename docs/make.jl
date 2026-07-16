@@ -18,6 +18,7 @@ makedocs(;
     build = "build",
     pages = [
         "Home" => "index.md",
+        "Tutorial" => "tutorial.md",
         "Guide" => "guide.md",
         "Sparse QR Guide" => "qr-guide.md",
         "Interior-Point Guide" => "ipm-guide.md",

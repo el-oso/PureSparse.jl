@@ -1,24 +1,26 @@
 # PureSparse.jl
 
-A pure-Julia supernodal sparse Cholesky/LDLᵀ solver, part of the **Pure Julia Ecosystem** —
+A pure-Julia sparse direct solver, part of the **Pure Julia Ecosystem** —
 pure-Julia replacements for Julia's non-Julia default libraries (siblings:
 [PureBLAS.jl](https://github.com/el-oso/PureBLAS.jl),
 [PureFFT.jl](https://github.com/el-oso/PureFFT.jl)). PureSparse replaces SuiteSparse's
-CHOLMOD: fill-reducing AMD ordering, supernodal LLᵀ (SPD), supernodal + simplicial LDLᵀ
-(symmetric quasi-definite, for interior-point KKT systems), rank-k update/downdate, and a
-GPU backend — all dense per-supernode work goes through
-[PureBLAS.jl](https://github.com/el-oso/PureBLAS.jl).
+CHOLMOD **and** SuiteSparseQR: fill-reducing AMD/COLAMD ordering, supernodal LLᵀ (SPD),
+supernodal + simplicial LDLᵀ (symmetric quasi-definite, for interior-point KKT systems),
+rank-`k` update/downdate, and left-looking + multifrontal sparse QR (least-squares,
+minimum-norm, rank-revealing) — all dense per-supernode/per-front work goes through
+[PureBLAS.jl](https://github.com/el-oso/PureBLAS.jl). New here? Start with the
+[Tutorial](tutorial.md).
 
 **Clean-room provenance.** CHOLMOD's Supernodal/Modify modules are GPL. PureSparse's
 design and code derive only from published academic papers and independent reasoning —
 CHOLMOD source is never read, in any form. See [Provenance & Licensing](provenance.md).
 
-**Status: Milestone 1** (AMD + symbolic analysis + supernodal LLᵀ + solve) — core
-factorization and solve are implemented and tested against dense `BigFloat` and CHOLMOD
-oracles. The M1 wall-time gate (PureSparse+PureBLAS faster than CHOLMOD+OpenBLAS on at
-least half a matrix set) is not yet met; see [Benchmarking](benchmarking.md) for the real
-numbers and the diagnosed remaining gap. LDLᵀ/update-downdate (M2) and GPU (M3) are not
-yet implemented.
+**Status: M1 (Cholesky), M2 (LDLᵀ + update/downdate), M4 (drop-in), and M5 (sparse QR)
+are closed** — each against its own non-negotiable wall-time gate (median PureSparse+PureBLAS
+faster than the SuiteSparse+OpenBLAS baseline, own-ordering **and** under an identical
+permutation), verified on clock-locked hardware and cross-checked against dense `BigFloat`
+and SuiteSparse output oracles. See [Benchmarking](benchmarking.md) for the numbers. M6 (GPU,
+CUDA weak-dep extension) is the remaining milestone.
 
 ```julia
 using PureSparse, SparseArrays
