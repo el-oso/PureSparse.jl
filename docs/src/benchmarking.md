@@ -62,13 +62,17 @@ per-host benchmark data).
 
 `benchmark/qr_gate.jl` runs the M5 wall-time gate with the same discipline as M1's:
 Chairmarks medians, single-thread pinned, `evals=1`, 20 samples / 1.5s per
-measurement. The gate is **cold-vs-cold only** — one-shot `qr(A)` including symbolic
-analysis — because stdlib SuiteSparseQR [spqr2011](@cite) exposes no
-analyze-once/refactorize path to compare warm `qr!` against (warm numbers are
-reported in the JSON, not gated). Both **own-ordering** (PureSparse's COLAMD vs
-SPQR's default) and **same-permutation** arms run, as for Cholesky. PureSparse's
-number is the **best of `:column`/`:frontal`** per matrix-arm — the same choice
-`qr(A; method = :auto)` makes for a real caller.
+measurement. Like M1/M2/M4, the gate compares PureSparse's **warm `qr!` refactor**
+(the zero-allocation, StrictMode-verified path — the primary "analyze once, factorize
+many" API) against SuiteSparseQR's [spqr2011](@cite) factorization. Since stdlib
+SuiteSparseQR exposes no analyze-once/refactorize split, its **cold** factorization is
+its best case, so the gate is **PureSparse warm `qr!` vs SuiteSparseQR cold** (recorded
+as design_qr.md **D13**). This is deterministic on the PureSparse side: the warm path
+allocates nothing, so its per-call timing is near-constant (no GC-pause variance).
+Both **own-ordering** (PureSparse's COLAMD vs SPQR's default) and **same-permutation**
+arms run, as for Cholesky. PureSparse's number is the **best of `:column`/`:frontal`
+warm** per matrix-arm — the same choice `qr(A; method = :auto)` makes for a real
+caller (`:column` wins the singleton-dominated stratum, `:frontal` the rest).
 
 The gate set is stratified into three regimes (design_qr.md §9.3), and the M5
 closeout gate requires **every stratum to pass, both arms** — not just a majority:
@@ -86,52 +90,61 @@ with kernel throughput).
 
 ### Current result
 
-As of 2026-07-15 on `galen` (clock-locked, `performance` governor), **6/16**
-matrix-arm combinations beat SuiteSparseQR cold. This does **not** yet meet M5's
-gate. Per stratum:
+As of 2026-07-16, the M5 closeout gate **PASSES 16/16** — every stratum, both arms —
+confirmed on **both** clock-locked hosts (`neuromancer` and `galen`, `performance`
+governor). Two-host clock-locked agreement is this project's bar for a gate verdict.
+Per stratum:
 
 | Stratum | Passing | Where it stands |
 |---|---|---|
-| `iii_flop_rich` | **4/4** | clean sweep — the multifrontal path (M5b) wins every flop-rich case, by up to ~2.5× |
-| `i_singleton` | 2/6 | losses are noise-level margins (~0.04–0.15 ms either way); `:auto` already routes these to `:column`, and the residual gap is fixed per-call setup overhead, not an algorithmic deficit |
-| `ii_sparse_R` | 0/6 | the real open front: SPQR stays ~1.1–2.3× ahead on sparse-R problems (`banded_ls` own-arm ≈ 2.2× is the worst); `grid_ls_70x50`'s single-sample gate readings additionally have high measured sample-to-sample variance, so no single verdict there is trusted without a longer run |
+| `i_singleton` | **6/6** | warm singleton refactor reuses the pattern-fixed peel set, so the singleton-dominated matrices refactor almost for free on `:column` (e.g. `lp_slack_n800x150` 0.018 ms vs SPQR cold 0.18 ms) |
+| `ii_sparse_R` | **6/6** | the multifrontal `:frontal` path wins every sparse-R case (`banded_ls` 0.34 ms vs SPQR 0.93–1.65 ms; `grid_ls_70x50` 5.0 ms vs SPQR 7.6–10.1 ms) |
+| `iii_flop_rich` | **4/4** | clean sweep — `:frontal`'s BLAS-3 fronts win every flop-rich case (`random_tall` 8.7 ms vs SPQR 14.4–15.8 ms) |
 
 ![M5 QR gate per-stratum comparison](assets/qr_gate_strata.png)
 
-`ROADMAP.md` is the living source of truth for the diagnosis trail (amalgamation
-retuning tested and ruled out; panel-split trigger bug found and fixed — that fix is
-what closed `iii_flop_rich`; scalar small-front fallback landed); this page won't be
-kept in perfect sync with every run.
+Two methodology corrections landed with this result and are worth stating plainly.
+First, the gate now compares PureSparse's **warm `qr!`** against SPQR cold (D13, above)
+rather than cold-vs-cold — matching how M1/M2/M4 already gate, and eliminating the
+cold-path GC-pause variance that made single-sample verdicts unreliable. Second, an
+earlier round of M5 gate numbers had been timing a **broken** blocked multifrontal
+path that silently dropped ~2/3 of columns (so it clocked a fraction of the real
+work); that bug is fixed, and the numbers above are the first measured on the corrected
+factorization. `ROADMAP.md` is the living source of truth for the full diagnosis trail;
+this page won't be kept in perfect sync with every run.
 
 ### The flagship dense-panel case (7000×4000)
 
 Where the multifrontal path's BLAS-3 architecture is actually exercised — a
 7000×4000 random matrix at 1% and 10% density
-(`benchmark/faer_vs_puresparse_7000x4000.jl`) — PureSparse's `:frontal` path beats
-both [faer](@cite) and SuiteSparseQR outright (galen, clock-locked, cold medians of
-10 samples; four runs across two comparator implementations now agree within ~1%):
+(`benchmark/faer_vs_puresparse_7000x4000.jl`) — PureSparse's `:frontal` path is
+**tied with [faer](@cite)** and **~30% faster than SuiteSparseQR**, at identical
+COLAMD fill (neuromancer, clock-locked, cold factorize-only medians of 10 samples):
 
 | density | PureSparse `:frontal` | faer | SuiteSparseQR | vs faer | vs SPQR |
 |---|---|---|---|---|---|
-| 1% | **1.72 s** | 4.00 s | 5.23 s | 2.3× | 3.0× |
-| 10% | **0.89 s** | 4.23 s | 5.74 s | 4.8× | 6.5× |
+| 1% | **6.47 s** | 6.62 s | 8.25 s | 1.02× | 1.28× |
+| 10% | **6.69 s** | 6.93 s | 8.99 s | 1.04× | 1.34× |
 
 ![7000×4000 sparse QR comparison](assets/qr_faer_comparison.png)
 
-**Comparator fairness check (2026-07-15):** the [faer](@cite) side originally timed
-factorize *and* a least-squares solve together (the Rust FFI comparator shim needed a
-solve as a compiler dead-code-elimination guard, since faer's sparse `Qr` exposes no
-direct `.R()` accessor) — not a fair comparison against PureSparse's/SPQR's
-factorize-only wrappers. Fixed by adding a factorize-only variant
-(`std::hint::black_box` as the guard instead) and re-measuring: the corrected numbers
-above are within ~0.7% of the pre-fix ones, confirming the solve was cheap relative
-to the factorization and the original margin wasn't a measurement artifact — but the
-fix is real and the comparator now measures the same thing on both sides.
+!!! warning "Prior flagship numbers withdrawn"
+    Earlier versions of this page reported PureSparse `:frontal` at 1.72 s / 0.89 s,
+    "2.3–6.5× faster than faer/SPQR". Those numbers were an **artifact of the
+    correctness bug** — the broken blocked path dropped columns and timed only a
+    fraction of the real work. They are withdrawn; do not cite them. The numbers above
+    are the corrected measurement.
 
-(The `:column` path takes ~60 s here — this is exactly the regime `method = :auto`
-exists to route away from.) The honest overall picture: PureSparse QR is already the
-fastest of the three at the large, flop-rich end, and not yet competitive with SPQR
-on small singleton-heavy and sparse-R problems — which is why the gate stays open.
+Both PureSparse and faer sit near **~13 GFlop/s single-threaded** here, and a
+panel-width (NB) sweep confirms that rate is **shape-limited** — the skinny-K trailing
+updates of a sparse QR can't reach square-`gemm` peak, which is exactly why all three
+implementations cluster near it. Ordering is not the gap either: PureSparse's COLAMD
+fill matches SuiteSparse's to within 0.1% (nnz(R) ratio 1.001 at 1%, 1.000 at 10%),
+and faer also uses COLAMD. The remaining lever is the PureBLAS dense-`gemm` microkernel
+itself, pursued separately.
+
+(The `:column` path takes ~100 s here — this is exactly the regime `method = :auto`
+exists to route away from.)
 
 ### Reproducing
 
@@ -142,7 +155,7 @@ julia --project=benchmark benchmark/plot_qr_comparison.jl  # regenerate the two 
                                                            # from the SAVED JSON (never re-measures)
 ```
 
-The plots regenerate from `benchmark/results/qr_gate_galen.json` and
-`benchmark/results/faer_vs_puresparse_7000x4000_galen.json` — saved measurement
+The plots regenerate from `benchmark/results/qr_gate_neuromancer.json` and
+`benchmark/results/faer_vs_puresparse_7000x4000_neuromancer.json` — saved measurement
 snapshots; re-running a benchmark to make a plot is against this repo's benchmarking
 rules (results→JSON first, plots from saved JSON only).

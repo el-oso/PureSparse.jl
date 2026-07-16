@@ -79,7 +79,7 @@ matrix you know is well-conditioned; leave it on (the default) otherwise and che
   [spqr2011](@cite) with a numeric core ported from [faer](@cite): supernodes of the
   Cholesky factor of `AᵀA` become dense frontal matrices processed with BLAS-3
   kernels (PureBLAS's compact-WY apply). Wins decisively on flop-rich problems —
-  on a 7000×4000 benchmark it is ~36–74× faster than `:column` (see
+  on a 7000×4000 benchmark it is ~15–16× faster than `:column` (see
   [Benchmarking](benchmarking.md)). Float64-tuned; other element types currently
   fall back to `:column`.
 - **`:auto`** — picks per matrix by the ratio `sym.flops / sym.nnzR` (predicted
