@@ -645,6 +645,62 @@ size/density/seed combinations, `test/qr_numeric_tests.jl`) specifically because
 single fixed case is exactly the failure mode that let this hide. Full suite:
 221663/221663 assertions pass.
 
+**2026-07-16: task #47 (`ii_sparse_R`) — real progress, gate now 8/16 (was 6/16),
+`ii_sparse_R` now 2/6 (was 0-1/6), `grid_ls_40x30` PASSES both arms.** All prior
+`ii_sparse_R` work (this file's many dated entries above) targeted the numeric
+factorization loop in the multifrontal path. Direct measurement (galen, `@be`
+medians) reframed the problem: for small/sparse gate matrices, the NUMERIC loop
+isn't where the time goes — `symbolic_qr` (called fresh every cold `qr(A)` call,
+correctly, since SPQR has no analyze-once/refactor split to compare against) was
+53.9% of total time for `banded_ls_n1500x500_bw15`, more than ordering, front-tree
+construction, and the numeric loop combined:
+
+```
+banded_ls_n1500x500_bw15 (before)      cold=1.6367ms  order=0.2616ms(16%)
+  symbolic_qr-rest=0.8819ms(53.9%)  fsym=0.0568ms(3.5%)  numeric=0.4364ms(26.7%)
+```
+
+Handed this precise, quantified brief to a Fable-model agent (isolated worktree) to
+find and fix the specific bottleneck within `symbolic_qr`'s non-ordering steps
+(`star_pattern`→`symmetrized_upper`→`etree`→`postorder`→`relabel_pattern`→`etree`
+again→`column_counts`→`row_leftcol`→`qr_row_structure`). The agent's session was
+cut short by an API/network disruption before it finished its own verification, but
+left a complete, well-reasoned fix in its worktree: `qr_row_structure` (§3.4's
+`S_k`/`pivotslot` construction) previously built each column's row set via a
+per-column `Vector` + `push!`/`append!` + `sort!` — measured (`Profile.Allocs`) to
+be the dominant cost (~2350 allocations / ~8 MB churned per `banded_ls` call).
+Rewrote it to write each `S_k` DIRECTLY into its final `vrowind` segment with no
+sort at all, via a proof (own derivation, in the docstring) that the merge is
+*already* sorted by construction: physical row numbers are grouped ascending by
+`leftcol` block, `parent` is postordered so child subtrees are disjoint ascending
+column intervals, and by induction each child's survivor sublist is both final and
+sorted by the time its parent processes it — so "child survivors in ascending
+child order, then column k's own consecutive block" is the answer with no sort
+needed. Child traversal uses the same head/next linked-list idiom `postorder`
+already uses elsewhere in this codebase (own precedent, not new).
+
+I did NOT trust the agent's unfinished work — verified independently before
+committing: full local suite (221663/221663 assertions, unchanged) confirms
+correctness (including `test/qr_symbolic_tests.jl`'s 178550 H1/H2-style invariant
+assertions, the most direct check on this exact function); re-ran the isolated
+`symbolic_qr`-only breakdown on galen (clock-locked) and confirmed the targeted
+component actually shrank (`banded_ls`: `symbolic_qr rest` 0.8819ms→0.337ms, -61.8%;
+`grid_ls_70x50`: 1.9472ms→1.059ms, -45.6%); then ran the REAL gate script (not the
+noisier subtraction-derived micro-breakdown) for the actual verdict: **6/16→8/16**,
+`ii_sparse_R` 0-1/6→2/6, `grid_ls_40x30` now a clean PASS on both arms. `banded_ls`
+itself still fails both arms (1.778ms/1.452ms vs SPQR 1.025ms/0.604ms, ~1.7-2.4×
+behind, down from ~5-8× before ANY of this session's numeric-loop or symbolic-loop
+work) — closer, not closed. `grid_ls_70x50` also still fails, within this matrix's
+already-documented high sample-to-sample variance (own-arm improved 9.841ms→
+7.158ms; same-perm read worse, 9.273ms→8.268ms — a single-sample comparison on a
+matrix already known to need a longer run to trust any one verdict).
+
+Next: `banded_ls` is now the clear worst offender and worth its own fresh
+breakdown pass (its numeric share, ~0.44-1.0ms depending on run, has never been
+attributed past "no single hotspot" from an earlier sampling profile — that
+profile predates BOTH the scalar-fallback fix and this symbolic fix, worth
+re-running fresh) — not done this session, flagged for the next one.
+
 **2026-07-15: user flagged a suspected apples-to-oranges bug in the faer comparator —
 real, but not the mechanism suspected, and the measured margin holds.** User's
 hypothesis was that faer materializes explicit Q/R while PureSparse only stores R

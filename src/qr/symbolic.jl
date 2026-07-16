@@ -150,20 +150,38 @@ package); `leftcol` is [`row_leftcol`](@ref)'s per-row output (`0` for a null ro
 - **`S_k` materialization and `pivotslot`.** For each column `k` (ascending), gather
   the assigned physical-number block (already sorted) plus every child's non-pivot
   survivor rows (each child's own list is complete and sorted by the time `k` is
-  reached, by the same postorder-ascending argument as `vcount`), sort once, and split
-  off the smallest physical number as `pivotslot[k]` — matching the design's
-  deterministic tie-break ("smallest physical row number"). The remaining rows are
-  passed to `parent[k]`. A structurally dead column (`vcount[k]==0`) leaves
+  reached, by the same postorder-ascending argument as `vcount`), and take the
+  smallest physical number as `pivotslot[k]` — matching the design's deterministic
+  tie-break ("smallest physical row number"). The remaining rows are passed to
+  `parent[k]`. A structurally dead column (`vcount[k]==0`) leaves
   `pivotslot[k] == 0` (sentinel) and contributes nothing to its parent, matching
   `vcount`'s own clamp.
 
-**Implementation note:** this materializes each `S_k` via `sort!` on a per-column
-accumulator rather than the design's suggested O(1)-append linked-list merge of
-already-sorted lists (which would avoid the `sort!` entirely) — simpler to implement
-correctly, at a modest constant-factor cost in this cold symbolic-analysis path
-(clarity prioritized over allocation-freedom here, the same standing tradeoff already
-stated for `order`/`order_columns`, design.md §2.1). Revisit only if the M5 benchmark
-gate (§9.3) shows symbolic-phase cost actually matters.
+**Implementation note (2026-07-16 rewrite):** each `S_k` is written DIRECTLY into its
+final `vrowind[vptr[k]:vptr[k+1]-1]` segment with no sort and no per-column
+accumulator — the earlier per-column `Vector` + `sort!` version was measured (gate
+matrix `banded_ls_n1500x500_bw15`, `Profile.Allocs`) to be the dominant cost of the
+whole symbolic analysis (~2350 allocations / ~8 MB churned per call from `push!`/
+`append!` growth), exactly the "revisit if the gate shows symbolic cost matters"
+condition the original note deferred on. No sort is needed, by two invariants this
+function itself establishes (own derivation, no external reference):
+
+1. Physical row numbers are grouped by ascending `leftcol` block (`aptr` above), so
+   for columns `j1 < j2`, every physical number in block `j1` precedes every one in
+   block `j2`.
+2. `parent` is postordered, so each child subtree is a contiguous column interval
+   `[first_descendant(c), c]`, distinct children's intervals are disjoint and
+   ascending in `c`, and all lie strictly below `k`. By induction, every row in
+   child `c`'s survivor list has `leftcol` inside `subtree(c)` (assigned there, or
+   passed up from `c`'s own subtree), hence its physical number lies in
+   `subtree(c)`'s block range.
+
+Therefore "child survivors in ascending child order, then column `k`'s own assigned
+block (itself consecutive by construction)" is already globally sorted, the segment's
+first element is the minimum (= `pivotslot[k]`), and each child's survivor sublist
+`vrowind[vptr[c]+1 : vptr[c]+vcount[c]-1]` is final (postorder: `c < k`) and sorted
+by the same induction. The `vcount` recurrence guarantees the pieces fill the segment
+exactly.
 """
 function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti}) where {Ti<:Integer}
     a = zeros(Ti, n)
@@ -208,30 +226,37 @@ function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti
     end
     nnzV = Int(vptr[n + 1] - 1)
 
-    accum = [Ti[] for _ in 1:n]
+    # Child lists via the same head/next linked-list idiom `postorder` uses; head
+    # insertion in descending k yields per-parent lists in ASCENDING child order —
+    # exactly the order the no-sort merge argument above requires.
+    chead = zeros(Ti, n)
+    cnext = zeros(Ti, n)
+    @inbounds for k in n:-1:1
+        p = parent[k]
+        if p != 0
+            cnext[k] = chead[p]
+            chead[p] = Ti(k)
+        end
+    end
+
     pivotslot = zeros(Ti, n)
     vrowind = Vector{Ti}(undef, nnzV)
     @inbounds for k in 1:n
-        Sk = accum[k]
-        for p in aptr[k]:(aptr[k + 1] - 1)
-            push!(Sk, p)
-        end
-        isempty(Sk) && continue                  # dead column: pivotslot[k] stays 0
-        sort!(Sk)
-        piv = Sk[1]
-        pivotslot[k] = piv
+        vcount[k] == 0 && continue               # dead column: pivotslot[k] stays 0
         idx = vptr[k]
-        vrowind[idx] = piv
-        idx += one(Ti)
-        @inbounds for t in 2:length(Sk)
-            vrowind[idx] = Sk[t]
+        c = chead[k]
+        while c != 0
+            for q in (vptr[c] + one(Ti)):(vptr[c] + vcount[c] - one(Ti))
+                vrowind[idx] = vrowind[q]        # child survivors, already final+sorted
+                idx += one(Ti)
+            end
+            c = cnext[c]
+        end
+        for p in aptr[k]:(aptr[k + 1] - 1)       # own assigned block, consecutive
+            vrowind[idx] = p
             idx += one(Ti)
         end
-        p = parent[k]
-        if p != 0 && length(Sk) > 1
-            append!(accum[p], view(Sk, 2:length(Sk)))
-        end
-        empty!(Sk)                                # early free; k is never revisited
+        pivotslot[k] = vrowind[vptr[k]]          # segment is sorted: first = smallest
     end
     return rperm, riperm, mb, vptr, vrowind, pivotslot, vcount
 end
