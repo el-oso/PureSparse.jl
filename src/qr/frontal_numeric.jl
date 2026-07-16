@@ -195,14 +195,24 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
         end
         nrows = idx - k                              # unconsumed rows k..idx-1 (qr.rs:1266)
         span = idx_min_col - current_min_col
-        ncols_grp = min(nrows, span, NB)              # qr.rs:1268-1269 + the NB cap
+        cols_left = min(nrows, span)                  # faer's group width (qr.rs:1268-1269)
         current_min_col = idx_min_col                 # qr.rs:1305 (raw row min-col, not
                                                        # j+ncols_grp — see header: faithful
                                                        # to faer's own gap-carry quirk)
-        ncols_grp <= 0 && continue
+        cols_left <= 0 && continue
         row_hi = idx - 1
-        j1 = j + ncols_grp - 1   # ≤ n_f, since j ≤ current_min_col_old and ncols_grp ≤ span
-                                 # imply j1 ≤ idx_min_col - 1 ≤ n_f (faer's own
+        # faer's ONE (uncapped) group becomes ⌈cols_left/NB⌉ consecutive ≤NB-wide
+        # groups here (the NB storage cap, see header) — geqrf!'s own proven panel
+        # sequence, mathematically identical to faer's single group (whose own
+        # qr_in_place blocks internally the same way). Emitting only the FIRST
+        # NB-clamped group and dropping the rest was a real bug: any front whose
+        # pending width exceeded NB at a trigger (e.g. every dense-ish front, where
+        # all min-cols coincide and only the sentinel triggers) silently lost all
+        # columns past NB — rank 8 on a full-rank 60x60, wrong R, wrong solve.
+        while cols_left > 0
+        ncols_grp = min(cols_left, NB)
+        j1 = j + ncols_grp - 1   # ≤ n_f, since j ≤ current_min_col_old and total emitted
+                                 # ≤ span imply j1 ≤ idx_min_col - 1 ≤ n_f (faer's own
                                  # current_start ≤ current_min_col invariant)
         panel_start_k = k
         mp = row_hi - panel_start_k + 1
@@ -286,6 +296,8 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
             ttaucur += pcount * pcount
         end
         j = j1 + 1
+        cols_left -= ncols_grp
+        end
     end
     end
 

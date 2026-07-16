@@ -167,23 +167,22 @@ end
 
     # (3)/(4) End-to-end correctness of the BLOCKED path (front element count 153600 >
     # QR_FRONTAL_UNBLOCKED_THRESHOLD, so this takes the wy_t!/wy_apply! blocked kernel,
-    # NOT the scalar fallback every other frontal test hits). These are `@test_broken`:
-    # fixing the ftau OOB above un-crashed the blocked path but revealed a SEPARATE,
-    # pre-existing correctness bug in the blocked multifrontal numeric loop — it returns a
-    # wrong R / least-squares solution on ANY large-enough front (measured: least-squares
-    # residual ~1e-3 to 1e-4 vs the :column path's ~1e-18, at nb==8 AND nb==16, so it is
-    # NOT the OOB and NOT nb-specific). Never caught before because no correctness test
-    # ever exercised a front over the 2304-element blocked threshold. Tracked separately;
-    # `@test_broken` flips to a failure (alerting us) the moment the blocked path is fixed.
+    # NOT the scalar fallback every other frontal test hits). Regression for the
+    # dropped-group bug: the numeric loop emitted only ONE NB-clamped group per split
+    # trigger, so any front whose pending width exceeded NB at a trigger (every
+    # dense-ish front — all min-cols coincide and only the sentinel triggers) silently
+    # lost every column past NB (rank NB instead of n_f, wrong R, ~1e-3 LSQ residual).
+    # Fixed by emitting ⌈width/NB⌉ consecutive ≤NB-wide groups per trigger
+    # (frontal_numeric.jl's while-loop over cols_left).
     R = dense_R_frontal(F)
     Ad = Matrix(A)[:, F.fsym.base.cperm]
-    @test_broken maximum(abs.(R' * R .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
+    @test maximum(abs.(R' * R .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
 
     b = randn(MersenneTwister(31338), 400)
     x = PureSparse.solve!(zeros(384), F, b)
-    @test_broken normal_eq_resid(A, x, b) < 1e-6 * max(1, norm(b))
+    @test normal_eq_resid(A, x, b) < 1e-6 * max(1, norm(b))
 
     PureSparse.qr!(F, A)   # warm refactor at nb==16 must at least stay in-bounds
     Rw = dense_R_frontal(F)
-    @test_broken maximum(abs.(Rw' * Rw .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
+    @test maximum(abs.(Rw' * Rw .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
 end
