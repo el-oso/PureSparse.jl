@@ -627,6 +627,24 @@ a 20×12 matrix, where this path happens to be 0 bytes). `:frontal`'s `qr!`/`sol
 0 bytes at both sizes — this is `:column`-specific. Filed as task #48, not fixed here
 (out of scope for a docs task).
 
+**2026-07-16: task #48 closed.** Root cause found via `Profile.Allocs` (not guessed —
+the initial size-based hypothesis was wrong; allocation turned out non-monotonic in
+`(m,n)` and seed-dependent at a FIXED size, ruling out a simple size threshold):
+`numeric.jl`'s row-subtree gather (`qr!` step 2) calls `sort!(view(tsub, 1:len))` with
+Base's default algorithm, which auto-selects `RadixSort` for `Int` arrays above a size
+heuristic — `RadixSort` allocates scratch buffers (`Base.Sort.make_scratch`). `len` is
+a per-column row-subtree size, not the array's static length, so whether any column of
+any given matrix crosses that heuristic is genuinely data-dependent — explains why the
+existing 20×12 gate test never caught this in M5a's whole lifetime (that size/seed
+combination happens to never cross it) while ~14/15 random seeds at 100×50 did,
+allocating 500–4000+ bytes depending on the exact values realized, not the shape.
+Fixed with `alg=InsertionSort` (Base's guaranteed-zero-alloc algorithm at any size,
+verified directly) — appropriate since `len` is small/tree-depth-bounded by
+construction, not a full-array sort. Added a swept regression test (5
+size/density/seed combinations, `test/qr_numeric_tests.jl`) specifically because a
+single fixed case is exactly the failure mode that let this hide. Full suite:
+221663/221663 assertions pass.
+
 **2026-07-15: user flagged a suspected apples-to-oranges bug in the faer comparator —
 real, but not the mechanism suspected, and the measured margin holds.** User's
 hypothesis was that faer materializes explicit Q/R while PureSparse only stores R
