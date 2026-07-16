@@ -84,14 +84,16 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
     result = Dict{String,Any}("matrix" => label, "m" => m, "n" => n, "nnz" => nnz(A), "stratum" => stratum, "arm" => arm)
     b = randn(m)
 
-    # GivenOrdering's stored permutation is FULL-space length n (design_qr.md §2.1's
-    # order_columns contract): singleton peeling reduces the block that order_columns
-    # is actually invoked on to n-n1 columns, which would DimensionMismatch against a
-    # full-length GivenOrdering perm (confirmed by testing this arm before committing
-    # it) — so the "same-perm" arm forces singletons off on the PureSparse side, same
-    # as the warm qr! arm already needs to for its own reason (§2.3: qr! rejects
-    # sym.n1>0). "own" keeps the realistic product default (singletons on).
-    ps_singletons = arm == "own"
+    # Both arms use the realistic product default (singletons on). Used to be
+    # own-arm-only: GivenOrdering's stored permutation is FULL-space length n
+    # (design_qr.md §2.1's order_columns contract), and singleton peeling used to
+    # hand order_columns only the n-n1 surviving columns, DimensionMismatching against
+    # a full-length GivenOrdering perm — task #50, fixed via singletons.jl's
+    # `_restrict_ordering` (restricts+relabels the given permutation onto the
+    # surviving columns' local index space before A22's own order_columns call).
+    # Since peeling itself never depends on `ordering` (it's a pure function of A's
+    # own pattern/values), n1/nnzR come out bit-identical between the two arms.
+    ps_singletons = true
     if arm == "own"
         ps_ordering = PureSparse.COLAMDOrdering()
         A_spqr = A

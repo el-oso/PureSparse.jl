@@ -900,6 +900,62 @@ re-diagnosed this session. Overall gate: still 11/16 (`i_singleton` remains
 remains 4/4, better than H4's "may lose" expectation). `grid_ls_70x50` is now
 solidly closed as an open item.
 
+**2026-07-16 (later still): task #50 fixed — same-perm arm's 3.4x fill inflation
+on `lp_slack` matrices was a real bug (`GivenOrdering` forced singletons off), not
+inherent to the matrix shape. `ii_sparse_R` now 6/6.**
+
+Root cause, confirmed (not guessed): `GivenOrdering` carries a permutation sized
+for the FULL, pre-peel matrix (SPQR's own `pcol`), but singleton pre-elimination
+(§2.3) hands `order_columns` only the `n - n1` surviving columns of `A22` —
+`order_columns(::GivenOrdering, ...)`'s length check then throws `DimensionMismatch`
+unless the caller disables peeling entirely (`singletons=false`), which is exactly
+what the gate's same-perm arm did, at the cost of `nnzR` inflating 3.4x
+(`lp_slack_n800x150`: 4491 with singletons vs 15255 without) since the whole point
+of peeling is to strip away the trivially-solvable diagonal-shaped block before the
+main factorization ever sees it.
+
+Fix (`src/qr/singletons.jl`, `_restrict_ordering`): before `_qr_compose_singletons`
+hands `A22` to `_qr_block`, restrict the given permutation to just the entries
+naming a surviving column (drop the peeled ones), preserving relative order, then
+relabel each from its original column index to its local index within `A22`.
+`AMDOrdering`/`COLAMDOrdering`/`NaturalOrdering` need no such adaptation — their
+`order_columns` recomputes a fresh permutation from whatever pattern it's handed,
+so a reduced `A22` was never a problem for them; `_restrict_ordering` is a no-op
+for anything but `GivenOrdering`. Since `peel_column_singletons` is a pure function
+of `A`'s own pattern/values (never `ordering`), `n1`/`nnzR` now come out
+bit-identical between the "own" and "same-perm" arms — confirmed directly
+(`lp_slack_n800x150`: both arms `n1=800`, `nnzR=4491`), and the composed factor's
+solve residual matches the existing own-arm path bit-for-bit too (same code, same
+numbers, just relabeled). Full local test suite: 221663/221663 unchanged.
+
+`benchmark/qr_gate.jl` updated to stop forcing `singletons=false` on the same-perm
+arm (`ps_singletons = true` unconditionally now) — it was measuring an artificially
+crippled configuration that doesn't reflect real product behavior (the default is
+always `singletons=true`).
+
+galen, back-to-back gate runs, same matrices:
+
+```
+                            same-perm arm, cold median
+                    pre-fix (forced no-singleton)   post-fix
+lp_slack_n300x60    0.132ms                          0.045ms   (SPQR 0.038-0.039ms)
+lp_slack_n800x150   0.879ms                          0.155ms   (SPQR 0.103-0.105ms)
+```
+
+`lp_slack_n800x150`'s same-perm arm: 0.879ms → 0.155ms, ~5.7x faster, now within
+~50% of SPQR instead of 8.5x behind. `ii_sparse_R` reached 6/6 this run (was 5/6;
+`grid_ls_40x30` same-perm flipped to PASS, within this stratum's known noise
+floor). `i_singleton` did NOT close — still 1-2/6 depending on draw — but the
+REMAINING gap is now a genuinely different, much smaller problem: these are
+sub-millisecond matrices where SPQR's constant per-call overhead (C, malloc/free,
+no GC, no dispatch) wins outright regardless of algorithmic fill (`lp_slack_n300x60`
+own-arm: PS 0.048ms vs SPQR 0.044-0.046ms — already near-parity, not a fill
+problem). Filed as task #51 — separate from #50, which is now closed: the fill bug
+is fixed, what's left is call-overhead on tiny problems, not an ordering/singleton
+defect. Overall gate: still 11/16 (numbers moved between strata, total unchanged) —
+`ii_sparse_R` and `iii_flop_rich` both now solid; `i_singleton`/task #51 is the
+sole remaining open stratum.
+
 **2026-07-16 (M1/M2, CLAUDE.md req 5): a real, previously-unverified zero-alloc gap
 found and fixed in `solve!` for `cholesky!`/`ldlt!` — not M5b, but landed via M5b's
 own StrictMode infrastructure being extended to the Cholesky/LDLT paths.** Added

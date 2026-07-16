@@ -95,6 +95,44 @@ function peel_column_singletons(A::SparseMatrixCSC{T,Ti}, threshold::T) where {T
 end
 
 """
+    _restrict_ordering(ordering, collive, surv_cols) -> AbstractOrdering
+
+Adapt `ordering` (chosen against the FULL, pre-peel `A`) so it can be handed to
+`A22`'s own `order_columns` call, which only ever sees `A22`'s `n - n1` surviving
+columns. `AMDOrdering`/`COLAMDOrdering`/`NaturalOrdering` need no adaptation — their
+`order_columns` methods recompute a fresh permutation from whatever pattern they're
+given, so they already produce a correctly-sized result for `A22` unchanged. Only
+`GivenOrdering` carries a FIXED, externally-sized permutation vector (task #50: this
+is what forced the M5 gate's same-permutation arm to disable singleton peeling
+entirely, `singletons=false`, rather than crash on `order_columns`'s length check) —
+for that case, restrict `ordering.perm` to just the entries naming a surviving
+column (dropping peeled-column entries), preserving relative order, then relabel each
+from its ORIGINAL column index to its LOCAL index within `A22` (its position in
+`surv_cols`). This is the natural generalization of "same permutation": the peeled
+columns are a PureSparse-specific optimization layer the external ordering has no
+opinion on (SPQR applies its own equivalent structural-singleton trick internally
+regardless of arm — ROADMAP.md's own account), so honoring the GIVEN ordering's
+relative column order among the columns it actually still has a say over is what
+"same ordering, modulo our own preprocessing" means here.
+"""
+_restrict_ordering(ordering::AbstractOrdering, ::BitVector, ::Vector) = ordering
+function _restrict_ordering(ordering::GivenOrdering{Ti}, collive::BitVector, surv_cols::Vector{Ti}) where {Ti<:Integer}
+    n = length(collive)
+    local_of = Vector{Ti}(undef, n)
+    @inbounds for (k, j) in enumerate(surv_cols)
+        local_of[j] = Ti(k)
+    end
+    restricted = Vector{Ti}(undef, length(surv_cols))
+    c = 0
+    @inbounds for j in ordering.perm
+        collive[j] || continue
+        c += 1
+        restricted[c] = local_of[j]
+    end
+    return GivenOrdering(restricted)
+end
+
+"""
     _qr_compose_singletons(A, peel_col, peel_row, collive, rowlive, ordering, tol) -> QRFactor
 
 Assemble a full `QRFactor` (`sym.n1 > 0`) from a peeled singleton block plus the
@@ -125,7 +163,8 @@ function _qr_compose_singletons(
     surv_cols = Ti[j for j in 1:n if collive[j]]
     A22 = A[surv_rows, surv_cols]
 
-    F22 = _qr_block(A22; ordering, tol)
+    ordering22 = _restrict_ordering(ordering, collive, surv_cols)
+    F22 = _qr_block(A22; ordering = ordering22, tol)
     sym22 = F22.sym
     nb = length(sym22.parent)
 
