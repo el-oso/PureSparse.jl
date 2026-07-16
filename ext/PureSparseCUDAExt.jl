@@ -12,6 +12,7 @@
 module PureSparseCUDAExt
 
 using PureSparse: PureSparse
+using CUDA
 using KernelAbstractions
 using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend
 using Base.Cartesian: @nexprs
@@ -99,5 +100,55 @@ full square; correct but does ~2× the necessary work on the symmetric block). T
 triangular-only syrk-shaped variant is the §3 productization delta, tracked for Phase 2.
 """
 gpu_syrk_nt!(C, A, alpha, beta) = gpu_gemm_nt!(C, A, A, alpha, beta)
+
+# ---------------------------------------------------------------------------------------
+# GPUSymbolic (design_gpu.md §2.3): the CPU Symbolic + the upward-closed frontier partition
+# (§5.2) + pattern arrays uploaded ONCE to device (§4.2 — host keeps the pattern, so refactors
+# do 0 pattern H2D). Immutable, shared by reference. Phase 2.2: pattern residency + frontier +
+# sizing; the per-cross-edge ir/rs scatter structure and device factor land in 2.3.
+struct GPUSymbolic{Ti,VI}
+    cpu::PureSparse.Symbolic{Ti}
+    on_gpu::Vector{Bool}          # frontier membership per supernode (§5.2)
+    gpu_order::Vector{Ti}         # GPU supernodes ascending = finalize order
+    boundary::Vector{Ti}          # CPU supernodes with a GPU ancestor (§5.3 persist set)
+    frontier_cutoff::Float64
+    d_rowind::VI                  # device pattern arrays (uploaded once)
+    d_rowind_ptr::VI
+    d_super::VI
+    d_snode_of::VI
+    bytes::NamedTuple             # §5.3 device-memory budget
+end
+
+"""
+    gpu_symbolic(A; ordering, backend=CUDABackend(), frontier_cutoff) -> GPUSymbolic
+
+Build a device-resident symbolic analysis: CPU `symbolic` + the upward-closed etree frontier
+(design_gpu.md §5.2) + a one-time pattern upload. `frontier_cutoff` is the per-supernode
+factor+update flop threshold (its calibrated default is a remaining Phase-0 item, §8.3).
+Asserts the §10.2 upward-closure invariant. Only `T ∈ {Float32,Float64}` reach here (§1);
+callers of other `T` use the CPU path.
+"""
+function gpu_symbolic(A::PureSparse.SparseArrays.SparseMatrixCSC{T,Ti};
+                      ordering, backend = CUDABackend(),
+                      frontier_cutoff::Real) where {T,Ti}
+    cpu = PureSparse.symbolic(A; ordering)
+    ns = cpu.nsuper
+    on_gpu = Vector{Bool}(undef, ns)
+    frontier_partition!(on_gpu, ns, cpu.super, cpu.sparent, cpu.colcount, Float64(frontier_cutoff))
+    frontier_invariant_holds(on_gpu, ns, cpu.rowind, cpu.rowind_ptr, cpu.snode_of) ||
+        error("gpu_symbolic: upward-closure invariant violated (design_gpu.md §10.2)")
+    gpu_order = Ti[s for s in 1:ns if on_gpu[s]]
+    boundary = boundary_supernodes(on_gpu, ns, cpu.rowind, cpu.rowind_ptr, cpu.snode_of)
+    bytes = gpu_device_bytes(cpu.super, cpu.rowind_ptr, boundary, cpu.nnzL,
+                             cpu.max_extend_rows, sizeof(T))
+    # one-time pattern upload (§4.2 — never re-uploaded on refactor)
+    d_rowind = CuArray(cpu.rowind)
+    d_rowind_ptr = CuArray(cpu.rowind_ptr)
+    d_super = CuArray(cpu.super)
+    d_snode_of = CuArray(cpu.snode_of)
+    return GPUSymbolic{Ti,typeof(d_rowind)}(cpu, on_gpu, gpu_order, boundary,
+                                            Float64(frontier_cutoff),
+                                            d_rowind, d_rowind_ptr, d_super, d_snode_of, bytes)
+end
 
 end # module
