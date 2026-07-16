@@ -12,7 +12,25 @@ CUDA weakdep extension) is deferred to the end — this dev machine has no NVIDI
 here would be unverifiable guessing, not "don't guess, check" engineering. M4
 (drop-in) doesn't need GPU hardware and is next.
 
-**2026-07-14: M5 = sparse QR (next milestone, design CLOSED, implementation
+**2026-07-16: M5 = sparse QR — MILESTONE CLOSED.** The non-negotiable wall-time
+closeout gate (design_qr.md §9.3, CLAUDE.md req 2) is MET at 16/16 on both clock-locked
+hosts (neuromancer + galen), warm PS `qr!` vs SPQR cold under D13, own-ordering AND
+same-permutation arms. Both milestone-vs-gate remainders named in the gate entry below
+are now resolved: the 7000×4000 flagship was re-measured on the corrected factorization
+(parity with faer — the honest ceiling, not the withdrawn "2–6× win" bug artifact), and
+this final design §10 checklist pass verified every deliverable against literal wording:
+all six `src/qr` + `src/ordering` files, §9.1 layers (BigFloat oracle, SPQR black-box
+agreement, H1/H2 executable invariants, zero-alloc, trim smoke), the §2.2 ordering-quality
+bound (real test `colamd_tests.jl:144`, measured nnz(R) 1.002× ≤ 1.15× stdlib), docs
+(§1.2 method-selection guidance + §5 `dropped_norm` honesty), drop-in forwarding, and all
+13 M5a tasks + M5b P1/P2 + tasks 14–17. `solve_minnorm!` is rank-guarded (throws on
+`n_dead>0`) AND zero-alloc (workspace `n1a`/`n1b`/`rblk` scratch, `@allocated==0` test)
+— closed at task 10, re-verified this pass (413/413). Out of scope, filed as post-M5
+follow-ups: #54 (ComplexF64 frontal, conjugate Householder) and #55 (BigFloat/non-isbits
+frontal) — design_qr_m5b.md §A7.3 deliberately scoped generic-`T` to real isbits, so
+neither blocks M5. **Next milestone: M6 (GPU).**
+
+**2026-07-14: M5 = sparse QR (design CLOSED, implementation
 starting), GPU renumbered M3 → M6.** Design: [`docs/design_qr.md`](docs/design_qr.md)
 v2 — Fable v1 draft → **two fully independent adversarial reviews** (Opus:
 [`docs/design_qr_review.md`](docs/design_qr_review.md), 1 BLOCKER/5 DEFECTs/6 NITs;
