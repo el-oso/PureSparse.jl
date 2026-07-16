@@ -227,8 +227,9 @@ end
     using Random, SparseArrays
     rng = MersenneTwister(202)
     A = sprand(rng, 8, 5, 0.4)
-    # qr! requires sym.n1 == 0 (§2.3): force singletons off on the initial factor so
-    # this refactor-focused test can't randomly hit the n1>0 rejection path.
+    # Force singletons off so this test pins the plain BLOCK (n1==0) refactor path;
+    # the n1>0 warm path has its own items in qr_singleton_compose_tests.jl (§2.3
+    # warm-refactor update).
     F = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 0, singletons = false)
     A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .+ 1.0)
     PureSparse.qr!(F, A2; tol = 0)

@@ -663,14 +663,52 @@ O(|A|)); the queue-based peeling implementation is ours from that description.
 Two policy points, both taken from the paper's own reasoning:
 
 - **Values, not just pattern:** the magnitude test makes singleton detection a
-  *numeric*-phase-coupled decision. Therefore — exactly as SPQR does — **singletons are
-  exploited only in the one-shot `qr(A)` path and disabled when the symbolic is built
-  for reuse** (`symbolic_qr` + repeated `qr!`): a singleton set chosen for A's values is
-  invalid for A2's (paper §2.1: "If the symbolic analysis is to be reused ... singletons
-  are not exploited because they conflict with how rank-deficient matrices are
-  handled"). `QRSymbolic.n1 == 0` in the reuse path.
+  *numeric*-phase-coupled decision. The design originally scoped singletons as
+  one-shot-only for this reason ("a singleton set chosen for A's values is invalid for
+  A2's", following the paper's own reuse caveat) — that restriction is now LIFTED
+  (warm-refactor update, owner-authorized; see below). `symbolic_qr`'s standalone reuse
+  path still never peels (`QRSymbolic.n1 == 0` there); a `qr(A)`-composed `n1 > 0`
+  factor is fully `qr!`-refactorable.
 - Threshold: `qr_singleton_mult × τ` (§1.6), so the singleton and rank thresholds move
   together (a "singleton" below the rank tolerance would be a rank-deficiency dodge).
+
+**Warm singleton refactor (`qr!` on an `n1 > 0` factor) — the original one-shot-only
+rationale was only partially correct.** The singleton test has two halves: (1) "exactly
+one LIVE nonzero" — a purely STRUCTURAL property of the sparsity pattern plus the peel
+cascade, hence identical for any A2 sharing A's pattern (which is exactly what a
+refactor is; `check_refactor_shape` enforces it); and (2) the magnitude test — the only
+value-dependent half. So `qr!` REUSES the factor's structural peel set (surviving
+rows/cols, `A22`'s pattern, `r1colind` — all refactor-invariant) and re-checks only the
+magnitudes:
+
+1. **A22 value refresh, zero-alloc:** `_qr_compose_singletons` builds `A22` directly
+   (not via `getindex`) along with `a22map` (each A22 nzval slot's position in A's
+   nzval — pattern-invariant); the warm call gathers `a22buf.nzval[k] =
+   A2.nzval[a22map[k]]` into that same pre-allocated buffer.
+2. **Block warm refactor:** the composed factor's `rcolind`/`rval`/`vval`/`beta`/`ws`
+   ARE the A22 sub-factor's arrays, and `QRFactor.bsym` keeps the A22 block's own
+   symbolic (block-local `cperm`/`riperm`; `=== sym` when `n1 == 0`), so the standard
+   `n1 == 0` numeric loop (`_qr_block_numeric!`) runs unchanged on the refreshed
+   buffer — one loop, no duplication.
+3. **R11/R12 re-harvest + per-pivot magnitude guard:** `r1val` is re-filled from A2
+   through `r1srcpos` (the compose-time slot→`A.nzval` map, sorted once — `r1colind`
+   never changes). Each singleton pivot (row k's first stored entry — every entry of a
+   peeled row lands at final column ≥ k, equality exactly at the pivot) is re-checked
+   against the SAME criterion the cold peel used, `qr_singleton_mult × τ` with τ
+   recomputed from A2's values. A pivot that would no longer be peeled is dropped into
+   the existing §5.2 accounting: its whole `[R11 R12]` row is zeroed and counted as
+   dropped mass (`Q = I` on the singleton block, so dropping the row discards exactly
+   A2's peeled row), `n_dead += 1`, rank decreases, and `solve!` returns the basic
+   solution with that `x` entry 0 (same convention as any dead block column;
+   `solve_minnorm!` already rejects any `n_dead > 0` factor). For the motivating
+   LP-slack class (slack columns are scaled unit vectors, always well-conditioned) the
+   guard never fires, and the fast path pays one compare per singleton — the whole warm
+   call remains `@allocated == 0` (CLAUDE.md req 5), all buffers pre-allocated at
+   compose time (`a22buf`/`a22map`/`r1srcpos` fields on `QRFactor`).
+
+This is what makes the M5 D13 warm gate reachable on stratum (i): the warm `qr!` path
+now runs the same no-numerical-work singleton block the cold path does, instead of
+re-eliminating trivially-peelable columns at full cost with `singletons=false`.
 
 Implementation note (task 9, beyond the text above): `tol=0` alone does **not** disable
 peeling — it only relaxes the magnitude threshold to "any nonzero passes" (since the
@@ -983,8 +1021,10 @@ configuration only, design.md §9.1 layer-2 discipline) and as the §9.1 superse
 pattern-identical A2: reset cursors/stats, replay §4.1 — **zero allocations**
 (CLAUDE.md req 5; gated in the StrictMode-checks-disabled configuration, same as
 `cholesky!`). No assembly map is needed (unlike design.md §4.2): the scatter is a direct
-CSC walk through `riperm`, already O(nnz) with no searches. Note the reuse-path caveat
-from §2.3: `n1 = 0` under reuse.
+CSC walk through `riperm`, already O(nnz) with no searches. An `n1 > 0` (singleton-
+composed) factor refactors the same way — A22-buffer value refresh + this same replay
+on the block + the R11/R12 re-harvest with its per-pivot magnitude guard (§2.3's
+warm-refactor update), still zero-alloc.
 
 ### 4.4 Householder convention (documented, independently derived; B3 zero-norm guard added, v2)
 
@@ -1215,7 +1255,7 @@ S  = symbolic_qr(A; ordering=COLAMDOrdering())     # analysis, allocates; NO sin
 F  = qr(A; ordering=COLAMDOrdering(), tol=nothing) # singletons + symbolic + numeric
 F  = qr(A; ordering=COLAMDOrdering(), singletons=false) # opt out of §2.3 peeling entirely
 F  = qr(S, A; tol=nothing)                      # numeric into fresh factor sharing S
-qr!(F, A2)                                       # zero-alloc refactor, same pattern (requires F.sym.n1 == 0, §2.3)
+qr!(F, A2)                                       # zero-alloc refactor, same pattern (n1 > 0 supported, §2.3 warm-refactor update)
 x  = F \ b ; solve!(x, F, b) ; ldiv!(x, F, b)   # LS (m≥n) / basic solution
 solve_minnorm!(x, F, b)                          # §6.3 (F from qr of Aᵀ)
 apply_Q!(y, F); apply_Qt!(y, F); solve_R!(x, F, c); solve_Rt!(x, F, c)

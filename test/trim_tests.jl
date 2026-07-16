@@ -24,7 +24,8 @@
         PureSparse.ldlt(PureSparse.Symbolic{Int64}, SparseMatrixCSC{Float64, Int64}),
         PureSparse.ldlt!(PureSparse.LDLFactor{Float64, Int64}, SparseMatrixCSC{Float64, Int64}),
         PureSparse.solve!(Vector{Float64}, PureSparse.LDLFactor{Float64, Int64}, Vector{Float64}),
-        # QR (M5a task 10): in-place refactor (n1==0 only, §2.3) + least-squares solve.
+        # QR (M5a task 10): in-place refactor (incl. the n1>0 warm singleton path,
+        # §2.3 warm-refactor update — same method body) + least-squares solve.
         # `symbolic_qr`/`qr` both take a MANDATORY `ordering` keyword (no default, §2.1
         # — COLAMDOrdering() as the default lands in a later task) — TrimCheck's
         # `@validate` only supports positional-argument-type roots (`validate_function`

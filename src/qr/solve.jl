@@ -145,13 +145,23 @@ function solve!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) w
         # simply b at the k-th singleton's ORIGINAL row, rperm[k].
         x1 = F.ws.n1a                      # length n1, zero-alloc (task 10)
         @inbounds for k in n1:-1:1
+            # diag == 0 ⇔ a warm qr! (§2.3 warm-refactor update) dropped this
+            # singleton's pivot as numerically dead — basic-solution convention,
+            # x1[k] = 0, exactly like solve_R!'s dead-column branch. A cold-composed
+            # factor never has a zero diag here (the peel's magnitude test guarantees
+            # it), so this branch costs one compare on the common path.
+            diag = F.r1val[F.r1ptr[k]]
+            if diag == zero(T)
+                x1[k] = zero(T)
+                continue
+            end
             s = b[sym.rperm[k]]
             for p in (F.r1ptr[k] + 1):(F.r1ptr[k + 1] - 1)
                 jcol = F.r1colind[p]
                 v = F.r1val[p]
                 s -= v * (jcol <= n1 ? x1[jcol] : c[jcol - n1])
             end
-            x1[k] = s / F.r1val[F.r1ptr[k]]
+            x1[k] = s / diag
         end
         @inbounds for k in 1:n1
             x[sym.cperm[k]] = x1[k]

@@ -32,11 +32,15 @@
 # region on our side, unlike the original cold-vs-cold criterion (which showed real,
 # non-negligible GC-pause-driven timing bimodality on some gate matrices: up to 36% of
 # a cold call's wall time was GC on one, enough to flip a gate verdict between two
-# back-to-back runs with no code change). `qr!` requires `sym.n1==0`, so :column's warm
-# number always uses a `singletons=false`-forced initial factor (even on stratum (i)
-# matrices, where singletons ARE exploited on the cold-vs-cold reported number below);
-# :frontal never carries singletons at all (§A1.2), so its own factor needs no such
-# forcing. Cold-vs-cold (`ps_cold`/`ps_frontal_cold` vs `spqr_cold`) is still measured
+# back-to-back runs with no code change). :column's warm number refactors the REALISTIC
+# product-default factor (singletons on — `qr!` supports `sym.n1 > 0` since design_qr.md
+# §2.3's warm-refactor update; on matrices with no singletons, n1==0, this is
+# bit-identical to the previously-forced `singletons=false` factor, so only stratum (i)
+# is affected — verified: every stratum ii/iii gate matrix has n1==0). The forced-
+# nosingletons warm number is still measured and saved (`ps_warm_nosingletons`) for
+# transparency/history. :frontal never carries singletons at all (§A1.2), so its own
+# factor needs no such handling.
+# Cold-vs-cold (`ps_cold`/`ps_frontal_cold` vs `spqr_cold`) is still measured
 # and printed for transparency — genuinely one-shot workloads exist and the number
 # stays informative — but it is no longer the deciding inequality.
 #
@@ -88,7 +92,8 @@ FAER_AVAILABLE || @warn "faer shared library not found at $FAER_LIB — faer con
 end
 
 # One (label, A, stratum) gate matrix, one arm ("own" or "same-perm"): cold PureSparse
-# QR, cold SuiteSparseQR, warm PureSparse qr! (n1==0 forced), the AᵀA context arm.
+# QR, cold SuiteSparseQR, warm PureSparse qr! (realistic singletons-on factor), the
+# AᵀA context arm.
 function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::String)
     m, n = size(A)
     result = Dict{String,Any}("matrix" => label, "m" => m, "n" => n, "nnz" => nnz(A), "stratum" => stratum, "arm" => arm)
@@ -157,13 +162,19 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
         result["ps_frontal_error"] = sprint(showerror, e)
     end
 
-    # --- warm qr! (n1==0 forced; design_qr.md §9.3 D13: THE gate criterion for
-    # :column, mirroring gate.jl's ps_pureblas_warm) ---
+    # --- warm qr! (design_qr.md §9.3 D13: THE gate criterion for :column, mirroring
+    # gate.jl's ps_pureblas_warm). The gate number refactors F1 — the singletons-on
+    # product-default factor (`qr!` supports n1>0 since §2.3's warm-refactor update);
+    # refactoring against A itself leaves F1's values unchanged, so this doesn't
+    # perturb any other arm. The old singletons=false-forced warm number is kept as
+    # `ps_warm_nosingletons` for transparency (identical to ps_warm whenever n1==0). ---
+    b_warm = @be _ps_warm!($F1, $A) seconds = SECONDS samples = SAMPLES evals = 1
+    result["ps_warm"] = _median_time(b_warm)
     b_cold_ns = @be _ps_cold_nosing($A, $ps_ordering) seconds = SECONDS samples = SAMPLES evals = 1
     F1ns = PureSparse.qr(A; ordering = ps_ordering, singletons = false)
-    b_warm = @be _ps_warm!($F1ns, $A) seconds = SECONDS samples = SAMPLES evals = 1
+    b_warm_ns = @be _ps_warm!($F1ns, $A) seconds = SECONDS samples = SAMPLES evals = 1
     result["ps_cold_nosingletons"] = _median_time(b_cold_ns)
-    result["ps_warm"] = _median_time(b_warm)
+    result["ps_warm_nosingletons"] = _median_time(b_warm_ns)
 
     # --- config 2: SuiteSparseQR (cold, the baseline/gate number) ---
     b_cold2 = @be _spqr_cold($A_spqr; $spqr_kw...) seconds = SECONDS samples = SAMPLES evals = 1

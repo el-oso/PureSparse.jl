@@ -179,6 +179,23 @@ mutable struct QRFactor{T<:Real,Ti<:Integer} <: AbstractSparseFactor{T}
     r1ptr::Vector{Ti}              # length n1+1
     r1colind::Vector{Ti}
     r1val::Vector{T}
+    # --- warm singleton-refactor state (design_qr.md §2.3, warm-refactor update):
+    # everything `qr!` on an n1>0 factor needs, pre-allocated at compose time so the
+    # warm call stays zero-alloc (CLAUDE.md req 5). The structural peel set is
+    # refactor-invariant (peeling's "exactly one live nonzero" test is a function of
+    # the PATTERN + cascade only, and a refactor shares the pattern by contract), so
+    # all three maps below are fixed for the factor's lifetime. n1==0 factors carry
+    # trivial placeholders (bsym === sym, empty buffers).
+    bsym::QRSymbolic{Ti}           # the A22 block's OWN symbolic (block-LOCAL
+                                    #   cperm/riperm indexing a22buf directly); === sym
+                                    #   when n1==0. All other block fields are shared
+                                    #   by reference with the composed sym.
+    a22buf::SparseMatrixCSC{T,Ti}  # pre-allocated A22 = A[surv_rows, surv_cols]
+                                    #   buffer: colptr/rowval fixed, nzval refreshed
+                                    #   in place each warm qr! via a22map
+    a22map::Vector{Ti}             # A22 nzval slot -> A nzval slot (pattern-invariant)
+    r1srcpos::Vector{Ti}           # r1val slot -> A nzval slot (post-sort order), for
+                                    #   the zero-alloc R11/R12 re-harvest
     ws::QRWorkspace{T,Ti}          # §4.5
     stats::QRStats
     ok::Bool

@@ -70,7 +70,12 @@ function _qr_block(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Un
     beta = zeros(T, length(sym.parent))
     ws = QRWorkspace{T,Ti}(sym)
     r1ptr = ones(Ti, 1)                    # n1==0: length-1 sentinel (r1ptr[1]=1, no rows)
-    F = QRFactor{T,Ti}(sym, rcolind, rval, vval, beta, r1ptr, Ti[], T[], ws, QRStats(), true)
+    F = QRFactor{T,Ti}(
+        sym, rcolind, rval, vval, beta, r1ptr, Ti[], T[],
+        sym,                                                  # bsym: n1==0, the block IS the factor
+        SparseMatrixCSC(0, 0, Ti[one(Ti)], Ti[], T[]), Ti[], Ti[],  # a22buf/a22map/r1srcpos: unused
+        ws, QRStats(), true,
+    )
     qr!(F, A; tol)
     return F
 end
@@ -111,12 +116,12 @@ compare timings with/without the optimization).
   matrix where `:frontal` won sat at ratio ≥ 863, a wide margin). Non-Float64 `T`
   always uses `:column` regardless of the ratio (P2 not yet landed).
 
-Singletons are exploited ONLY in the `:column` path, never in [`symbolic_qr`](@ref)/
-[`qr!`](@ref)'s reuse path (§2.3: "a singleton set chosen for A's values is invalid
-for A2's" — a genuinely different matrix sharing this pattern could have different
-magnitudes at the same entries). The resulting `QRFactor` (`sym.n1 > 0`) is a
-terminal, one-shot object — do not call `qr!` on it (§2.3's own restriction; `qr!`
-asserts `sym.n1 == 0`).
+Singletons are exploited only in the `:column` path (never `:frontal`, §A1.2). The
+resulting `QRFactor` (`sym.n1 > 0`) is fully warm-refactorable via [`qr!`](@ref)
+(design_qr.md §2.3, warm-refactor update): the peel set's STRUCTURAL half ("exactly
+one live nonzero") is pattern-only and therefore refactor-invariant; only the
+magnitude test is value-dependent, and `qr!` re-checks it per pivot against the new
+values (see its docstring for the drop semantics when a pivot goes numerically small).
 """
 function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing,
         singletons::Bool = true, method::Symbol = :column) where {T,Ti<:Integer}
@@ -168,17 +173,97 @@ Foster–Davis-style dead-column drop (§5.2) folded into steps 3/4:
    3 above are not themselves τ-bounded and are the bulk of `dropped_norm`).
 
 `F.sym.n1 > 0` (a factor produced by [`qr`](@ref)'s singleton pre-elimination path,
-§2.3) is REJECTED — singletons are exploited only in the one-shot `qr(A)` path, never
-across a refactor (§2.3: "a singleton set chosen for A's values is invalid for A2's").
+§2.3) is SUPPORTED (design_qr.md §2.3, warm-refactor update — the original one-shot
+restriction is lifted): the structural peel set is refactor-invariant ("exactly one
+live nonzero" is a pattern-only property, and a refactor shares the pattern by
+contract), so the warm call (1) refreshes the pre-allocated `A22` buffer's values from
+`A` through the compose-time `a22map`, (2) re-harvests `R11`/`R12` from `A`'s peeled
+rows through `r1srcpos` — with a per-pivot MAGNITUDE guard, since only the magnitude
+half of the singleton test is value-dependent: a peeled pivot whose new magnitude
+drops to ≤ the singleton threshold (`QR_SINGLETON_MULT · τ`, the same criterion the
+cold peel used) is no longer a valid pivot and is dropped into the existing
+`n_dead`/`dropped_norm` accounting (its whole `R11`/`R12` row is zeroed and counted as
+dropped mass; `solve!` returns the basic solution with that `x` entry 0, exactly like
+any other dead column) — and (3) runs the standard block numeric loop on the refreshed
+`A22` buffer, writing into the factor's own (shared, block-sized) arrays. All three
+steps are zero-allocation (CLAUDE.md req 5).
 """
 function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
     sym = F.sym
-    sym.n1 == 0 || throw(ArgumentError(
-        "qr!: F has sym.n1 = $(sym.n1) > 0 (produced by qr(A)'s singleton pre-elimination, " *
-        "design_qr.md §2.3) — singletons are not exploited across a refactor; build a " *
-        "fresh factor via qr(A2) instead of refactoring this one",
-    ))
     check_refactor_shape(A, sym.m, sym.n, "qr!")
+    n1 = sym.n1
+    if n1 == 0
+        n_dead, dropped_sq = _qr_block_numeric!(F, A, _qr_threshold(A, tol))
+    else
+        # --- (1) refresh the A22 buffer's values from A (pattern-invariant map) ---
+        anz = A.nzval
+        buf = F.a22buf.nzval
+        amap = F.a22map
+        @inbounds for k in eachindex(amap)
+            buf[k] = anz[amap[k]]
+        end
+        # --- (2) re-harvest R11/R12 with the per-pivot magnitude guard (§2.3):
+        # r1colind is structural (fixed, already sorted from compose time); only the
+        # values change. Row k's diagonal is its FIRST stored entry (same invariant
+        # solve! already relies on): every entry of peeled row k lands at final
+        # column >= k, with equality exactly at the pivot. The guard reuses the cold
+        # peel's own criterion (QR_SINGLETON_MULT × τ, τ recomputed from A's current
+        # values) — a pivot that would no longer be peeled is dropped Foster–Davis-
+        # style into n_dead/dropped_norm rather than divided by at solve time. ---
+        sthr = T(QR_SINGLETON_MULT) * _qr_threshold(A, tol)
+        n_dead = 0
+        dropped_sq = zero(T)
+        @inbounds for k in 1:n1
+            lo = Int(F.r1ptr[k])
+            hi = Int(F.r1ptr[k + 1]) - 1
+            if abs(anz[F.r1srcpos[lo]]) <= sthr
+                # Dead singleton pivot: A2's value at a structurally-peeled pivot went
+                # numerically small. Q = I on the singleton block (§2.3), so dropping
+                # row k of [R11 R12] discards exactly A's peeled row — that whole row
+                # is the dropped mass (§5.2's certificate, singleton flavor).
+                for p in lo:hi
+                    v = anz[F.r1srcpos[p]]
+                    dropped_sq += v * v
+                    F.r1val[p] = zero(T)
+                end
+                n_dead += 1
+            else
+                for p in lo:hi
+                    F.r1val[p] = anz[F.r1srcpos[p]]
+                end
+            end
+        end
+        # --- (3) warm-refactor the A22 block into the factor's own arrays. τ comes
+        # from the refreshed A22 (matching the cold path, where the block's qr! also
+        # computed its threshold from A22, not the full A). ---
+        nd, dq = _qr_block_numeric!(F, F.a22buf, _qr_threshold(F.a22buf, tol))
+        n_dead += nd
+        dropped_sq += dq
+    end
+    F.stats.nnzR = sym.nnzR + length(F.r1colind)   # sym.nnzR is block-only; r1 adds the rest
+    F.stats.nnzV = sym.nnzV
+    F.stats.flops = sym.flops
+    F.stats.rank = length(sym.parent) + n1 - n_dead
+    F.stats.n_dead = n_dead
+    F.stats.dropped_norm = Float64(sqrt(dropped_sq))
+    F.ok = true
+    check_finite(F.rval, "qr!")
+    check_finite(F.vval, "qr!")
+    return F
+end
+
+"""
+    _qr_block_numeric!(F::QRFactor, A::SparseMatrixCSC, tau) -> (n_dead, dropped_sq)
+
+The left-looking numeric loop (steps 1–4 of [`qr!`](@ref)'s docstring) over the BLOCK:
+`A` is the block matrix (`A` itself when `F.sym.n1 == 0`, the refreshed `F.a22buf`
+when `n1 > 0`) and all indexing goes through `F.bsym`, the block's OWN symbolic
+(block-LOCAL `cperm`/`riperm`; `=== F.sym` when `n1 == 0`, and sharing every other
+field with it by reference when `n1 > 0` — see `_qr_compose_singletons`). Writes
+`rval`/`rcolind`/`vval`/`beta`/`ws` in place; the caller owns `stats`/`ok`/finiteness.
+"""
+function _qr_block_numeric!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}, tau::T) where {T,Ti<:Integer}
+    sym = F.bsym
     ws = F.ws
     nb = length(sym.parent)
     x = ws.x
@@ -186,7 +271,6 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Rea
     tsub = ws.tsub
     pack = ws.pack
     rcursor = ws.rcursor
-    tau = _qr_threshold(A, tol)
 
     fill!(stamp, zero(Ti))
     @inbounds for k in 1:nb
@@ -300,14 +384,5 @@ function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Rea
             end
         end
     end
-    F.stats.nnzR = sym.nnzR
-    F.stats.nnzV = sym.nnzV
-    F.stats.flops = sym.flops
-    F.stats.rank = nb - n_dead
-    F.stats.n_dead = n_dead
-    F.stats.dropped_norm = Float64(sqrt(dropped_sq))
-    F.ok = true
-    check_finite(F.rval, "qr!")
-    check_finite(F.vval, "qr!")
-    return F
+    return n_dead, dropped_sq
 end

@@ -183,7 +183,44 @@ function _qr_compose_singletons(
 
     surv_rows = Ti[i for i in 1:m if rowlive[i]]
     surv_cols = Ti[j for j in 1:n if collive[j]]
-    A22 = A[surv_rows, surv_cols]
+    # A22 = A[surv_rows, surv_cols], built directly (not via getindex) so we ALSO get
+    # a22map: each A22 nzval slot's position in A's own nzval. The map is pattern-
+    # invariant (surv_rows/surv_cols are structural, §2.3 warm-refactor update), so
+    # `qr!` on the composed factor can refresh A22's values from a new A2 with a plain
+    # zero-alloc gather into this same buffer. Rows stay sorted per column because A's
+    # are and the live-row relabeling is monotone.
+    row_local = Vector{Ti}(undef, m)
+    li = zero(Ti)
+    @inbounds for i in 1:m
+        if rowlive[i]
+            li += one(Ti)
+            row_local[i] = li
+        end
+    end
+    colptr22 = Vector{Ti}(undef, length(surv_cols) + 1)
+    colptr22[1] = one(Ti)
+    nnz22 = 0
+    @inbounds for (jj, j) in enumerate(surv_cols)
+        for p in A.colptr[j]:(A.colptr[j + 1] - 1)
+            rowlive[A.rowval[p]] && (nnz22 += 1)
+        end
+        colptr22[jj + 1] = Ti(nnz22 + 1)
+    end
+    rowval22 = Vector{Ti}(undef, nnz22)
+    nzval22 = Vector{T}(undef, nnz22)
+    a22map = Vector{Ti}(undef, nnz22)
+    k22 = 0
+    @inbounds for j in surv_cols
+        for p in A.colptr[j]:(A.colptr[j + 1] - 1)
+            i = A.rowval[p]
+            rowlive[i] || continue
+            k22 += 1
+            rowval22[k22] = row_local[i]
+            nzval22[k22] = A.nzval[p]
+            a22map[k22] = Ti(p)
+        end
+    end
+    A22 = SparseMatrixCSC(length(surv_rows), length(surv_cols), colptr22, rowval22, nzval22)
 
     ordering22 = _restrict_ordering(ordering, collive, surv_cols)
     F22 = _qr_block(A22; ordering = ordering22, tol)
@@ -234,9 +271,10 @@ function _qr_compose_singletons(
         r1ptr[k + 1] = r1ptr[k] + (rowptr[r + 1] - rowptr[r])
     end
     r1colind = Vector{Ti}(undef, Int(r1ptr[n1 + 1] - 1))
+    r1srcpos = Vector{Ti}(undef, Int(r1ptr[n1 + 1] - 1))
     r1val = Vector{T}(undef, Int(r1ptr[n1 + 1] - 1))
-    # Write each row's (final-column, value) pairs directly into their final
-    # r1colind/r1val slice (already exactly sized via r1ptr above), then insertion-sort
+    # Write each row's (final-column, source-position) pairs directly into their final
+    # r1colind/r1srcpos slice (already exactly sized via r1ptr above), then insertion-sort
     # that slice in place by column — task #51: the ORIGINAL version allocated a fresh
     # `Tuple{Ti,T}[]` (grown via `push!`) per peeled row and `sort!`ed it, which on
     # lp_slack-shaped matrices (n1 in the hundreds, one alloc+sort per row) dominated
@@ -256,16 +294,23 @@ function _qr_compose_singletons(
     # compilation) — a known LLVM class for deeply-nested generic loops, not a runtime
     # bug; isolating it as a small standalone function gives LLVM a much smaller unit
     # to analyze and resolved it.
+    # Sort (colind, SOURCE POSITION) in lockstep, then fill r1val through r1srcpos —
+    # same result as sorting (colind, value) directly (final columns within a row are
+    # distinct, so the order is unique), but keeps r1srcpos as the persistent
+    # slot→A.nzval map the §2.3 warm refactor's zero-alloc re-harvest needs.
     @inbounds for k in 1:n1
         r = peel_row[k]
         c0 = r1ptr[k]
         deg = zero(Ti)
         for p in rowptr[r]:(rowptr[r + 1] - 1)
             r1colind[c0 + deg] = ciperm[rowidx[p]]
-            r1val[c0 + deg] = A.nzval[rowpos[p]]
+            r1srcpos[c0 + deg] = rowpos[p]
             deg += one(Ti)
         end
-        _insort_row!(r1colind, r1val, c0, deg)
+        _insort_row!(r1colind, r1srcpos, c0, deg)
+    end
+    @inbounds for p in eachindex(r1val)
+        r1val[p] = A.nzval[r1srcpos[p]]
     end
 
     # F22.stats only covers A22's own block (it has no knowledge n1 singleton columns
@@ -302,6 +347,13 @@ function _qr_compose_singletons(
 
     return QRFactor{T,Ti}(
         sym, F22.rcolind, F22.rval, F22.vval, F22.beta,
-        r1ptr, r1colind, r1val, ws, stats, F22.ok,
+        r1ptr, r1colind, r1val,
+        # §2.3 warm-refactor state: bsym is F22's OWN symbolic (block-local
+        # cperm/riperm over A22, sharing every other field with the composed `sym`
+        # above by reference); a22buf is the very A22 the cold block factorization
+        # just consumed — its colptr/rowval are fixed, its nzval becomes the warm
+        # refresh target.
+        F22.sym, A22, a22map, r1srcpos,
+        ws, stats, F22.ok,
     )
 end
