@@ -1017,6 +1017,69 @@ the closest it has been all session; `grid_ls_40x30`'s single-sample noise and a
 fresh multi-sample confirmation are the natural next steps before considering
 `ii_sparse_R` fully closed alongside `i_singleton`.
 
+**2026-07-16 (CRITICAL, changes the whole M5 picture): the M5b BLOCKED frontal path
+produces NUMERICALLY WRONG results, and every M5 gate number this session was timing
+a broken factorization. Two distinct bugs found, one fixed, one open + delegated.**
+
+Chain of discovery. While closing the gate: (a) the user correctly rejected gating on
+a cold path that triggers GC pauses ("if there is a GC-call on any calculation, that
+gate CANNOT be closed"); (b) reading `design.md`/`design_qr.md` §9.3 showed M1/M2/M4
+already gate on the WARM (zero-alloc, StrictMode-verified) refactor path, and
+`design_qr.md`'s cold-vs-cold choice for M5 rested on a flawed inference — "SPQR has no
+refactor mode, so we must compare cold" doesn't follow; SPQR's cold IS its best case,
+so the correct gate is our-warm-vs-SPQR-cold (recorded as design_qr.md **D13**,
+§9.3 corrected, `qr_gate.jl` reworked to gate on `min(:column, :frontal warm) < SPQR
+cold`); (c) re-running that corrected gate SEGFAULTED on neuromancer (Zen5) at
+`dense_arrow_n800x200`, while galen (Zen3) completed — a march-portability violation,
+exactly the class the user flagged as a contract breach.
+
+**Bug 1 (FIXED): ftau slab out-of-bounds write.** `--check-bounds=yes` turned the
+segfault into a clean `BoundsError` at `frontal_numeric.jl:284`. Root cause: two
+inconsistent block sizes for the same `ftau` T-slab — the symbolic phase budgeted it
+with `qr_block_size(0, 0)` (=8) under a "one query suffices" assumption, but
+`qr_block_size` is dimension-dependent and the numeric phase capped panels at
+`qr_block_size(max_front_rows, max_front_cols)` (=16 for an 800×169 front). The numeric
+loop packed `pcount×pcount` T's (pcount ≤ 16) into a slab budgeted for pcount ≤ 8 →
+overflow. Undefined behavior: benign adjacent-heap write on Zen3 (silent), unmapped-page
+SIGSEGV on Zen5. Fixed by making `NB` a single source of truth: a new `QRFrontSymbolic.nb`
+field computed once (after the max front dims are known) as `qr_block_size(max_front_rows,
+max_front_cols)`, used by BOTH the `ftauptr` slab sizing AND `QRFrontWorkspace.Tm`
+(`frontal.jl` now reads `fsym.nb` instead of recomputing). Verified: repro clean under
+`--check-bounds=yes` (cold + 2 warm refactors), full suite 221663 pass. Regression test
+added (`qr_frontal_numeric_tests.jl`) asserting the single-source-of-truth invariant
+(`size(ws.Tm,1) == fsym.nb`) on a matrix deliberately large enough to hit nb==16 — no
+prior frontal test did.
+
+**Bug 2 (OPEN, delegated to a Fable agent): the blocked multifrontal numeric loop is
+numerically wrong on ANY large front.** Fixing Bug 1 un-crashed the blocked path but
+exposed this: `qr_frontal` on a front over `QR_FRONTAL_UNBLOCKED_THRESHOLD`
+(=2304 elements → the `wy_t!`/`wy_apply!` BLOCKED path, not the scalar fallback) returns
+a wrong R / least-squares solution. Measured least-squares residual `‖Aᵀ(b-Ax)‖/(‖A‖₁‖b‖)`:
+
+```
+front 40x25   (scalar,  nb=8)   frontal 3.3e-18   column 5.3e-18   OK
+front 60x60   (blocked, nb=8)   frontal 2.8e-3    column 8.7e-18   WRONG
+front 100x80  (blocked, nb=8)   frontal 1.5e-3    column 2.3e-18   WRONG
+front 400x384 (blocked, nb=16)  frontal 1.5e-4    column 1.3e-18   WRONG
+```
+
+Wrong at nb=8 AND nb=16, so it is NOT the OOB and NOT nb-specific — a genuine defect in
+the blocked kernel orchestration (trailing-apply / R-harvest / pass-up), pre-existing,
+independent of everything else this session. **Why it was invisible until now:** every
+existing frontal correctness test uses matrices under ~1000 elements → all take the
+SCALAR fallback; the blocked path — the entire point of multifrontal, the BLAS-3 core of
+M5b — was NEVER correctness-tested end-to-end. And the gate measures only TIMING, so this
+session's "16/16 / 15/16 / 14/16 / 12/16" verdicts were **timing a factorization that
+produces wrong answers — those numbers are meaningless**. Regression test marks the
+blocked-path correctness checks `@test_broken` (suite stays green, auto-alerts when fixed);
+delegated to a Fable-model agent per CLAUDE.md's hard-algorithmic-piece rule.
+
+**What is NOT affected:** M1/M2/M4 (Cholesky/LDLᵀ — entirely separate code). The M5a
+`:column` path (correct at every size, independently gated, ~1e-18 residual throughout —
+it is the trustworthy oracle that exposed Bug 2). No CLOSED gate is invalidated (M5 was
+never closed); but the whole M5 gate is now blocked on Bug 2 and cannot be meaningfully
+re-run until the blocked path is correct.
+
 **2026-07-16 (M1/M2, CLAUDE.md req 5): a real, previously-unverified zero-alloc gap
 found and fixed in `solve!` for `cholesky!`/`ldlt!` — not M5b, but landed via M5b's
 own StrictMode infrastructure being extended to the Cholesky/LDLT paths.** Added

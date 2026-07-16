@@ -43,6 +43,20 @@ struct QRFrontSymbolic{Ti<:Integer}
     nnzRF::Int
     max_front_rows::Int
     max_front_cols::Int
+    # Global compact-WY panel block size = qr_block_size(max_front_rows, max_front_cols).
+    # THE single source of truth for NB, shared by BOTH `ftauptr`'s per-front T-slab
+    # budget (sized `nb * min(mmax_f, n_f)` below) AND `QRFrontWorkspace.Tm`'s dimension
+    # / the numeric loop's panel-width cap (frontal.jl, `size(ws.Tm, 1)`). These two MUST
+    # use the identical value: the numeric loop packs each panel's `pcount×pcount` T
+    # (pcount ≤ nb) into the slab, so a slab budgeted with a SMALLER nb than the panel
+    # cap overflows `ftau` — a genuine out-of-bounds write. That is exactly what happened
+    # when the slab used `qr_block_size(0, 0)` (=8) while the workspace used
+    # `qr_block_size(800, 169)` (=16): `qr_block_size` is dimension-dependent, so the
+    # "one query with (0,0) suffices" assumption was wrong. The bug was invisible on
+    # Zen3 (the stray write landed in benign adjacent heap) and a hard SIGSEGV on Zen5
+    # (unmapped page) — a portability-contract violation traced via `--check-bounds=yes`
+    # turning the segfault into a clean BoundsError at frontal_numeric.jl:284.
+    nb::Int
     fflops::Float64
 end
 
@@ -171,9 +185,6 @@ function symbolic_qr_frontal(sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T,Ti};
     max_front_rows = 0
     max_front_cols = 0
     fflops = 0.0
-    NB = qr_block_size(0, 0)   # PureBLAS-derived; §A7.1 — a single query suffices (front
-                               # shapes vary, but wy_t!/wy_apply! panel width is a fixed
-                               # PureBLAS-derived constant today, mirroring _QR_NB's own status)
     @inbounds for f in 1:nfront
         p_f = Int(fsuper[f + 1] - fsuper[f])
         n_f = Int(fcolptr[f + 1] - fcolptr[f])
@@ -190,8 +201,20 @@ function symbolic_qr_frontal(sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T,Ti};
         max_front_cols = max(max_front_cols, n_f)
         fvalptr[f + 1] = fvalptr[f] + Ti(mmax_f * n_f)
         frowptr2[f + 1] = frowptr2[f] + Ti(mmax_f)
-        ftauptr[f + 1] = ftauptr[f] + Ti(NB * min(mmax_f, n_f))
         fpanelptr[f + 1] = fpanelptr[f] + Ti(n_f)   # capacity: at most n_f panels
+    end
+
+    # ftau T-slab budget — MUST use the SAME global NB the numeric workspace will
+    # (frontal.jl's `QRFrontWorkspace`, `qr_block_size(max_front_rows, max_front_cols)`),
+    # so it can only be computed here, after the loop above has found the max front dims.
+    # See the `nb` field's doc comment on the struct for why an inconsistent NB here is a
+    # real OOB, not a mere over/under-allocation. `min(mmax_f, n_f)` per front bounds the
+    # number of eliminations (= Σ pcount over that front's panels); with each pcount ≤ nb,
+    # Σ pcount² ≤ nb · Σ pcount ≤ nb · min(mmax_f, n_f), so this budget is exactly right.
+    nb_global = max_front_cols == 0 ? 1 : qr_block_size(max_front_rows, max_front_cols)
+    @inbounds for f in 1:nfront
+        n_f = Int(fcolptr[f + 1] - fcolptr[f])
+        ftauptr[f + 1] = ftauptr[f] + Ti(nb_global * min(Int(fmmax[f]), n_f))
     end
 
     # Padded R row pointers (§A5.5): row k (global/final column index) owns
@@ -227,6 +250,6 @@ function symbolic_qr_frontal(sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T,Ti};
         sym, nfront, fsuper, fsnode, fparent, fchildptr, fchildren,
         fcolptr, fcolind, arowptr, rowptr, rowcol, atrans,
         fmmax, fcrmax, fvalptr, frowptr2, ftauptr, fpanelptr, frptr,
-        nnzVF, nnzRF, max_front_rows, max_front_cols, fflops,
+        nnzVF, nnzRF, max_front_rows, max_front_cols, nb_global, fflops,
     )
 end

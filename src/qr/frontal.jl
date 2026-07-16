@@ -45,7 +45,13 @@ end
 
 function QRFrontWorkspace{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
     nb = length(fsym.base.parent)
-    NB = fsym.max_front_cols == 0 ? 1 : qr_block_size(fsym.max_front_rows, fsym.max_front_cols)
+    # Read the ONE NB the symbolic phase committed to (fsym.nb) — do NOT recompute it
+    # here. The ftau T-slab was budgeted with exactly this value; sizing Tm / the panel
+    # cap from a separately-recomputed NB is what let the two diverge and overflow ftau
+    # (see the `nb` field's doc comment on QRFrontSymbolic). `fsym.nb == qr_block_size(
+    # max_front_rows, max_front_cols)` by construction, so this is identical in value —
+    # but now sourced from a single place, so it cannot drift.
+    NB = fsym.nb
     mrows = max(fsym.max_front_rows, 1)
     ncols = max(fsym.max_front_cols, 1)
     return QRFrontWorkspace{T,Ti}(

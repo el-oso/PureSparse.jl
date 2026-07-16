@@ -130,3 +130,60 @@ end
         @test (@allocated PureSparse.apply_Q!(y, F)) == 0
     end
 end
+
+@testitem "qr_frontal numeric: large-front block-size consistency — ftau slab vs numeric panel cap (regression: NB(0,0)≠NB(front) OOB)" setup=[QRFrontalNumericHelpers] begin
+    using SparseArrays, LinearAlgebra, Random
+    # qr_block_size comes from PureBLAS but is a TRANSITIVE dep here (not in test/'s own
+    # Project.toml) — reach it through PureSparse's own binding, not a bare `using PureBLAS`.
+    qbs = PureSparse.qr_block_size
+
+    # Regression for the `qr_block_size(0,0)` vs `qr_block_size(max_front_rows,
+    # max_front_cols)` mismatch: the symbolic ftau T-slab was budgeted with the former,
+    # the numeric loop packed pcount×pcount T's capped by the latter. `qr_block_size` is
+    # dimension-dependent (8 for small/zero dims, 16 once a front is large enough), so on
+    # a matrix with a large-enough front the packing overwrote `ftau` by up to one panel's
+    # worth — a genuine OOB write, silent-corruption on Zen3, hard SIGSEGV on Zen5. Every
+    # PRE-EXISTING frontal test used small fronts (nb==8 both places, no mismatch), so
+    # none caught it; this one deliberately builds a front large enough to make nb==16.
+    #
+    # A fully-dense 400×384 matrix has a single 400×384 front — big enough to step
+    # qr_block_size up to 16 (measured: the 8→16 boundary sits between a 256×256 and a
+    # 384×384 front). Density 1.0 is fine here: the point is the front SIZE, not sparsity.
+    rng = MersenneTwister(31337)
+    A = sparse(randn(rng, 400, 384))
+    ordering = PureSparse.COLAMDOrdering()
+    F = PureSparse.qr_frontal(A; ordering)
+
+    # (1) The test must actually exercise the nb>baseline regime — otherwise it's vacuous
+    # (a future shrink of this matrix below the 8→16 boundary would silently defang it).
+    @test F.fsym.nb > qbs(0, 0)
+    # (2) THE single-source-of-truth invariant, checked directly: the numeric loop's panel
+    # width cap (`size(ws.Tm,1)`) must equal the nb the ftau slab was budgeted with
+    # (`fsym.nb`). This fails deterministically on ANY hardware if the two NB uses ever
+    # diverge again — independent of whether the resulting OOB happens to crash. THIS is
+    # the OOB-regression this test primarily guards, and it PASSES with the fix in place.
+    @test size(F.ws.Tm, 1) == F.fsym.nb
+    @test F.fsym.nb == qbs(F.fsym.max_front_rows, F.fsym.max_front_cols)
+
+    # (3)/(4) End-to-end correctness of the BLOCKED path (front element count 153600 >
+    # QR_FRONTAL_UNBLOCKED_THRESHOLD, so this takes the wy_t!/wy_apply! blocked kernel,
+    # NOT the scalar fallback every other frontal test hits). These are `@test_broken`:
+    # fixing the ftau OOB above un-crashed the blocked path but revealed a SEPARATE,
+    # pre-existing correctness bug in the blocked multifrontal numeric loop — it returns a
+    # wrong R / least-squares solution on ANY large-enough front (measured: least-squares
+    # residual ~1e-3 to 1e-4 vs the :column path's ~1e-18, at nb==8 AND nb==16, so it is
+    # NOT the OOB and NOT nb-specific). Never caught before because no correctness test
+    # ever exercised a front over the 2304-element blocked threshold. Tracked separately;
+    # `@test_broken` flips to a failure (alerting us) the moment the blocked path is fixed.
+    R = dense_R_frontal(F)
+    Ad = Matrix(A)[:, F.fsym.base.cperm]
+    @test_broken maximum(abs.(R' * R .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
+
+    b = randn(MersenneTwister(31338), 400)
+    x = PureSparse.solve!(zeros(384), F, b)
+    @test_broken normal_eq_resid(A, x, b) < 1e-6 * max(1, norm(b))
+
+    PureSparse.qr!(F, A)   # warm refactor at nb==16 must at least stay in-bounds
+    Rw = dense_R_frontal(F)
+    @test_broken maximum(abs.(Rw' * Rw .- Ad' * Ad)) < 1e-6 * max(1, norm(Ad)^2)
+end
