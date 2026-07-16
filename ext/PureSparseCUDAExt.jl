@@ -185,4 +185,7 @@ function gpu_assemble!(dx, nzval, amap)
     return dx
 end
 
+# Synchronous all-GPU Cholesky numeric loop (design_gpu.md §4, correctness-first).
+include("gpu_numeric.jl")
+
 end # module
