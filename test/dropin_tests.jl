@@ -197,7 +197,16 @@
         """)
 
         julia_exe = joinpath(Sys.BINDIR, Base.julia_exename())
-        cmd = ignorestatus(`$julia_exe --project=$envdir $script`)
+        # `JULIA_LOAD_PATH`, if set in the PARENT process's environment (ReTestItems'
+        # own worker isolation sets it to just `@`, observed on CI — a plain local
+        # `julia --project=test` run doesn't have it set at all), is inherited by
+        # `Base.run` by default and excludes `@stdlib` — breaking this subprocess's own
+        # `using Pkg` with `ArgumentError: Package Pkg not found in current path`,
+        # confirmed by reproducing that exact error via `JULIA_LOAD_PATH=@`. Unsetting
+        # it lets the subprocess construct Julia's normal default LOAD_PATH from
+        # `--project` alone, same as any standalone `julia --project=... script.jl`
+        # invocation.
+        cmd = ignorestatus(addenv(`$julia_exe --project=$envdir $script`, "JULIA_LOAD_PATH" => nothing))
         proc = Base.run(pipeline(cmd; stdout = Base.stdout, stderr = Base.stderr))
         @test proc.exitcode == 0
     finally
@@ -249,7 +258,16 @@ end
         """)
 
         julia_exe = joinpath(Sys.BINDIR, Base.julia_exename())
-        cmd = ignorestatus(`$julia_exe --project=$envdir $script`)
+        # `JULIA_LOAD_PATH`, if set in the PARENT process's environment (ReTestItems'
+        # own worker isolation sets it to just `@`, observed on CI — a plain local
+        # `julia --project=test` run doesn't have it set at all), is inherited by
+        # `Base.run` by default and excludes `@stdlib` — breaking this subprocess's own
+        # `using Pkg` with `ArgumentError: Package Pkg not found in current path`,
+        # confirmed by reproducing that exact error via `JULIA_LOAD_PATH=@`. Unsetting
+        # it lets the subprocess construct Julia's normal default LOAD_PATH from
+        # `--project` alone, same as any standalone `julia --project=... script.jl`
+        # invocation.
+        cmd = ignorestatus(addenv(`$julia_exe --project=$envdir $script`, "JULIA_LOAD_PATH" => nothing))
         proc = Base.run(pipeline(cmd; stdout = Base.stdout, stderr = Base.stderr))
         @test proc.exitcode == 0
     finally
