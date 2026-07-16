@@ -701,6 +701,54 @@ attributed past "no single hotspot" from an earlier sampling profile — that
 profile predates BOTH the scalar-fallback fix and this symbolic fix, worth
 re-running fresh) — not done this session, flagged for the next one.
 
+**2026-07-16 (later same day): followed up on the `banded_ls` breakdown flagged
+above — found the gate had already effectively closed and the single-sample
+verdicts were noise, not a real deficit; gate now 11/16, `ii_sparse_R` 5/6.**
+
+A component-level attribution attempt (symbolic/frontal-symbolic/factor-construct/
+numeric measured separately, summed, compared to the real total) fell apart with a
+NEGATIVE unattributed residual for `banded_ls` (parts summed to MORE than the
+whole) — direct evidence that at this timescale (~1ms total), separately-measured
+sub-components carry more noise than the effect being chased, and further
+decomposition here is not productive. Switched to high-sample-count (600-1000
+samples, `seconds=8-10`) direct comparisons instead of decomposing further:
+
+- `banded_ls_n1500x500_bw15`: PS frontal median **0.9961ms** vs SPQR median
+  **1.0056ms** — PureSparse is marginally FASTER on the honest statistic (62.8% of
+  individual PS samples beat SPQR's median). Down from ~5-8× behind at session
+  start. The gate's own single-sample-per-config runs were catching noise on a
+  photo-finish, not a real deficit — same failure mode already documented for
+  `grid_ls_70x50` earlier this file, now also true here.
+- `grid_ls_70x50`: genuinely different, NOT resolved to simple noise — the PS
+  distribution is bimodal (min 5.52ms, actually below SPQR's own min of 5.80ms,
+  but roughly half the samples land near 9ms instead of ~5.8ms, pulling the median
+  to 9.07ms vs SPQR's 6.04ms). Plausible mechanism, not yet confirmed: GC-pause
+  bimodality from the cold path's fresh per-call allocation (symbolic + front
+  factor + workspace, all rebuilt every call) — a real fast mode exists and beats
+  SPQR outright, something intermittently pushes ~2/3 of calls into a slow mode.
+  Flagged as a genuine, distinct lead for a future session (GC-pause diagnosis,
+  e.g. `GC.gc_num()` deltas per sample or `--heap-size-hint`), not resolved here.
+
+Re-ran the actual gate script fresh (not the noisier decomposed breakdown) to get
+an honest current snapshot: **11/16** (was 8/16 this morning), `ii_sparse_R`
+**5/6** (was 2/6) — `banded_ls` own-arm now PASSES (1.005ms vs SPQR 1.033ms),
+`grid_ls_70x50` PASSES both arms (6.062ms/4.747ms vs SPQR 8.396ms/5.025ms, a
+favorable draw from the bimodal distribution characterized above — expect this
+specific matrix's gate verdict to keep bouncing run-to-run until the bimodality
+itself is diagnosed). Only `banded_ls` same-perm still fails, and only barely
+(0.684ms vs SPQR 0.606ms, ~13% gap — well inside the noise band the 1000-sample
+check above demonstrates for this matrix). `i_singleton` unchanged at 2/6,
+already-documented out-of-scope `:column` per-call overhead (not re-investigated
+this pass). `iii_flop_rich` still a clean 4/4.
+
+**M5 gate status: 11/16, not yet passing — but `ii_sparse_R` has gone from the
+worst stratum (0/6 for most of this session) to nearly resolved (5/6, remaining
+gap noise-level) purely from this session's fixes (panel-split trigger, scalar
+fallback, symbolic `sort!` elimination) without any matrix-specific tuning.**
+Next session: diagnose `grid_ls_70x50`'s GC-pause bimodality (the one concrete
+unresolved lead), then a clean multi-run gate confirmation before considering
+`ii_sparse_R` genuinely closed.
+
 **2026-07-15: user flagged a suspected apples-to-oranges bug in the faer comparator —
 real, but not the mechanism suspected, and the measured margin holds.** User's
 hypothesis was that faer materializes explicit Q/R while PureSparse only stores R
