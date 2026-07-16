@@ -2529,7 +2529,12 @@ the fix specifically targets)*.
    and `refine!`, see "M2 progress — `refine!` + IPM guide docs LANDED")*
 8. IPM guide docs. *(DONE 2026-07-13 — `docs/src/ipm-guide.md`, see same section)*
 
-### M3 — GPU (CUDA weakdep extension, in-package)
+### M3 — GPU  ⚠️ SUPERSEDED by `### M6` below (2026-07-16)
+**This section is stale pre-M1 content and contradicts design.md §8** (Fable M6 review,
+F1: KA-kernels+level-set+reported-not-gated here vs vendor-BLAS+per-supernode-staging in
+§8). Kept for history only. The live M6 plan is in the `### M6` section further down and
+`docs/design_gpu.md` (in progress). Original stale text preserved below:
+
 **Deliverables:** `ext/PureSparseCUDAExt/*`; level-set scheduler (host-side); device
 factor/solve; GPU testitems (skipped when no device); GPU benchmark config (reported, not
 gated against CPU).
@@ -2566,7 +2571,53 @@ numeric phase (requires two new PureBLAS kernels, tasks P1/P2 there) triggered i
 wall-time gate vs stdlib SuiteSparseQR fails on any stratum. **M5 closeout gate is the
 unconditional wall-time inequality** (design_qr.md §9.3).
 
-### M6 — GPU (renumbered from M3, 2026-07-14; content unchanged — see `### M3` above)
+### M6 — GPU (the last milestone; supersedes the stale `### M3` above)
+**Kicked off 2026-07-16 after a Fable design review (all 3 factual findings verified).**
+Full design: `docs/design_gpu.md` (in progress; goes through the same v1 → two independent
+adversarial reviews → v2 process as design.md/design_qr.md — user-approved).
+
+**Scope (user decision):** Cholesky + LDLᵀ together (M6a Cholesky, M6b LDLᵀ — shared
+scheduler). Sparse QR is OUT of M6 (different multifrontal-WY arch, its gate already
+closed). Update/downdate stays CPU (latency-bound).
+
+**Architecture (Fable review):** device-resident factor (12 GB fits any winnable
+problem); symbolic-time **upward-closed etree frontier** splitting CPU subtrees from GPU
+supernodes (one-way, once-only panel uploads — left-looking supports it without
+restructuring), replacing the underived per-supernode `gpu_flop_threshold=2e9` (F2: it
+never fires on any existing gate matrix); exact symbolic-time capacity check with loud CPU
+fallback. The offload must be derived from `llt.jl` AS IT IS (F3: it has a contiguity β=1
+fast path that §8/§4.3 predate), not from the stale doc.
+
+**Kernel strategy (user requirement, 2026-07-16 — DUAL track):**
+1. **Wire cuBLAS/cuSOLVER first** (gemm/syrk/trsm/potrf) — a working, gate-passing GPU
+   path and the proven-fast baseline to beat. Clean-room-fine (closed binary, used
+   black-box; we never read its source). NOT cuDSS/cusolverSp (NVIDIA's *sparse* solvers
+   stay black-box baselines like CHOLMOD — the sparse orchestration stays pure Julia).
+2. **Tune pure-Julia kernels to BEAT cuBLAS**, and make them **vendor-portable**
+   (KernelAbstractions → AMD ROCm / Intel oneAPI). Rationale: PureBLAS already beats
+   OpenBLAS AND MKL on CPU, so beating cuBLAS FP64 is a legitimate target, not a fantasy;
+   and portable pure kernels are a strategic win cuBLAS can't give. Phase-0 measured (galen
+   RTX 4070): cuBLAS FP64 ~305 GF (67% of ~455 GF peak); naive AND 4×4-register-blocked
+   pure kernels both ~148 GF (0.48×), NO register spills (diagnostic) → not a pure-Julia
+   ceiling, an un-profiled bottleneck (occupancy/FP64-ILP). Pure-kernel optimization is a
+   live background R&D track (Fable agent on galen, NCU-profiled).
+   **Prior wrong turn (corrected):** an earlier read concluded "pure can't beat cuBLAS" from
+   the 0.48× naive number — the exact "benchmarked a slow path → wrong 'it's dead' verdict"
+   trap; register blocking giving 0 improvement was the tell the KERNEL was wrong, not pure
+   Julia. See [[feedback_anchor_proven_fastest_path]]-style discipline.
+
+**Gate (Fable, needs the two contract amendments below signed off):** ≥2× median warm
+refactor vs our OWN single-thread CPU PureSparse on a NEW large-matrix stratum (fits ~9 GB)
++ ≤ noise regression on the existing gate set (auto threshold) + still beats CHOLMOD+
+OpenBLAS on the stratum. cuDSS = reported context arm (like faer was for QR).
+
+**Two contract amendments requiring explicit user sign-off (design.md hard reqs):**
+(i) req-5 zero-alloc GPU wording (kernel launches/CUBLAS allocate host bytes — need
+"0 device bytes after setup + measured/bounded host bytes"); (ii) req-2 GPU gate baseline
+(the ≥2×-vs-own-CPU definition above). Not yet approved.
+
+**Hardware:** galen (RTX 4070, 12 GB, sm_89), CUDA.jl 6.2.1 in `~/Documents/claude/
+gpu_probe/`. Probes: `benchmark/gpu/phase0_probe.jl`, `kernel_diag.jl`.
 
 ## Standing rules
 
