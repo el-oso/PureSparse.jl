@@ -124,7 +124,7 @@ COLAMD fill (neuromancer, clock-locked, cold factorize-only medians of 10 sample
 | density | PureSparse `:frontal` | faer | SuiteSparseQR | vs faer | vs SPQR |
 |---|---|---|---|---|---|
 | 1% | **6.47 s** | 6.62 s | 8.25 s | 1.02× | 1.28× |
-| 10% | **6.69 s** | 6.93 s | 8.99 s | 1.04× | 1.34× |
+| 10% | **6.69 s** | 6.93 s | 8.98 s | 1.04× | 1.34× |
 
 ![7000×4000 sparse QR comparison](assets/qr_faer_comparison.png)
 
