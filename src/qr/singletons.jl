@@ -133,6 +133,28 @@ function _restrict_ordering(ordering::GivenOrdering{Ti}, collive::BitVector, sur
 end
 
 """
+    _insort_row!(colind, val, c0, deg)
+
+In-place insertion sort of `colind[c0+1:c0+deg]` (and `val` in lockstep) by ascending
+`colind`. A standalone function so its `while`-inside-`for` compiles as its own small
+LLVM unit — see the call site's comment in [`_qr_compose_singletons`](@ref).
+"""
+function _insort_row!(colind::Vector{Ti}, val::Vector{T}, c0::Ti, deg::Ti) where {T,Ti<:Integer}
+    @inbounds for i in Ti(2):deg
+        cj = colind[c0 + i - one(Ti)]
+        vj = val[c0 + i - one(Ti)]
+        jj = i - one(Ti)
+        while jj >= one(Ti) && colind[c0 + jj - one(Ti)] > cj
+            colind[c0 + jj] = colind[c0 + jj - one(Ti)]
+            val[c0 + jj] = val[c0 + jj - one(Ti)]
+            jj -= one(Ti)
+        end
+        colind[c0 + jj] = cj
+        val[c0 + jj] = vj
+    end
+end
+
+"""
     _qr_compose_singletons(A, peel_col, peel_row, collive, rowlive, ordering, tol) -> QRFactor
 
 Assemble a full `QRFactor` (`sym.n1 > 0`) from a peeled singleton block plus the
@@ -213,19 +235,37 @@ function _qr_compose_singletons(
     end
     r1colind = Vector{Ti}(undef, Int(r1ptr[n1 + 1] - 1))
     r1val = Vector{T}(undef, Int(r1ptr[n1 + 1] - 1))
+    # Write each row's (final-column, value) pairs directly into their final
+    # r1colind/r1val slice (already exactly sized via r1ptr above), then insertion-sort
+    # that slice in place by column — task #51: the ORIGINAL version allocated a fresh
+    # `Tuple{Ti,T}[]` (grown via `push!`) per peeled row and `sort!`ed it, which on
+    # lp_slack-shaped matrices (n1 in the hundreds, one alloc+sort per row) dominated
+    # this function's own cold-call time (measured: ~2500 allocations total for
+    # lp_slack_n800x150's 800 peeled rows, ~59% of the full `qr()` call's wall time).
+    # Insertion sort (not `sort!`) is deliberate: each row's degree is small (LP-slack's
+    # own shape — a handful of structural-column entries per constraint row, §2.3's
+    # motivating class), where O(deg²) comparisons cost far less than one heap
+    # allocation; correctness is unaffected either way (both produce the same sorted
+    # column-ascending order this array's own contract requires, verified against the
+    # original `sort!`-based version on the gate matrix set before landing).
+    # `_insort_row!` is its OWN function (a function-barrier split, not inlined here)
+    # because fusing this insertion sort's `while`-inside-`for` into `_qr_compose_
+    # singletons`'s own triple-nested loop caused a pathological LLVM compile hang
+    # (LoopStrengthReduce/SCEV, minutes+, confirmed via a hung stack trace pointing at
+    # `jl_parallel_gc_threadfun`/`SCEVExpander` during THIS function's first
+    # compilation) — a known LLVM class for deeply-nested generic loops, not a runtime
+    # bug; isolating it as a small standalone function gives LLVM a much smaller unit
+    # to analyze and resolved it.
     @inbounds for k in 1:n1
         r = peel_row[k]
-        pairs = Tuple{Ti,T}[]
+        c0 = r1ptr[k]
+        deg = zero(Ti)
         for p in rowptr[r]:(rowptr[r + 1] - 1)
-            push!(pairs, (ciperm[rowidx[p]], A.nzval[rowpos[p]]))
+            r1colind[c0 + deg] = ciperm[rowidx[p]]
+            r1val[c0 + deg] = A.nzval[rowpos[p]]
+            deg += one(Ti)
         end
-        sort!(pairs; by = first)
-        c = r1ptr[k]
-        for (fc, v) in pairs
-            r1colind[c] = fc
-            r1val[c] = v
-            c += one(Ti)
-        end
+        _insort_row!(r1colind, r1val, c0, deg)
     end
 
     # F22.stats only covers A22's own block (it has no knowledge n1 singleton columns

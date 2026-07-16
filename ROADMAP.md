@@ -956,6 +956,67 @@ defect. Overall gate: still 11/16 (numbers moved between strata, total unchanged
 `ii_sparse_R` and `iii_flop_rich` both now solid; `i_singleton`/task #51 is the
 sole remaining open stratum.
 
+**2026-07-16 (later still): task #51 closed — the "call overhead" WAS still an
+allocation problem, just a different one. `i_singleton` jumps to 6/6, overall gate
+11/16 → 14/16.**
+
+Profiled `qr(lp_slack_n800x150; singletons=true)`'s cold-call breakdown
+(BenchmarkTools, function-barrier-isolated so each phase compiles/measures
+independently): full call ~196μs median, 2580 allocations, 668.80 KiB. Split into
+`peel_column_singletons` (~44μs, 49 allocs), `_qr_block(A22)` on the (degenerate,
+0-row for this matrix — every row consumed by a slack singleton) surviving block
+(~20μs, 161 allocs), leaving `_qr_compose_singletons`'s OWN bookkeeping at ~59% of
+total wall time and the bulk of the allocation count.
+
+Root cause: the R11/R12 harvest loop (gathering each peeled row's original entries,
+mapped to final column position, sorted ascending) allocated a fresh `Tuple{Ti,T}[]`
+(grown via `push!`) PER PEELED ROW, then `sort!`ed it — for `lp_slack_n800x150`'s 800
+peeled rows, ~2400 of the function's 2531 allocations traced directly to this one
+loop. Fixed: write each row's (column, value) pairs directly into their already-
+correctly-sized final `r1colind`/`r1val` slice, then insertion-sort that slice in
+place (a `_insort_row!` helper) — zero allocation, and for LP-slack's typically-small
+row degrees O(deg²) insertion sort costs far less than one heap allocation would
+have. Correctness: unaffected either way, since both produce the same ascending
+column order the array's own contract requires — confirmed via the full local test
+suite (`qr_singleton_tests.jl`/`qr_singleton_compose_tests.jl` and everything else,
+221663/221663 pass) rather than an ad hoc script (see below).
+
+`_insort_row!` had to be its OWN standalone function, not inlined at the call site:
+fusing its `while`-inside-`for` into `_qr_compose_singletons`'s own triple-nested
+loop caused a genuine LLVM compile-time explosion (LoopStrengthReduce/SCEV, observed
+hung for minutes via a live stack trace) on first compilation — a known LLVM
+pathology for deeply-nested generic loops in one large function, not a runtime bug;
+isolating it as a small function gave LLVM a much smaller unit to analyze and
+resolved it immediately. (A separate red herring while chasing this: an ad hoc
+verification script's own `for` loop at top-level/global scope, referencing several
+global variables across many iterations, hit the *same* LLVM pathology independent
+of any PureSparse code — confirmed by reproducing it against the unmodified,
+already-committed `sort!`-based version too. Standard Julia practice — wrap script
+loops in a function — didn't fully avoid it either in that throwaway script; the
+existing project test suite was the correct verification tool all along, not a new
+script, and gave a clean, fast, unambiguous answer.)
+
+Measured (BenchmarkTools, `lp_slack_n800x150`, 300 samples, local): full cold
+`qr(...)` call 195.9μs → 123.8μs median (~37% faster), 668.80 KiB → 448.85 KiB
+(~33% less), 2580 → 266 allocations (~90% fewer). galen, full 16-matrix gate
+(same matrices, back-to-back with the #50 fix already in place):
+
+```
+i_singleton     1/6 → 6/6   (staircase_n2000 and both lp_slack matrices now PASS
+                              or WIN outright both arms, e.g. lp_slack_n300x60
+                              own-arm: PS 0.034ms vs SPQR 0.044ms)
+overall gate    11/16 → 14/16
+```
+
+`ii_sparse_R` dipped 6/6 → 4/6 in this same draw (`grid_ls_40x30` failed both arms)
+— consistent with this specific matrix's already-documented tight-margin/noise-floor
+behavior earlier in this file (it has flipped PASS/fail across single-sample runs
+several times this session with no code change in between), not a regression from
+this fix. `iii_flop_rich` unaffected, still 4/4. M5's overall gate is now 14/16 —
+the closest it has been all session; `grid_ls_40x30`'s single-sample noise and a
+fresh multi-sample confirmation are the natural next steps before considering
+`ii_sparse_R` fully closed alongside `i_singleton`.
+
 **2026-07-16 (M1/M2, CLAUDE.md req 5): a real, previously-unverified zero-alloc gap
 found and fixed in `solve!` for `cholesky!`/`ldlt!` — not M5b, but landed via M5b's
 own StrictMode infrastructure being extended to the Cholesky/LDLT paths.** Added
