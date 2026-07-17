@@ -71,20 +71,25 @@ function mf_symbolic(sym) where {}
         end
     end
 
-    # --- arena offsets (§M.3) ---
-    # CORRECTNESS-FIRST: monotonic no-reuse arena — each front's U gets a permanent slot, so a
-    # parent's U never aliases its children's U's (they COEXIST during extend-add: children are
-    # read while the parent's U is zeroed+written). Memory = Σ usize. The bounded stack-with-
-    # compaction arena (§M.3, parent U assembled above children then copied down over their freed
-    # space) is the memory optimization, deferred until the formulation is validated.
+    # --- BOUNDED arena: work slot + stack (§M.3) ---
+    # Layout: arena[1 : max_usize] = a WORK slot where each front builds its U (children are read
+    # from the STACK above, so no aliasing), then compact-copies into arena[uoff[s]:] on the stack
+    # (reusing consumed children's freed space). Non-overlapping by construction (work slot < stack).
+    # `uoff[s]` = the front's FINAL stack offset (where its parent reads it). Postorder stack
+    # simulation gives uoff + the exact peak — Σ live U's, far smaller than the monotonic Σ all U's.
     usize = Vector{Ti}(undef, ns)
     @inbounds for s in 1:ns; b = nsrowf(s) - nscolf(s); usize[s] = Ti(b * b); end
+    max_us = max(maximum(Int, usize), 1)                   # work-slot size
     uoff = Vector{Ti}(undef, ns)
-    top = 1
+    offstack = Int[]; top = max_us + 1; peak = top - 1      # stack starts above the work slot
     @inbounds for s in 1:ns
-        uoff[s] = Ti(top); top += Int(usize[s])
+        nc = Int(children_ptr[s + 1]) - Int(children_ptr[s]); us = Int(usize[s])
+        cbase = nc > 0 ? offstack[length(offstack) - nc + 1] : top   # deepest child's offset
+        for _ in 1:nc; pop!(offstack); end                 # free children
+        top = cbase                                        # compact: U_s lands where children were
+        uoff[s] = Ti(top); push!(offstack, top); top += us
+        peak = max(peak, top - 1)
     end
-    peak = top - 1
 
     return MFSymbolic{Ti}(children_ptr, children, emap, emap_ptr, k1, uoff, usize, peak)
 end
@@ -117,15 +122,15 @@ function cpu_multifrontal_cholesky!(x_host::Vector{T}, arena::Vector{T}, M::MFSy
         below_s = nsrow - nscol
         panel = _mfpanel(x_host, Int(px[s]), nsrow, nscol)
         uo = Int(M.uoff[s]); us = Int(M.usize[s])
-        for i in uo:(uo + us - 1); arena[i] = zero(T); end   # zero U_s (pitfall #4)
-        U_s = below_s > 0 ? _mfpanel(arena, uo, below_s, below_s) : nothing
+        for i in 1:us; arena[i] = zero(T); end               # zero U_s in the WORK slot (§M.3)
+        U_s = below_s > 0 ? _mfpanel(arena, 1, below_s, below_s) : nothing
 
         for ci in Int(M.children_ptr[s]):(Int(M.children_ptr[s + 1]) - 1)   # extend-add children
             c = Int(M.children[ci])
             nsc_c = Int(super[c + 1]) - Int(super[c])
             below_c = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - nsc_c
             below_c == 0 && continue
-            U_c = _mfpanel(arena, Int(M.uoff[c]), below_c, below_c)
+            U_c = _mfpanel(arena, Int(M.uoff[c]), below_c, below_c)   # child on the STACK
             eb = Int(M.emap_ptr[c])
             for b in 1:below_c
                 rb = Int(M.emap[eb + b - 1])
@@ -147,6 +152,7 @@ function cpu_multifrontal_cholesky!(x_host::Vector{T}, arena::Vector{T}, M::MFSy
             L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
             BLAS.trsm!('R', 'L', 'T', 'N', one(T), diag, L21)
             BLAS.syrk!('L', 'N', -one(T), L21, one(T), U_s)   # U_s = children − L21·L21ᵀ
+            copyto!(arena, uo, arena, 1, us)                  # compact work slot → STACK at uoff[s]
         end
     end
     end
@@ -175,8 +181,8 @@ function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vecto
         below_s = nsrow - nscol; j0 = Int(super[s])
         panel = _mfpanel(x_host, Int(px[s]), nsrow, nscol)
         uo = Int(M.uoff[s]); us = Int(M.usize[s])
-        for i in uo:(uo + us - 1); arena[i] = zero(T); end
-        U_s = below_s > 0 ? _mfpanel(arena, uo, below_s, below_s) : nothing
+        for i in 1:us; arena[i] = zero(T); end                # zero U_s in the WORK slot (§M.3)
+        U_s = below_s > 0 ? _mfpanel(arena, 1, below_s, below_s) : nothing
         for ci in Int(M.children_ptr[s]):(Int(M.children_ptr[s + 1]) - 1)   # extend-add children
             c = Int(M.children[ci]); nsc_c = Int(super[c + 1]) - Int(super[c])
             below_c = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - nsc_c; below_c == 0 && continue
@@ -220,6 +226,7 @@ function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vecto
                 for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
             end
             BLAS.gemm!('N', 'T', -one(T), W, Matrix(L21), one(T), U_s)
+            copyto!(arena, uo, arena, 1, us)                  # compact work slot → STACK at uoff[s]
         end
     end
     end

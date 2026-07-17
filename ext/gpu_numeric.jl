@@ -293,14 +293,14 @@ function gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym::MFSymbolic{Ti}, G::G
         below_s = nsrow - nscol
         panel = _dpanel(d_nzval, px, s, nsrow, nscol)
         uo = Int(Msym.uoff[s]); us = Int(Msym.usize[s])
-        us > 0 && CUDA.fill!(view(d_arena, uo:(uo + us - 1)), zero(T))   # zero U_s (pitfall #4)
-        U_s = below_s > 0 ? _dslab(d_arena, uo, below_s, below_s) : d_dummy
+        us > 0 && CUDA.fill!(view(d_arena, 1:us), zero(T))   # zero U_s in the WORK slot (§M.3)
+        U_s = below_s > 0 ? _dslab(d_arena, 1, below_s, below_s) : d_dummy
 
         for ci in Int(Msym.children_ptr[s]):(Int(Msym.children_ptr[s + 1]) - 1)
             c = Int(Msym.children[ci])
             below_c = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - (Int(super[c + 1]) - Int(super[c]))
             below_c == 0 && continue
-            U_c = _dslab(d_arena, Int(Msym.uoff[c]), below_c, below_c)
+            U_c = _dslab(d_arena, Int(Msym.uoff[c]), below_c, below_c)   # child on the STACK
             emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
             _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, below_c;
                                           ndrange = cld(below_c * below_c, 256) * 256)
@@ -313,6 +313,7 @@ function gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym::MFSymbolic{Ti}, G::G
             L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
             trsm!('R', 'L', 'T', 'N', one(T), diag, L21)
             gpu_syrk_nt!(U_s, L21, -one(T), one(T))          # U_s = children − L21·L21ᵀ
+            copyto!(d_arena, uo, d_arena, 1, us)             # compact work slot → STACK at uoff[s]
         end
     end
     CUDA.synchronize()
@@ -343,11 +344,11 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
 
         if on_gpu[s]
             panel = _dpanel(d_nzval, px, s, nsrow, nscol)
-            us > 0 && CUDA.fill!(view(device_arena, uo:(uo + us - 1)), zero(T))
-            U_s = below_s > 0 ? _dslab(device_arena, uo, below_s, below_s) : d_dummy
+            us > 0 && CUDA.fill!(view(device_arena, 1:us), zero(T))   # zero U_s in the device WORK slot
+            U_s = below_s > 0 ? _dslab(device_arena, 1, below_s, below_s) : d_dummy
             for ci in c0:c1
                 c = Int(Msym.children[ci]); bc = childbelow(c); bc == 0 && continue
-                U_c = _dslab(device_arena, Int(Msym.uoff[c]), bc, bc)
+                U_c = _dslab(device_arena, Int(Msym.uoff[c]), bc, bc)   # child on the device STACK
                 emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
                 _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
             end
@@ -356,15 +357,16 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
             if below_s > 0
                 L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
                 trsm!('R', 'L', 'T', 'N', one(T), diag, L21); gpu_syrk_nt!(U_s, L21, -one(T), one(T))
+                copyto!(device_arena, uo, device_arena, 1, us)       # compact → device STACK
             end
             d2h && copyto!(x_host, Int(px[s]), d_nzval, Int(px[s]), nsrow * nscol)   # panel D2H (oracle)
         else
             panel = _hpanel(x_host, Int(px[s]), nsrow, nscol)
-            for i in uo:(uo + us - 1); host_arena[i] = zero(T); end
-            U_s = below_s > 0 ? _hpanel(host_arena, uo, below_s, below_s) : nothing
+            for i in 1:us; host_arena[i] = zero(T); end          # zero U_s in the host WORK slot
+            U_s = below_s > 0 ? _hpanel(host_arena, 1, below_s, below_s) : nothing
             for ci in c0:c1
                 c = Int(Msym.children[ci]); bc = childbelow(c); bc == 0 && continue
-                U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])
+                U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])   # child on the host STACK
                 for b in 1:bc
                     rb = Int(Msym.emap[eb + b - 1])
                     for a in b:bc
@@ -378,8 +380,9 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
             if below_s > 0
                 L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
                 BLAS.trsm!('R', 'L', 'T', 'N', one(T), diag, L21); BLAS.syrk!('L', 'N', -one(T), L21, one(T), U_s)
+                copyto!(host_arena, uo, host_arena, 1, us)        # compact work slot → host STACK
             end
-            # crossing (CPU front, GPU parent): upload its U to the device arena (same offset)
+            # crossing (CPU front, GPU parent): upload its U to the device arena (same STACK offset)
             (Int(sparent[s]) != 0 && on_gpu[Int(sparent[s])] && us > 0) &&
                 copyto!(device_arena, uo, host_arena, uo, us)
         end
@@ -484,13 +487,13 @@ function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, 
         below_s = nsrow - nscol; j0 = Int(super[s])
         panel = _dpanel(d_nzval, px, s, nsrow, nscol)
         uo = Int(Msym.uoff[s]); us = Int(Msym.usize[s])
-        us > 0 && CUDA.fill!(view(d_arena, uo:(uo + us - 1)), zero(T))
-        U_s = below_s > 0 ? _dslab(d_arena, uo, below_s, below_s) : d_dummy
+        us > 0 && CUDA.fill!(view(d_arena, 1:us), zero(T))   # zero U_s in the WORK slot (§M.3)
+        U_s = below_s > 0 ? _dslab(d_arena, 1, below_s, below_s) : d_dummy
         for ci in Int(Msym.children_ptr[s]):(Int(Msym.children_ptr[s + 1]) - 1)
             c = Int(Msym.children[ci])
             bc = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - (Int(super[c + 1]) - Int(super[c]))
             bc == 0 && continue
-            U_c = _dslab(d_arena, Int(Msym.uoff[c]), bc, bc)
+            U_c = _dslab(d_arena, Int(Msym.uoff[c]), bc, bc)   # child on the STACK
             emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
             _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
         end
@@ -509,6 +512,7 @@ function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, 
             W2 = view(d_W, 1:below_s, 1:nscol)
             _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = nd)  # W2 = L21·D
             gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))             # U_s −= L21·D·L21ᵀ
+            copyto!(d_arena, uo, d_arena, 1, us)                    # compact work slot → STACK at uoff[s]
         end
     end
     CUDA.synchronize()
@@ -544,11 +548,11 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
 
         if on_gpu[s]
             panel = _dpanel(d_nzval, px, s, nsrow, nscol)
-            us > 0 && CUDA.fill!(view(device_arena, uo:(uo + us - 1)), zero(T))
-            U_s = below_s > 0 ? _dslab(device_arena, uo, below_s, below_s) : d_dummy
+            us > 0 && CUDA.fill!(view(device_arena, 1:us), zero(T))   # zero U_s in the device WORK slot
+            U_s = below_s > 0 ? _dslab(device_arena, 1, below_s, below_s) : d_dummy
             for ci in c0:c1
                 c = Int(Msym.children[ci]); bc = cbelow(c); bc == 0 && continue
-                U_c = _dslab(device_arena, Int(Msym.uoff[c]), bc, bc)
+                U_c = _dslab(device_arena, Int(Msym.uoff[c]), bc, bc)   # child on the device STACK
                 emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
                 _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
             end
@@ -565,15 +569,16 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                 W2 = view(d_W, 1:below_s, 1:nscol)
                 _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = nd)
                 gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))
+                copyto!(device_arena, uo, device_arena, 1, us)       # compact → device STACK
             end
             d2h && copyto!(x_host, Int(px[s]), d_nzval, Int(px[s]), nsrow * nscol)
         else
             panel = _hpanel(x_host, Int(px[s]), nsrow, nscol)
-            for i in uo:(uo + us - 1); host_arena[i] = zero(T); end
-            U_s = below_s > 0 ? _hpanel(host_arena, uo, below_s, below_s) : nothing
+            for i in 1:us; host_arena[i] = zero(T); end          # zero U_s in the host WORK slot
+            U_s = below_s > 0 ? _hpanel(host_arena, 1, below_s, below_s) : nothing
             for ci in c0:c1
                 c = Int(Msym.children[ci]); bc = cbelow(c); bc == 0 && continue
-                U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])
+                U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])   # child on the host STACK
                 for b in 1:bc
                     rb = Int(Msym.emap[eb + b - 1])
                     for a in b:bc
@@ -608,7 +613,9 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                     d = dvec[j0 + jj - 1]; for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
                 end
                 BLAS.gemm!('N', 'T', -one(T), W, Matrix(L21), one(T), U_s)
+                copyto!(host_arena, uo, host_arena, 1, us)        # compact work slot → host STACK
             end
+            # crossing (CPU front, GPU parent): upload its U to the device arena (same STACK offset)
             (Int(sparent[s]) != 0 && on_gpu[Int(sparent[s])] && us > 0) &&
                 copyto!(device_arena, uo, host_arena, uo, us)
         end

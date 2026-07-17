@@ -10,7 +10,7 @@ function grid3d(d)
         k<d&&(A[p,lin(i,j,k+1)]=A[lin(i,j,k+1),p]=-1.0) end; A+0.1I
 end
 mint(f,n=4)=minimum(f() for _ in 1:n)
-for d in (24,28)
+for d in (24,28,36,40,44)
     H=grid3d(d); n1=size(H,1); n2=n1÷50
     Ac=sprand(rng,n2,n1,1.0/n1); D=sparse(2.0I,n2,n2); K=[H Ac'; Ac -D]
     n=n1+n2; signs=Int8[i≤n1 ? 1 : -1 for i in 1:n]
@@ -24,7 +24,8 @@ for d in (24,28)
         cut=snf[clamp(round(Int,qtl*G0.cpu.nsuper),1,G0.cpu.nsuper)]
         G=ext.gpu_symbolic(K;ordering=PureSparse.AMDOrdering(),frontier_cutoff=cut); ng=count(G.on_gpu); ng==0&&continue
         M=ext.mf_symbolic(G.cpu)
-        if M.arena_peak*8/1e9+G.xlen*8/1e9>9.5; continue; end
+        gb=(M.arena_peak+G.xlen)*8/1e9
+        if gb>9.5; @printf("  q=%.3f arena %.2f GB > 9.5 — skip\n",qtl,gb); continue; end
         xh=Vector{Float64}(undef,G.xlen); ha=Vector{Float64}(undef,max(M.arena_peak,1))
         da=CUDA.zeros(Float64,max(M.arena_peak,1)); dz=CUDA.zeros(Float64,G.xlen)
         dv=Vector{Float64}(undef,n); dd=CUDA.zeros(Float64,n)

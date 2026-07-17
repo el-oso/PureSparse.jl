@@ -553,6 +553,18 @@ offset `uoff[s]` + exact host/device peak occupancy (single source of truth for 
 peak — divergence is pitfall #3). No runtime stack. Zero-alloc; sizing IS the allocation. Feeds
 `gpu_device_bytes` + `gpu_capacity_ok` loud fallback. `d_cbuf`/`d_boundbuf` retired.
 
+*Bounded layout (IMPLEMENTED).* `arena[1 : max_usize]` = a **work slot**; `arena[max_usize+1 …]`
+= a **bounded stack** of the live U's. Each front builds its U in the work slot (extend-add reads
+children from the stack *above* — disjoint, no aliasing), then **compact-copies** it into
+`arena[uoff[s]:]`, reusing the freed space where its children sat. The compaction is
+non-overlapping by construction (`uoff[s] ≥ max_usize+1 > usize[s]`, so work-slot source and
+stack dest never overlap — no `memmove` hazard). The postorder stack simulation computes `uoff`
+(each front lands at its deepest child's offset = `cbase`) and the exact peak = `max_usize +
+max-live-stack`, **5.9× smaller than the monotonic Σ-all-U's at grid3d_44** and the ratio grows
+with size — the difference between OOM and fit for the large SQD/KKT gate stratum. Hybrid: two
+physical arenas (host + device), each with its own work slot at offset 1; a crossing CPU front
+compacts to its host stack slot then H2D-uploads that slot to the same device stack offset.
+
 **§M.4 Hybrid residency.** Device arena holds GPU-front U's **plus crossing CPU U's** (a CPU
 child of a GPU parent: U computed on host, H2D to its device slot). No U downloads (upward
 closure). **Crossing set = CPU fronts whose `sparent` is GPU** (maximal-CPU-subtree roots) —
