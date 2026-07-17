@@ -405,12 +405,13 @@ On the §8.3 large-matrix stratum, all median wall-time, **single-thread CPU met
 (stated so it's not mistaken for threaded-CPU). Both arms share the CPU `symbolic` (analyze
 once); the timed region is the **warm numerical factor + solve** — on the GPU arm both run on
 device (§7, no full-factor D2H; only `b`/`x` vectors transfer), on the CPU arm both run on CPU.
-1. GPU-enabled `cholesky!`+solve ≥ **3×** faster than our own single-thread CPU PureSparse
-   (`cholesky!`+solve). *(3× — user-set target, believed achievable on this GPU (2026-07-17);
-   **provisional pending §8.3 measurement**, to be confirmed from the *achieved* crossover —
+1. GPU-enabled `cholesky!`+solve ≥ **5×** faster than our own single-thread CPU PureSparse
+   (`cholesky!`+solve). *(5× — user-set target, raised from 3× on 2026-07-17 after the vendor
+   (cuSOLVER/cuBLAS) multifrontal MEASURED 5.04× on the 44³ KKT, proving 5× is achievable on
+   this GPU; the pure-kernel path must hold it. Confirmed against the *achieved* crossover —
    our 349 GF pure kernel vs measured single-thread DGEMM ~55–65 GF ≈ 5–6× dense headroom,
    discounted by assembly/scatter/launch Amdahl — not from the 455 GF peak. Held under the
-   no-fudge rule: if the hybrid cannot reach 3× on the stratum we investigate or report the
+   no-fudge rule: if the hybrid cannot reach 5× on the stratum we investigate or report the
    miss, we do not silently lower it.)*
 2. **No regression** on the existing M1/M2 gate set: with the auto frontier, small/medium
    matrices stay on CPU (or the ext isn't even constructed, §2.2) → regression ≤ the harness's
@@ -461,7 +462,8 @@ of nsuper* is the wrong shape; if a zero-host-alloc launch path is demonstrated 
 instead)."* The per-launch floor is measured first (remaining Phase-0), then gated as a ceiling.
 
 **B — req 2 (gate baseline) on GPU. ✅ APPROVED WITH CHANGES (user, 2026-07-17).** The §8.1
-three-clause gate, with the user-directed changes: (i) clause 1 margin **3×** (was 2×), (ii)
+three-clause gate, with the user-directed changes: (i) clause 1 margin **5×** (raised 2× → 3×
+→ 5× as the vendor multifrontal measured 5.04× on 44³, proving the bar; the pure path holds it), (ii)
 timed region = **numerical factor + solve, both on device** (§7 device solves; no full-factor
 D2H — only `b`/`x` vectors move). Retained: the `GivenOrdering` same-perm arm and clause 3 (GPU
 PureSparse still beats **CPU** CHOLMOD+OpenBLAS, both ordering arms — this carries the original
