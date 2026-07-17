@@ -280,13 +280,15 @@ All-GPU multifrontal supernodal Cholesky (design_gpu.md §M). `d_nzval` holds th
 (length `G.xlen`); `d_arena` the update matrices (length `Msym.arena_peak`). Correctness-first
 (monotonic arena, per-call `d_emap` upload).
 """
-function gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym::MFSymbolic{Ti}, G::GPUSymbolic, A) where {Ti}
+function gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym::MFSymbolic{Ti}, G::GPUSymbolic, A;
+                                    d_emap = nothing, d_dummy = nothing, d_Anz = nothing) where {Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
     T = eltype(d_nzval)
-    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)     # A into panel regions
-    d_emap = CuArray(Msym.emap)
+    # persistent device buffers reused across refactors (amendment A: 0 pattern-H2D, 0 device-pool)
+    gpu_assemble!(d_nzval, isnothing(d_Anz) ? CuArray(A.nzval) : copyto!(d_Anz, A.nzval), G.d_amap)
+    isnothing(d_emap) && (d_emap = CuArray(Msym.emap))
     backend = get_backend(d_nzval)
-    d_dummy = CUDA.zeros(T, 1, 1)
+    isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
     ok = true; failcol = 0
     @inbounds for s in 1:ns
         nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
@@ -327,13 +329,15 @@ end
 # parent's extend-add reads all children's U's from the device arena uniformly. No U downloads
 # (upward closure). One uoff layout, two physical arenas (host + device).
 function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector{T}, device_arena,
-                                  Msym::MFSymbolic{Ti}, G::GPUSymbolic, A; d2h::Bool = true) where {T,Ti}
+                                  Msym::MFSymbolic{Ti}, G::GPUSymbolic, A; d2h::Bool = true,
+                                  d_emap = nothing, d_dummy = nothing, d_Anz = nothing) where {T,Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
     px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
     fill!(x_host, zero(T))
     @inbounds for p in eachindex(A.nzval); m = Int(amap[p]); m != 0 && (x_host[m] = A.nzval[p]); end
-    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)
-    d_emap = CuArray(Msym.emap); backend = get_backend(d_nzval); d_dummy = CUDA.zeros(T, 1, 1)
+    gpu_assemble!(d_nzval, isnothing(d_Anz) ? CuArray(A.nzval) : copyto!(d_Anz, A.nzval), G.d_amap)
+    isnothing(d_emap) && (d_emap = CuArray(Msym.emap)); backend = get_backend(d_nzval)
+    isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
     ok = true; failcol = 0
     GC.@preserve x_host host_arena begin
     @inbounds for s in 1:ns
@@ -473,14 +477,16 @@ end
 end
 
 function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, G::GPUSymbolic,
-                                A, signs::Vector{Int8}) where {Ti}
+                                A, signs::Vector{Int8};
+                                d_emap = nothing, d_dummy = nothing, d_W = nothing, d_Anz = nothing) where {Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
     T = eltype(d_nzval)
-    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)
+    gpu_assemble!(d_nzval, isnothing(d_Anz) ? CuArray(A.nzval) : copyto!(d_Anz, A.nzval), G.d_amap)
     ascale = zero(T); @inbounds for v in A.nzval; a = abs(v); a > ascale && (ascale = a); end
     delta = T(PureSparse.LDLT_DELTA) * (iszero(ascale) ? one(T) : ascale); zeta = eps(real(T))
-    d_emap = CuArray(Msym.emap); backend = get_backend(d_nzval); d_dummy = CUDA.zeros(T, 1, 1)
-    mer = max(sym.max_extend_rows, 1); d_W = CUDA.zeros(T, mer, mer)
+    isnothing(d_emap) && (d_emap = CuArray(Msym.emap)); backend = get_backend(d_nzval)
+    isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
+    mer = max(sym.max_extend_rows, 1); isnothing(d_W) && (d_W = CUDA.zeros(T, mer, mer))
     np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; ok = true; failcol = 0
     @inbounds for s in 1:ns
         nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
@@ -526,7 +532,8 @@ end
 # make-solve-ready uploads host dvec + CPU panels for the device solve.
 function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector{T}, device_arena,
                                        dvec::Vector{T}, d_dvec, Msym::MFSymbolic{Ti}, G::GPUSymbolic,
-                                       A, signs::Vector{Int8}; d2h::Bool=true) where {T,Ti}
+                                       A, signs::Vector{Int8}; d2h::Bool=true,
+                                       d_emap = nothing, d_dummy = nothing, d_W = nothing, d_Anz = nothing) where {T,Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
     px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
     fill!(x_host, zero(T)); ascale = zero(T)
@@ -534,10 +541,11 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
         m = Int(amap[p]); m == 0 && continue
         v = A.nzval[p]; x_host[m] = v; a = abs(v); a > ascale && (ascale = a)
     end
-    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)
+    gpu_assemble!(d_nzval, isnothing(d_Anz) ? CuArray(A.nzval) : copyto!(d_Anz, A.nzval), G.d_amap)
     delta = T(PureSparse.LDLT_DELTA) * (iszero(ascale) ? one(T) : ascale); zeta = eps(real(T))
-    d_emap = CuArray(Msym.emap); backend = get_backend(d_nzval); d_dummy = CUDA.zeros(T, 1, 1)
-    mer = max(sym.max_extend_rows, 1); d_W = CUDA.zeros(T, mer, mer)
+    isnothing(d_emap) && (d_emap = CuArray(Msym.emap)); backend = get_backend(d_nzval)
+    isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
+    mer = max(sym.max_extend_rows, 1); isnothing(d_W) && (d_W = CUDA.zeros(T, mer, mer))
     np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; ok = true; failcol = 0
     GC.@preserve x_host host_arena begin
     @inbounds for s in 1:ns
