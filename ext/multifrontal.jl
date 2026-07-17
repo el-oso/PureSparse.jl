@@ -152,3 +152,76 @@ function cpu_multifrontal_cholesky!(x_host::Vector{T}, arena::Vector{T}, M::MFSy
     end
     return (ok, failcol)
 end
+
+# --- CPU multifrontal LDLᵀ (design_gpu.md §6/§M, amendment E) — the M6b oracle + dev vehicle ---
+# Adapts cpu_multifrontal_cholesky!: same extend-add/arena/tree, but the diagonal factorization is
+# the signed-regularization LDL loop (ported from ldlt.jl, ORDER-FREE per-supernode-local dmax per
+# amendment E), and the update is U_s = children − L21·D·L21ᵀ (D-scaled gemm, not syrk). Returns
+# inertia. The factor (unit-lower L + signed D) is dmax-independent → matches ldlt! bit-for-bit;
+# only the inertia COUNTS can diverge in a scale-band on heterogeneous KKT (amendment E).
+function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vector{T},
+                                M::MFSymbolic, sym, A, signs::Vector{Int8}) where {T}
+    ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px; amap = sym.amap
+    fill!(x_host, zero(T)); ascale = zero(T)                  # assembly + ‖A‖-scale
+    @inbounds for p in eachindex(A.nzval)
+        m = Int(amap[p]); m == 0 && continue
+        v = A.nzval[p]; x_host[m] = v; a = abs(v); a > ascale && (ascale = a)
+    end
+    delta = T(PureSparse.LDLT_DELTA) * (iszero(ascale) ? one(T) : ascale); zeta = eps(real(T))
+    n_pos = 0; n_neg = 0; n_zero = 0; n_perturbed = 0; max_pert = 0.0
+    GC.@preserve x_host arena begin
+    @inbounds for s in 1:ns
+        nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
+        below_s = nsrow - nscol; j0 = Int(super[s])
+        panel = _mfpanel(x_host, Int(px[s]), nsrow, nscol)
+        uo = Int(M.uoff[s]); us = Int(M.usize[s])
+        for i in uo:(uo + us - 1); arena[i] = zero(T); end
+        U_s = below_s > 0 ? _mfpanel(arena, uo, below_s, below_s) : nothing
+        for ci in Int(M.children_ptr[s]):(Int(M.children_ptr[s + 1]) - 1)   # extend-add children
+            c = Int(M.children[ci]); nsc_c = Int(super[c + 1]) - Int(super[c])
+            below_c = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - nsc_c; below_c == 0 && continue
+            U_c = _mfpanel(arena, Int(M.uoff[c]), below_c, below_c); eb = Int(M.emap_ptr[c])
+            for b in 1:below_c
+                rb = Int(M.emap[eb + b - 1])
+                for a in b:below_c
+                    ra = Int(M.emap[eb + a - 1]); v = U_c[a, b]
+                    rb ≤ nscol ? (panel[ra, rb] += v) : (U_s[ra - nscol, rb - nscol] += v)
+                end
+            end
+        end
+        dmax_local = zero(T)                                  # order-free local dmax (amendment E)
+        for j in 1:nscol
+            jg = j0 + j - 1; dj = panel[j, j]; adj = abs(dj)
+            if adj ≤ zeta * max(dmax_local, delta)            # zero test, order-free (amendment E)
+                n_zero += 1
+            elseif dj > zero(T); n_pos += 1
+            else; n_neg += 1 end
+            sg = signs[jg]
+            wrongsign = (sg == Int8(1) && !(dj > zero(T))) || (sg == Int8(-1) && !(dj < zero(T)))
+            if wrongsign || adj < delta                       # signed regularization (dmax-independent)
+                target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
+                newd = target * max(delta, adj); n_perturbed += 1
+                pert = Float64(abs(newd - dj)); pert > max_pert && (max_pert = pert); dj = newd
+            end
+            dvec[jg] = dj; adf = abs(dj); adf > dmax_local && (dmax_local = adf)
+            panel[j, j] = one(T); invd = inv(dj)
+            for i in (j + 1):nsrow; panel[i, j] *= invd; end
+            if j < nscol
+                lcol = view(panel, (j + 1):nsrow, j); lrow = view(panel, (j + 1):nscol, j)
+                trail = view(panel, (j + 1):nsrow, (j + 1):nscol)
+                BLAS.ger!(-dj, lcol, lrow, trail)
+            end
+        end
+        if below_s > 0                                        # U_s = children − L21·D·L21ᵀ
+            L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
+            W = Matrix{T}(undef, below_s, nscol)
+            for jj in 1:nscol
+                d = dvec[j0 + jj - 1]
+                for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
+            end
+            BLAS.gemm!('N', 'T', -one(T), W, Matrix(L21), one(T), U_s)
+        end
+    end
+    end
+    return (true, 0, (; n_pos, n_neg, n_zero, n_perturbed, max_pert))
+end

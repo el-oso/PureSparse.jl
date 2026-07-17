@@ -99,3 +99,34 @@ end
         @test relerr < 1e-10   # multifrontal factor == left-looking factor (the relay is correct)
     end
 end
+
+@testitem "Multifrontal CPU LDLᵀ: L+D+inertia match ldlt! (design_gpu.md §6/§M, amendment E)" begin
+    using PureSparse, SparseArrays, LinearAlgebra, Random
+    include(joinpath(@__DIR__, "..", "ext", "multifrontal.jl"))
+    function zsud!(x, S)
+        for s in 1:S.nsuper
+            nsc=Int(S.super[s+1])-Int(S.super[s]); nsr=Int(S.rowind_ptr[s+1])-Int(S.rowind_ptr[s]); b=Int(S.px[s])
+            for j in 1:nsc, i in 1:(j-1); x[b+(j-1)*nsr+(i-1)]=0.0 end
+        end; x
+    end
+    rng = MersenneTwister(0x1D1)
+    kkt(n1,n2,f) = begin      # symmetric quasi-definite [H Aᵀ; A −D], H,D SPD
+        H=sprand(rng,n1,n1,f); H=H+H'+2n1*I; Ac=sprand(rng,n2,n1,f)
+        D=sprand(rng,n2,n2,f); D=D+D'+2n2*I
+        ([H Ac'; Ac -D], n1, n2)
+    end
+    for (K,n1,n2,label) in [(kkt(150,80,0.04)...,"kkt_150_80"), (kkt(300,150,0.02)...,"kkt_300_150"),
+                            (kkt(80,80,0.08)...,"kkt_80_80")]
+        F = PureSparse.ldlt(K; n_pos=n1, n_neg=n2); @test PureSparse.issuccess(F)
+        S = F.sym; M = mf_symbolic(S)
+        xlen = Int(S.px[S.nsuper+1])-1
+        xh=Vector{Float64}(undef,xlen); ar=Vector{Float64}(undef,max(M.arena_peak,1)); dv=Vector{Float64}(undef,S.n)
+        ok,fc,st = cpu_multifrontal_ldlt!(xh,ar,dv,M,S,K,F.signs)
+        @test ok
+        relL = norm(zsud!(xh,S)-zsud!(copy(F.x),S))/norm(zsud!(copy(F.x),S))
+        relD = norm(dv-F.d)/norm(F.d)
+        @test relL < 1e-9      # unit-lower L matches ldlt! (dmax-independent)
+        @test relD < 1e-9      # signed D matches
+        @test (st.n_pos,st.n_neg,st.n_zero) == (F.stats.n_pos,F.stats.n_neg,F.stats.n_zero)  # well-scaled → inertia matches
+    end
+end
