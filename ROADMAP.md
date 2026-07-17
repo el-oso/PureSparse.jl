@@ -2630,8 +2630,23 @@ at grid3d_44 (ratio grows with size) — closed the large-KKT OOM. LDLᵀ hybrid
 `ldlt!` on 3D-grid KKTs: 24³ 1.70×, 28³ 2.80×, 36³ 3.98×, 40³ (nnzL 27M) 4.45×, 44³ (nnzL
 46M) 5.04× — 3× target comfortably exceeded; the two largest previously OOM'd. Oracles:
 `benchmark/gpu/gpu_{multifrontal,solve,ldlt,ldlt_e2e}_test.jl`; CPU-testable @testitems in
-`test/gpu_multifrontal_tests.jl`. **Next: formal §8 gate** (pinned SPD+SQD stratum ≥6, both
-req-2 arms, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
+`test/gpu_multifrontal_tests.jl`.
+
+**Optimization push (2026-07-17, opts 1–3):** (1) **device buffers hoisted to persistent
+kwargs** (`d_emap`/`d_W`/`d_dummy`/`d_Anz`/`d_info`) — amendment-A zero-alloc; only residual
+device alloc is the LDLᵀ strided-diag D2H staging (commit `20644e7`). (2) **multifrontal CPU
+fronts routed through PureBLAS** (design §M.4; commit `e35629b`). (3) **pure device
+potrf+trsm** (Fable-authored, galen-validated ≤3.9e-16; commits `379fb12`/`9cb075d`) wired
+into both Cholesky (potrf+trsm) and LDLᵀ (trsm) GPU paths — cuSOLVER/cuBLAS now used only by
+the retained left-looking reference arms; failure via deferred `d_info` (= amendment D).
+**HONEST perf tradeoff MEASURED:** pure kernels win on isolated large panels but the
+multifrontal crown is dominated by SMALL fronts (44³: 128/153 fronts nscol≤200) where they
+lose — LDLᵀ 44³ dropped 5.04×(vendor)→3.33×(pure). **User chose: optimize the pure kernels
+for the real crown-shape mix (`benchmark/gpu/crown_shapes.jl`) before the pure-vs-vendor
+kernel-policy decision.** Fable optimization round in flight (fused small-front path +
+MAGMA-style diag-inversion trsm). **Kernel policy (pure-primary vs backend-dispatch vs the
+optimized pure) is PENDING that result. Next after: formal §8 gate** (pinned SPD+SQD stratum
+≥6, both req-2 arms, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
 ## Standing rules
 
