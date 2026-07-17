@@ -468,15 +468,22 @@ PureSparse still beats **CPU** CHOLMOD+OpenBLAS, both ordering arms — this car
 non-negotiable req 2 forward; confirmed with the user that the opening "no GPU-CHOLMOD
 comparison" agreed with the *rewording rationale*, not dropping clause 3).
 
-**C — dense-kernel exclusivity on device.** CLAUDE.md says CPU dense work goes *exclusively*
-through PureBLAS. Proposed: *"dense per-supernode work goes through PureBLAS on CPU and through
-the §3 pure-KA device-kernel interface on device; cuSOLVER `potrf`/`trsm` are an explicit
-interim for the small diagonal blocks (Float32/64), replaced by pure device kernels when §6's
-device factorization lands; cuBLAS is a reference/baseline backend, never the default hot
-path."* **Scope honesty (v3, Opus):** the pure-primary flip makes the *flop-dominant trailing
-update* ours, but M6a's gate still closes with cuSOLVER doing the actual pivoted diagonal
-factorization — so "M6a closes on a pure kernel" is true only for the trailing update; the
-diagonal `potrf`/`trsm` remain a vendor interim through M6a.
+**C — dense-kernel exclusivity on device. ✅ APPROVED WITH RESOLUTION (user, 2026-07-17).**
+The CPU rule's pure-*exclusivity* relaxes to a **best-measured-kernel-per-op** policy on device.
+**Framing (recorded correctly, per the user discussion):** writing pure KA kernels *fulfills*
+the Pure ethos — they are the device analogue of PureBLAS, the pure replacement the ecosystem
+exists to build; *calling cuSOLVER/cuBLAS is the deviation* (cuBLAS is the GPU analogue of the
+forbidden OpenBLAS), NOT the compliant path. **Policy:** dense work uses **pure KA kernels where
+they win or where portability requires them** (gemm/syrk/triangular-solves — ours; gemm/syrk beat
+cuBLAS); **cuSOLVER/cuBLAS are permitted right now for pragmatism (ship M6a) + as the gating
+oracle** (in-loop correctness reference + benchmark baseline) on the small diagonal
+`potrf`/`trsm`. **COMMITTED follow-up (user: "obviously write pure for portability"): pure device
+`potrf`/`trsm` WILL be written — REQUIRED for full AMD/Intel (ROCm/oneAPI) portability, since
+cuSOLVER is NVIDIA-only** (optional for NVIDIA-only performance, but the portability pitch is only
+partial until they exist). **Scope honesty (Opus):** M6a's gate closes with cuSOLVER on the
+low-flop pivoted diagonal — so "M6a closes on a pure kernel" is true only for the flop-dominant
+trailing update + solves; a fully vendor-free, fully portable factorization lands with the pure
+`potrf`/`trsm` follow-up.
 
 **D — GPU failure semantics (v3, referenced by §4.3).** *"On a GPU factor, a non-SPD pivot does
 **not** early-return (deferred batched `d_devinfo`, one D2H at end; `ok`/`fail_col` resolved
