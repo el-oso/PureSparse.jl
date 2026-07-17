@@ -441,7 +441,10 @@ baselines are the remaining Phase-0 item, run BEFORE the frontier cutoff is fixe
 
 ## §9 Contract amendments (require explicit user sign-off)
 
-**A — req 5 (zero-alloc) on GPU.** Verbatim `@allocated==0` is impossible (kernel launches
+**A — req 5 (zero-alloc) on GPU. ✅ APPROVED (user, 2026-07-17).** The 0-device-pool and
+0-pattern-H2D parts are hard gates; the host-byte ceiling is set from the Phase-0 measured
+per-launch floor (gate to 0 if a host-alloc-free launch path is demonstrated first).
+Verbatim `@allocated==0` is impossible (kernel launches
 allocate host bytes; cuSOLVER queries workspace). Proposed: *"warm `cholesky!`/`ldlt!` on a
 GPU factor: **0 device-pool allocations after setup** (cuSOLVER workspace + `devinfo` + `cbuf`
 + boundary arena + stats arrays pre-allocated at factor construction via `bufferSize`; low-level
