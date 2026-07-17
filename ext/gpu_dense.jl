@@ -204,8 +204,7 @@ end
     end
     @synchronize                          # all this group's A-loads + B-writes are done
     if li == 1
-        CUDA.threadfence()                # order them before our arrival
-        old = CUDA.atomic_add!(pointer(cnt), Int64(1))
+        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
         lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
     end
     @synchronize
@@ -341,8 +340,7 @@ end
     # last-arriving group writes the factored diagonal back (see v1 for the ordering proof)
     @synchronize
     if tid == 1
-        CUDA.threadfence()
-        old = CUDA.atomic_add!(pointer(cnt), Int64(1))
+        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
         lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
     end
     @synchronize
@@ -595,8 +593,10 @@ mutable struct FrontWS{TI, TC, TD}
     arrivals::Int64
 end
 
-FrontWS(::Type{T}, maxblk::Int) where {T} =
-    FrontWS(CUDA.zeros(Int32, 1), CUDA.zeros(Int64, 1), CUDA.zeros(T, 64, 64, maxblk), 0)
+# backend-generic (KernelAbstractions.zeros) so the same workspace serves CUDA/AMDGPU/oneAPI
+FrontWS(backend, ::Type{T}, maxblk::Int) where {T} =
+    FrontWS(KernelAbstractions.zeros(backend, Int32, 1), KernelAbstractions.zeros(backend, Int64, 1),
+            KernelAbstractions.zeros(backend, T, 64, 64, maxblk), 0)
 
 # Panel-rows threshold for :auto — MEASURED (galen sweep over the real shape mix): v2
 # (invert + register-tiled multiply, cld(m,64) groups) wins for m ≲ 2500; above that its

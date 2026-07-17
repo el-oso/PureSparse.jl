@@ -155,8 +155,7 @@
     # see _front_fused64! — every group's A-loads happen-before its fenced arrival)
     @synchronize
     if tid == 1
-        CUDA.threadfence()
-        old = CUDA.atomic_add!(pointer(cnt), Int64(1))
+        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
         lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
     end
     @synchronize
@@ -279,8 +278,7 @@ end
     end
     @synchronize
     if li == 1
-        CUDA.threadfence()
-        old = CUDA.atomic_add!(pointer(cnt), Int64(1))
+        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
         lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
     end
     @synchronize
@@ -375,7 +373,9 @@ mutable struct LDLFrontWS{TC, TS}
     arrivals::Int64
 end
 
-LDLFrontWS(::Type{T}) where {T} = LDLFrontWS(CUDA.zeros(Int64, 1), CUDA.zeros(T, 6), 0)
+# backend-generic (KernelAbstractions.zeros) — CUDA/AMDGPU/oneAPI
+LDLFrontWS(backend, ::Type{T}) where {T} =
+    LDLFrontWS(KernelAbstractions.zeros(backend, Int64, 1), KernelAbstractions.zeros(backend, T, 6), 0)
 
 # v1/v2 crossover — MEASURED (galen, this file's bench, post Wc-hoist): same window as
 # the Cholesky front's FUSE_M_MAX. v2 (invert + register-tiled multiply) wins for panel

@@ -291,7 +291,7 @@ function gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym::MFSymbolic{Ti}, G::G
     backend = get_backend(d_nzval)
     isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
     mnc = 0; @inbounds for s in 1:ns; c = Int(super[s + 1]) - Int(super[s]); c > mnc && (mnc = c); end
-    isnothing(ws) && (ws = FrontWS(T, cld(mnc, 64)))     # fused-front workspace (amendment C)
+    isnothing(ws) && (ws = FrontWS(get_backend(d_nzval), T, cld(mnc, 64)))     # fused-front workspace (amendment C)
     CUDA.fill!(ws.info, Int32(0))                        # deferred devinfo (amendment D)
     ok = true; failcol = 0
     @inbounds for s in 1:ns
@@ -342,7 +342,7 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
     isnothing(d_emap) && (d_emap = CuArray(Msym.emap)); backend = get_backend(d_nzval)
     isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
     mnc = 0; @inbounds for s in 1:ns; c = Int(super[s + 1]) - Int(super[s]); c > mnc && (mnc = c); end
-    isnothing(ws) && (ws = FrontWS(T, cld(mnc, 64)))     # fused-front workspace (amendment C)
+    isnothing(ws) && (ws = FrontWS(get_backend(d_nzval), T, cld(mnc, 64)))     # fused-front workspace (amendment C)
     CUDA.fill!(ws.info, Int32(0))                        # deferred devinfo (amendment D)
     ok = true; failcol = 0
     GC.@preserve x_host host_arena begin
@@ -498,7 +498,7 @@ function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, 
     isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
     mer = max(sym.max_extend_rows, 1); isnothing(d_W) && (d_W = CUDA.zeros(T, mer, mer))
     isnothing(d_signs) && (d_signs = CuArray(signs))     # signs on device (front-local slices)
-    isnothing(ldlws) && (ldlws = LDLFrontWS(T)); CUDA.fill!(ldlws.stats, zero(T))   # inertia accum on device
+    isnothing(ldlws) && (ldlws = LDLFrontWS(get_backend(d_nzval), T)); CUDA.fill!(ldlws.stats, zero(T))   # inertia accum on device
     ok = true; failcol = 0
     @inbounds for s in 1:ns
         nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
@@ -545,7 +545,7 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
     px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
     isnothing(d_signs) && (d_signs = CuArray(signs))     # signs on device (GPU-front slices)
-    isnothing(ldlws) && (ldlws = LDLFrontWS(T)); CUDA.fill!(ldlws.stats, zero(T))   # GPU-front inertia
+    isnothing(ldlws) && (ldlws = LDLFrontWS(get_backend(d_nzval), T)); CUDA.fill!(ldlws.stats, zero(T))   # GPU-front inertia
     fill!(x_host, zero(T)); ascale = zero(T)
     @inbounds for p in eachindex(A.nzval)
         m = Int(amap[p]); m == 0 && continue

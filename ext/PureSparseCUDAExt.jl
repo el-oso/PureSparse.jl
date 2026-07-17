@@ -14,7 +14,7 @@ module PureSparseCUDAExt
 using PureSparse: PureSparse
 using CUDA
 using KernelAbstractions
-using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend
+using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend, @atomic
 using Base.Cartesian: @nexprs
 
 # Host-side frontier partition (design_gpu.md §5.2) — pure, no CUDA dep, CPU-unit-testable.
