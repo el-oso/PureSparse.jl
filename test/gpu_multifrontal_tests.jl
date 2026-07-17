@@ -61,3 +61,41 @@
         @test M.arena_peak ≥ maximum(Int, M.usize)
     end
 end
+
+@testitem "Multifrontal CPU numeric: factor matches cholesky! (design_gpu.md §M, the relay)" begin
+    using PureSparse, SparseArrays, LinearAlgebra, Random
+    include(joinpath(@__DIR__, "..", "ext", "multifrontal.jl"))
+
+    # mask the never-read strict-upper diagonal cells (see cholesky_test): CPU cholesky! leaves
+    # update garbage there; multifrontal cleanly leaves 0. Compare everything else.
+    function zsud!(x, S)
+        for s in 1:S.nsuper
+            nsc=Int(S.super[s+1])-Int(S.super[s]); nsr=Int(S.rowind_ptr[s+1])-Int(S.rowind_ptr[s]); b=Int(S.px[s])
+            for j in 1:nsc, i in 1:(j-1); x[b+(j-1)*nsr+(i-1)]=0.0; end
+        end; x
+    end
+
+    rng = MersenneTwister(0xF00D)
+    mats = [
+        ("rand_n200",  (let n=200; A=sprand(rng,n,n,0.03); A+A'+n*I end)),
+        ("grid_20x20", (let nx=20,ny=20; n=nx*ny; A=spzeros(n,n)
+            for j in 1:ny,i in 1:nx; k=(j-1)*nx+i; A[k,k]=4.0
+                i<nx&&(A[k,k+1]=A[k+1,k]=-1.0); j<ny&&(A[k,k+nx]=A[k+nx,k]=-1.0) end; A+0.05I end)),
+        ("rand_n700",  (let n=700; A=sprand(rng,n,n,0.012); A+A'+2n*I end)),
+        ("grid3d_10",  (let d=10; n=d^3; A=spzeros(n,n); lin(i,j,k)=((k-1)*d+(j-1))*d+i
+            for k in 1:d,j in 1:d,i in 1:d; p=lin(i,j,k); A[p,p]=6.0
+                i<d&&(A[p,lin(i+1,j,k)]=A[lin(i+1,j,k),p]=-1.0); j<d&&(A[p,lin(i,j+1,k)]=A[lin(i,j+1,k),p]=-1.0)
+                k<d&&(A[p,lin(i,j,k+1)]=A[lin(i,j,k+1),p]=-1.0) end; A+0.1I end)),
+    ]
+    for (label, A) in mats
+        S = PureSparse.symbolic(A)
+        F = PureSparse.cholesky(S, A); @assert PureSparse.issuccess(F)
+        M = mf_symbolic(S)
+        xlen = Int(S.px[S.nsuper+1]) - 1
+        x_host = Vector{Float64}(undef, xlen); arena = Vector{Float64}(undef, max(M.arena_peak,1))
+        ok, fc = cpu_multifrontal_cholesky!(x_host, arena, M, S, A)
+        @test ok
+        relerr = norm(zsud!(x_host, S) - zsud!(copy(F.x), S)) / norm(zsud!(copy(F.x), S))
+        @test relerr < 1e-10   # multifrontal factor == left-looking factor (the relay is correct)
+    end
+end
