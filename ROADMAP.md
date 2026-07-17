@@ -2619,6 +2619,20 @@ OpenBLAS on the stratum. cuDSS = reported context arm (like faer was for QR).
 **Hardware:** galen (RTX 4070, 12 GB, sm_89), CUDA.jl 6.2.1 in `~/Documents/claude/
 gpu_probe/`. Probes: `benchmark/gpu/phase0_probe.jl`, `kernel_diag.jl`.
 
+**Progress (2026-07-17):** Multifrontal GPU engine BUILT and verified machine-precision on
+galen — Cholesky (all-GPU + hybrid + device solve) and LDLᵀ (blocked device-LDL, signed
+regularization, order-free inertia, hybrid factor + device solve end-to-end). Pure KA
+kernels beat cuBLAS FP64 1.14× via `muladd` (Julia is IEEE-strict — won't fuse `a*b+acc`
+without it; that was the 0.48× "un-profiled bottleneck"). Path B (multifrontal) fixes the
+launch-bound ceiling Path A (left-looking) hit. **Bounded stack-with-compaction arena
+(§M.3) DONE** (commit `4d55fd9`): work slot + bounded stack, 5.9× smaller than monotonic
+at grid3d_44 (ratio grows with size) — closed the large-KKT OOM. LDLᵀ hybrid vs CPU
+`ldlt!` on 3D-grid KKTs: 24³ 1.70×, 28³ 2.80×, 36³ 3.98×, 40³ (nnzL 27M) 4.45×, 44³ (nnzL
+46M) 5.04× — 3× target comfortably exceeded; the two largest previously OOM'd. Oracles:
+`benchmark/gpu/gpu_{multifrontal,solve,ldlt,ldlt_e2e}_test.jl`; CPU-testable @testitems in
+`test/gpu_multifrontal_tests.jl`. **Next: formal §8 gate** (pinned SPD+SQD stratum ≥6, both
+req-2 arms, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
+
 ## Standing rules
 
 - **Clean-room, absolute:** never read CHOLMOD/SuiteSparse source, in any form. Only
