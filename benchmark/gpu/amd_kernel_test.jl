@@ -139,7 +139,9 @@ end
 println("AMDGPU: ", AMDGPU.functional(), "  device: ", AMDGPU.device())
 println("\n[1] pure gemm");        ok1 = all([t_gemm(256, 256, 128), t_gemm(1000, 500, 300)])
 println("[2] fused Cholesky front")
-ok2 = all([t_front(55, 754; mode = :fused2), t_front(234, 1436; mode = :fused2),
+ok2 = all([t_front(55, 754; mode = :fused3), t_front(234, 1436; mode = :fused3),
+           t_front(300, 2000; mode = :fused3), t_front(64, 0; mode = :fused3),
+           t_front(55, 754; mode = :fused2), t_front(234, 1436; mode = :fused2),
            t_front(300, 2000; mode = :fused2),
            t_front(55, 754; mode = :fused), t_front(234, 1436; mode = :fused),
            t_front(300, 2000; mode = :fused)])

@@ -22,6 +22,6 @@ function one(nscol, below)
 end
 println("== Cholesky front pure gpu_front!(:auto) vs cuSOLVER+cuBLAS, galen ==")
 println("-- below=186 (potrf-dominated, the hard case) --")
-for nc in (128,256,384,512,768,1024,1280,1536); one(nc,186); end
+for nc in (64,128,256,384,512,768,1024,1280,1536); one(nc,186); end
 println("-- below=1000 (typical crown) --")
-for nc in (128,256,512,1024,1536); one(nc,1000); end
+for nc in (64,128,256,512,1024,1536); one(nc,1000); end

@@ -341,6 +341,111 @@ end
     end
 end
 
+# FUSED front-panel kernel v3 — same contract as _front_fused64! but fully REGISTER-
+# RESIDENT (measured on galen: v2's in-shared factor sweep is shared-traffic bound at
+# ~92µs vs its 18µs FMA-issue floor, the in-shared L-inversion adds ~120µs, and a
+# row-serial B solve is 2-warp latency-bound at ~100µs regardless of m; probe:
+# benchmark/gpu/pivot_variant_probe.jl + front_v3_check.jl):
+#   • each thread of the (16,16) group owns TWO 4×4 register tiles: `acc` = its patch of
+#     the (redundantly factored) 64×64 diag block, `bcc` = its patch of the group's OWN
+#     64-row slice of B (rows (gi-1)*64+1..). All tile indices are compile-time literals
+#     (@nexprs) — one runtime index demotes the tile to local memory (measured 3× slower),
+#   • ONE right-looking rank-1 sweep (G&VL 4.2.1) drives factor AND solve: at step j the
+#     owner threads scale+publish L's column j (colbuf) and the B-tile's column j
+#     (colbufB = B[:,j]·(1/L[j,j])); every thread then updates its trailing A-cells
+#     (−colbuf[r]·colbuf[c]) and its B-cells for c > j (−colbufB[r]·colbuf[c]) — the
+#     solve reuses the very column the factor just published, so the panel solve costs
+#     16 extra register FMAs per thread per step and zero extra barriers (2 per column),
+#   • shared usage is 3 column buffers (~1.5 KB, no 64×64 tile) ⇒ several groups
+#     co-resident per SM,
+#   • diag write-back by group 1 into the disjoint scratch Dout (see _front_fused64!).
+@kernel unsafe_indices = true function _front_fused64_v3!(A, B, n, m, info, Dout, j0)
+    T = eltype(A)
+    li = @index(Local, NTuple)            # (16,16)
+    gi = @index(Group, Linear)
+    tx = li[1]; ty = li[2]
+    Ldi = @localmem T (64,)               # 1/L[j,j]
+    colbuf = @localmem T (64,)            # column j of L (rows > j; zero-padded n<64)
+    colbufB = @localmem T (64,)           # solved column j of this group's B tile
+    acc = @private T (4, 4)               # diag-block patch (redundant per group)
+    bcc = @private T (4, 4)               # B patch: rows br+1..br+64, cols 1..n
+    br = (gi - 1) * 64
+    @inbounds @nexprs 4 qq -> @nexprs 4 ii -> begin
+        r = 4 * (tx - 1) + ii
+        c = 4 * (ty - 1) + qq
+        acc[ii, qq] = (r <= n && c <= n && r >= c) ? A[r, c] : zero(T)
+        bcc[ii, qq] = (br + r <= m && c <= n) ? B[br + r, c] : zero(T)
+    end
+    for j in 1:n
+        jt = ((j - 1) >> 2) + 1           # owning tile index of column j
+        jr = ((j - 1) & 3) + 1            # local index of j inside its tile
+        if tx == jt && ty == jt
+            @inbounds @nexprs 4 qq -> begin
+                if jr == qq
+                    d = acc[qq, qq]
+                    if gi == 1 && !(d > zero(T)) && info[1] == Int32(0)
+                        info[1] = Int32(j0 + j - 1)
+                    end
+                    s = sqrt(d)
+                    acc[qq, qq] = s
+                    Ldi[j] = one(T) / s
+                end
+            end
+        end
+        @synchronize                      # Ldi[j] ready; also fences colbuf reuse from j-1
+        if ty == jt                       # scale+publish column j of L and of B
+            @inbounds begin
+                rl = Ldi[j]
+                @nexprs 4 qq -> begin
+                    if jr == qq
+                        @nexprs 4 ii -> begin
+                            r = 4 * (tx - 1) + ii
+                            if r > j
+                                v = acc[ii, qq] * rl
+                                acc[ii, qq] = v
+                                colbuf[r] = v
+                            end
+                            vb = bcc[ii, qq] * rl
+                            bcc[ii, qq] = vb
+                            colbufB[r] = vb
+                        end
+                    end
+                end
+            end
+        end
+        @synchronize
+        @inbounds @nexprs 4 qq -> begin   # rank-1 update of trailing A and B, registers
+            c = 4 * (ty - 1) + qq
+            if c > j
+                bc = colbuf[c]
+                @nexprs 4 ii -> begin
+                    r = 4 * (tx - 1) + ii
+                    if r >= c
+                        acc[ii, qq] = muladd(-colbuf[r], bc, acc[ii, qq])
+                    end
+                    bcc[ii, qq] = muladd(-colbufB[r], bc, bcc[ii, qq])
+                end
+            end
+        end
+        # no barrier here: next step's pivot only writes Ldi[j+1] (fresh slot); the
+        # barrier before the next scale phase fences the colbuf/colbufB reuse
+    end
+    if gi == 1                            # group 1 → scratch (lower = L, rest 0)
+        @inbounds @nexprs 4 qq -> @nexprs 4 ii -> begin
+            r = 4 * (tx - 1) + ii
+            c = 4 * (ty - 1) + qq
+            Dout[r, c] = r >= c ? acc[ii, qq] : zero(T)
+        end
+    end
+    @inbounds @nexprs 4 qq -> @nexprs 4 ii -> begin
+        r = br + 4 * (tx - 1) + ii
+        c = 4 * (ty - 1) + qq
+        if r <= m && c <= n
+            B[r, c] = bcc[ii, qq]
+        end
+    end
+end
+
 # Single-group diag kernel: factor A[n×n] (n ≤ 64) in shared, write lower back (single
 # group ⇒ no write-back hazard), and — if doinv==1 — also write L⁻¹ to invD (64×64 view):
 # thread c forward-substitutes column c of L·X = I (textbook), zeros above the diagonal,
@@ -580,11 +685,12 @@ FrontWS(backend, ::Type{T}, maxblk::Int) where {T} =
     FrontWS(KernelAbstractions.zeros(backend, Int32, 1),
             KernelAbstractions.zeros(backend, T, 64, 64, maxblk))
 
-# Panel-rows threshold for :auto — MEASURED (galen sweep over the real shape mix): v2
-# (invert + register-tiled multiply, cld(m,64) groups) wins for m ≲ 2500; above that its
-# per-group redundant factor+invert (~131k FMA) rivals the per-group solve work and the
-# v1 row-solve (cld(m,256) groups, factor-only redundancy) is faster.
-const FUSE_M_MAX = Ref(2500)
+# Panel-rows threshold for :auto — MEASURED (galen, front_v3_check.jl): v3 (register-
+# resident fused factor+solve, cld(m,64) groups) is ~134µs/launch flat for m ≤ 2500 and
+# still beats v1 at m=5000 (216 vs 341µs); at m=10000 the per-group redundant factor
+# (cld(m,64) groups stacking on 46 SMs) loses to v1's cld(m,256)-group row solve
+# (418 vs 343µs). Crossover between the two measured points.
+const FUSE_M_MAX = Ref(6000)
 
 """
     gpu_front!(P, nscol, ws; nb=64, mode=:auto) -> P
@@ -607,6 +713,7 @@ function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :au
     backend = get_backend(P)
     fk = _front_fused64!(backend, 256)
     f2 = _front_fused64_v2!(backend, (16, 16))
+    f3 = _front_fused64_v3!(backend, (16, 16))
     dk = _potrf_diag64!(backend, 256)
     tb = _trsm_rlt_base!(backend, 256)
     tm = _trmm_rnt64!(backend, (16, 16))
@@ -615,8 +722,14 @@ function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :au
         j1 = j0 + jb - 1
         m = nsrow - j1
         D = view(P, j0:j1, j0:j1)
-        md = mode == :auto ? (m <= FUSE_M_MAX[] ? :fused2 : :fused) : mode
-        if md == :fused2 || (md != :fused && m == 0)
+        md = mode == :auto ? (m <= FUSE_M_MAX[] ? :fused3 : :fused) : mode
+        if md == :fused3 || (md ∉ (:fused, :fused2) && m == 0)
+            G = max(cld(m, 64), 1)
+            Bv = view(P, (j1 + 1):nsrow, j0:j1)
+            Dout = view(ws.invD, :, :, 1)
+            f3(D, Bv, jb, m, ws.info, Dout, j0; ndrange = (G * 16, 16))
+            D .= view(ws.invD, 1:jb, 1:jb, 1)     # scratch → panel diag (stream-ordered)
+        elseif md == :fused2 || (md != :fused && m == 0)
             G = max(cld(m, 64), 1)
             Bv = view(P, (j1 + 1):nsrow, j0:j1)
             Dout = view(ws.invD, :, :, 1)

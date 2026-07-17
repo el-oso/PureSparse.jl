@@ -56,9 +56,9 @@ grid3d(d) = (n = d^3; A = spzeros(n, n); lin(i, j, k) = ((k - 1) * d + (j - 1)) 
 
 function stratum()
     rng = MersenneTwister(5)
-    spd = [("spd_grid_$(d)", d, sparse(grid3d(d))) for d in (28, 32, 36, 40)]
+    spd = [("spd_grid_$(d)", d, sparse(grid3d(d))) for d in (28, 32, 36, 40, 44)]
     sqd = NamedTuple[]
-    for d in (28, 32, 36, 40)
+    for d in (28, 32, 36, 40, 44)
         H = grid3d(d); n1 = size(H, 1); n2 = n1 ÷ 50
         Ac = sprand(rng, n2, n1, 1.0 / n1); Dm = sparse(2.0I, n2, n2)
         K = sparse([H Ac'; Ac -Dm])
