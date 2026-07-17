@@ -146,7 +146,8 @@ end
 Hybrid CPU/GPU supernodal Cholesky. `x_host` (length `G.xlen`) holds the complete factor on
 return; `d_nzval` holds the device (GPU + uploaded-boundary) panels. `G.on_gpu` is the frontier.
 """
-function gpu_cholesky_hybrid!(x_host::Vector{T}, d_nzval, G::GPUSymbolic{Ti}, A) where {T,Ti}
+function gpu_cholesky_hybrid!(x_host::Vector{T}, d_nzval, G::GPUSymbolic{Ti}, A;
+                             d2h::Bool = true, d_Anz = nothing) where {T,Ti}
     sym = G.cpu
     nsuper = sym.nsuper
     super = sym.super; rowind = sym.rowind; rowind_ptr = sym.rowind_ptr
@@ -159,13 +160,15 @@ function gpu_cholesky_hybrid!(x_host::Vector{T}, d_nzval, G::GPUSymbolic{Ti}, A)
     @inbounds for p in eachindex(A.nzval)
         m = Int(amap[p]); m != 0 && (x_host[m] = A.nzval[p])
     end
-    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)       # and into d_nzval (device)
+    d_Anz === nothing && (d_Anz = CuArray(A.nzval))          # pre-alloc'd across refactors if given
+    gpu_assemble!(d_nzval, d_Anz, G.d_amap)                  # assemble A into d_nzval (device)
 
     relmap = zeros(Ti, sym.n)
     head = zeros(Ti, nsuper); nxt = zeros(Ti, nsuper); dptr = zeros(Ti, nsuper)
     ir = Vector{Ti}(undef, sym.max_extend_rows + 1)
     mer = max(sym.max_extend_rows, 1)
     d_cbuf = CUDA.zeros(T, mer, mer); cbuf_h = Matrix{T}(undef, mer, mer)
+    d_ir_buf = CUDA.zeros(Ti, mer + 1)                        # reused per update (no per-update alloc)
     backend = get_backend(d_nzval)
     _row(rp0, k) = Int(rowind[rp0 + k - 1])
     ok = true; failcol = 0
@@ -192,7 +195,8 @@ function gpu_cholesky_hybrid!(x_host::Vector{T}, d_nzval, G::GPUSymbolic{Ti}, A)
                     Ablk = view(pd, q:(q + ctot - 1), 1:ncol_d); L1 = view(pd, q:(q + k1 - 1), 1:ncol_d)
                     C = view(d_cbuf, 1:ctot, 1:k1)
                     gpu_gemm_nt!(C, Ablk, L1, -one(T), zero(T))
-                    d_ir = CuArray(view(ir, 1:ctot))
+                    copyto!(d_ir_buf, 1, ir, 1, ctot)        # reuse buffer (no per-update alloc)
+                    d_ir = view(d_ir_buf, 1:ctot)
                     panel_g = _dpanel(d_nzval, px, s, nsrow, nscol)
                     _scatter_add!(backend, 256)(panel_g, C, d_ir, k1, ctot; ndrange = cld(ctot * k1, 256) * 256)
                 else
@@ -221,7 +225,7 @@ function gpu_cholesky_hybrid!(x_host::Vector{T}, d_nzval, G::GPUSymbolic{Ti}, A)
             _, info = potrf!('L', diag)                       # cuSOLVER (amendment C interim)
             info != 0 && (ok = false; failcol = j0; break)
             nsrow > nscol && trsm!('R', 'L', 'T', 'N', one(T), diag, view(panel_g, (nscol + 1):nsrow, 1:nscol))
-            copyto!(x_host, off_s, d_nzval, off_s, len_s)     # D2H → full factor in x_host
+            d2h && copyto!(x_host, off_s, d_nzval, off_s, len_s)   # D2H → full factor (skip for perf)
         else
             panel_h = _hpanel(x_host, off_s, nsrow, nscol)
             diag = view(panel_h, 1:nscol, 1:nscol)

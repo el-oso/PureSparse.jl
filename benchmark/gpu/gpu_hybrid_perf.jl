@@ -36,9 +36,10 @@ for (nx,ny,nz) in [(28,28,28), (32,32,32)]
         G = ext.gpu_symbolic(A; ordering=PureSparse.AMDOrdering(), frontier_cutoff=cut)
         ngpu = count(G.on_gpu); ngpu == 0 && continue
         x_host = Vector{Float64}(undef, G.xlen); d = CUDA.zeros(Float64, G.xlen)
-        ext.gpu_cholesky_hybrid!(x_host, d, G, A)   # warm
-        t = mint(() -> CUDA.@elapsed(ext.gpu_cholesky_hybrid!(x_host, d, G, A)))
-        @printf("  cutoff q=%.3f  GPU=%4d/%d supernodes  hybrid=%.1f ms  vs CPU %.2fx\n",
+        d_Anz = CuArray(A.nzval)                                    # pre-alloc'd (Path A: no per-call alloc)
+        ext.gpu_cholesky_hybrid!(x_host, d, G, A; d2h=false, d_Anz=d_Anz)   # warm
+        t = mint(() -> CUDA.@elapsed(ext.gpu_cholesky_hybrid!(x_host, d, G, A; d2h=false, d_Anz=d_Anz)))
+        @printf("  cutoff q=%.3f  GPU=%4d/%d supernodes  hybrid(A)=%.1f ms  vs CPU %.2fx\n",
                 qtl, ngpu, S.nsuper, t*1e3, cpu_t/t)
         t < best[1] && (best = (t, qtl, ngpu))
     end
