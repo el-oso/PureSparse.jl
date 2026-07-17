@@ -2688,8 +2688,15 @@ the factor. The factor-only 5× is real; the solve was never optimized. **DEVICE
 trsv+gemv+bare-atomic scatter, D⁻¹, bwd gather+gemvᵀ+trsvᵀ). SQD 40³: **device solve 555ms →
 26.2ms (21× faster)**, 33 levels → 67 launches (was ~63k); now 4.7% of the factor, no longer
 the bottleneck. Machine-precision both hosts (galen res ≤ 8e-16 + inertia exact; gfx1151
-compiles+matches res ≤ 6e-16 — the fast solve is portable too, bare-atomic scatter). **RE-RUN
-§8 GATE IN FLIGHT** (batched solve + stratum extended to 44³ where the 5× factor was measured).
+compiles+matches res ≤ 6e-16 — the fast solve is portable too, bare-atomic scatter). **§8 GATE RE-RUN (batched solve, stratum to 44³, `gpu_gate_galen.json`).** Batched solve
+flipped the result: **clause 3 (beats CHOLMOD+OpenBLAS) now 10/10** — GPU beats CHOLMOD on
+every SPD (1.4–2.7×) AND every SQD (19–51× faster than CHOLMOD's slow sparse ldlt). **Clause 1
+(≥5× vs our own CPU): 0/10, best 4.48× (SQD 40³), 4.06× (44³).** The 5× target was set from an
+OPTIMISTIC number (factor-only, min-of-4, best-cutoff = 5.10×@44³); the rigorous **factor+solve
+median** the gate measures tops out ~4.5×. Honest state: **beats CHOLMOD everywhere (up to 51×
+on the target KKT workload) + ~4.5× vs our own single-thread CPU.** **OPEN DECISION (user):
+re-scope the 5× headline to this honest result, OR push the FACTOR (now the sole gap; solve is
+4.7%) for the last ~0.5× via streams/PureBLAS-CPU-fronts/frontier — diminishing returns.**
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
