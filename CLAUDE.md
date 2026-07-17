@@ -84,7 +84,11 @@ architecture; `ROADMAP.md` for milestone status.
 
 Chairmarks.jl, PureBLAS methodology: single-thread pinned, `@noinline` concrete wrappers
 (not closures), repeated in-place reps, **median** not min, locked CPU clock, results→JSON
-first, plots regenerate from saved JSON only. PkgBenchmark.jl supplements for
+first, plots regenerate from saved JSON only. **Benchmark plots are VIOLIN plots, not bar
+charts** (user standing preference) — they show the full per-sample distribution from the
+saved JSON, not just a summary bar; any plot regeneration must produce violins. (An earlier
+docs pass wrongly reverted the docs plots to bar charts; regen them as violins.)
+PkgBenchmark.jl supplements for
 commit-to-commit self-regression. 4-arm matrix (design §9.3): PureSparse+PureBLAS,
 PureSparse+OpenBLAS, CHOLMOD+OpenBLAS, CHOLMOD+PureBLAS (this 4th arm is **N/A** — blocked
 on PureBLAS's documented `lbt_forward`-from-live-Julia-process limitation; do not re-chase
