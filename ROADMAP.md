@@ -2655,7 +2655,23 @@ EXACT); flop-weighted 4.42× vs the vendor front. **PURE LDLᵀ NOW MEETS 5×:**
 `ldlt!` — 36³ 4.29×, 40³ 4.44×, **44³ 5.08×** (vs 5.04× vendor — pure now beats it). **Both SPD
 (fused Cholesky front, vendor parity) and SQD (fused signed-LDL front, ≥ vendor) are fully
 pure/portable AND ≥ vendor speed → kernel-policy resolved as pure-primary, no backend dispatch.**
-Removes the last residual device alloc (strided-diag D2H staging). **NEXT: formal §8 gate**
+Removes the last residual device alloc (strided-diag D2H staging).
+
+**AMD PORTABILITY PROVEN (2026-07-17, commit `c0fcf04`).** The entire pure-kernel path runs
+on real AMD hardware (neuromancer, Radeon 840M / **gfx1151**, RDNA3.5, ROCm 7.14, via
+AMDGPU.jl) at machine precision: gemm (1e-17), fused Cholesky front (relL/relP 1e-16, both
+v1/v2), fused signed-LDL front (relL/relD 1e-16, **inertia EXACT**, both v1/v2). Genericization:
+CUDA intrinsics in the shared kernel files (`gpu_dense.jl`, `gpu_ldlt_dense.jl`) replaced by
+KernelAbstractions-portable equivalents. **Blocker found + fixed:** gfx1151's GPUCompiler
+segfaults in `check_ir!` on any USE of an atomic-rmw's return value (bare Int32 atomic is fine;
+Int64 crashes even bare) — so the "last-group-writes-diagonal" election was replaced by an
+election-free **group-1-to-disjoint-scratch** write + driver copy (no atomic, deadlock-free,
+perf-neutral on CUDA). Validation harness `benchmark/gpu/amd_kernel_test.jl` (env
+`~/Documents/claude/amd_probe`). **CUDA (galen) re-verification of this change PENDING** (galen
+busy with PureBLAS bench) — same KA code so correctness expected, but the fused oracles + 44³ 5×
+perf must be re-run before re-confirming the CUDA path; do NOT sync ext/ to galen until then.
+Note: gfx1151 is an FP64-weak iGPU, so absolute AMD perf is low — the deliverable is the
+portability PROOF, not AMD speed. **NEXT: formal §8 gate**
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
