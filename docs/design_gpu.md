@@ -508,6 +508,75 @@ the **inertia-match oracle (§10) must run the CPU reference with the same order
 test** (or tolerance the band) — a stock-`ldlt!` inertia comparison would spuriously fail there.
 A user-visible *inertia-report* change (not a factor change), so an explicit amendment.
 
+**F — multifrontal supersedes the left-looking transfer model. ✅ APPROVED (user, 2026-07-17).**
+Measured motivation: the left-looking GPU path is launch-bound (a separate gemm+scatter per
+descendant; a near-root front has thousands of descendants → best hybrid 0.72–0.95× vs CPU,
+unchanged by removing allocs/D2H). The GPU Cholesky path becomes **multifrontal** (per-front
+CPU/GPU dispatch, §M). This **replaces** §5.3's boundary-panel-persist arena and §5.4's
+per-descendant event DAG with: a symbolic-time-sized **update-matrix arena** (the device arena
+also holds crossing CPU subtrees' U matrices); **one U + one panel-slab H2D per crossing CPU
+subtree** (a whole CPU subtree's contribution to the GPU crown is a single U matrix; no U ever
+downloads, by upward closure); a **synchronous v1 schedule** (streams only if the gate misses
+3×); and **`d_emap`** (one ascending per-child extend-add map, Σ ≤ |rowind|) replacing `d_irrs`.
+`d_cbuf`/`d_boundbuf` are retired. Left-looking `cholesky!` stays the CPU product path + oracle
+arm; `gpu_cholesky_sync!`/`_hybrid!` stay as in-loop reference arms until the gate closes.
+
+## §M Multifrontal engine (Path B — amendment F; Fable-advised 2026-07-17)
+
+Replaces the left-looking per-descendant GPU updates (launch-bound) with front assembly: each
+front does **one** potrf + trsm + syrk + a scatter per child (≈ `4 + nchildren` launches),
+instead of thousands of per-descendant launches. Ref: Liu, *The Multifrontal Method* (SIAM Rev
+1992) — clean-room-safe canonical.
+
+**§M.1 Formulation.** Front = supernode; front tree = `sparent`. **Split the front, don't
+materialize it:** the *panel* region (`nsrow×nscol`) is the existing `d_nzval` panel **in
+place** (factor layout stays bit-compatible → oracle/assembly/solve unchanged); the *update*
+region `U_s` (`(nsrow−nscol)²`) lives in a separate arena. Per front:
+1. **Extend-add** each child's `U_c` into the panel + `U_s` regions (one scatter per child).
+2. `potrf` on `panel[1:nscol,1:nscol]`; 3. `trsm` on `panel[nscol+1:nsrow,1:nscol]`;
+4. **`U_s = (extend-added trailing block) − L21·L21ᵀ`** — `gpu_syrk_nt!(U_s, L21, −1, 1)`, **β=1**
+into the already-assembled trailing block. **CRITICAL (Fable pitfall #1): `U_s` MUST include the
+extend-added trailing block** (the multifrontal *relay* of generation-skipping contributions) —
+`−L21·L21ᵀ` alone silently drops them (passes toy tests, fails real matrices). Lower-triangle
+discipline throughout (`a ≥ b`).
+
+**§M.2 Extend-add maps (symbolic, pattern-only).** By symmetry `U_c`'s rows = cols = c's
+below-diagonal rows, so ONE ascending map per child: `emap_c[i] = relmap_parent[rowind(c)[nscol_c+i]]`
+(containment `rowind(c)\cols(c) ⊆ rowind(sparent(c))` guaranteed — assert it). Because both
+patterns are sorted, `emap_c` is **strictly ascending** → the panel/U split is a **prefix**:
+first `k1_c` entries (`emap ≤ nscol_s`) → panel columns; rest → `U_s` at `emap−nscol_s`.
+Storage: concatenated `emap` + `emap_ptr` (nsuper+1), Σ ≤ |rowind|, uploaded once as `d_emap`
+(0-pattern-H2D gate). Only `nsuper−1` edges — the launch-count collapse.
+
+**§M.3 Arena, not a stack.** One postorder simulation at symbolic time emits per-front arena
+offset `uoff[s]` + exact host/device peak occupancy (single source of truth for order+offsets+
+peak — divergence is pitfall #3). No runtime stack. Zero-alloc; sizing IS the allocation. Feeds
+`gpu_device_bytes` + `gpu_capacity_ok` loud fallback. `d_cbuf`/`d_boundbuf` retired.
+
+**§M.4 Hybrid residency.** Device arena holds GPU-front U's **plus crossing CPU U's** (a CPU
+child of a GPU parent: U computed on host, H2D to its device slot). No U downloads (upward
+closure). **Crossing set = CPU fronts whose `sparent` is GPU** (maximal-CPU-subtree roots) —
+smaller than the left-looking boundary set; each such subtree is a **contiguous `px` range** →
+its factored panels upload as **one slab**. Per crossing subtree: 2 H2D (panel slab + root U).
+Whole GPU path is multifrontal, per-front `on_gpu[s]` dispatch (CPU fronts: PureBLAS + host
+arena; GPU fronts: device). Left-looking `cholesky!` stays the CPU product.
+
+**§M.5 Pitfalls (ranked):** (1) the relay omission (§M.1); (2) region split + lower-triangle
+(`a<b` into U corrupts it); (3) sizing-vs-execution order divergence → arena aliasing; (4) **stale
+U slots across refactors** — zero a front's U slot before its first child scatter *every*
+refactor (β=0-overwrite family); (5) fragmented supernodes → front-count blowup (amalgamation is
+a later measured knob; v1 = existing supernodes verbatim); (6) mid-tree pivot failure → amendment
+D's deferred `d_devinfo` carries over. Non-goal: bitwise CPU match (summation order differs;
+normwise §10.1 oracle is the approved one).
+
+**§M.6 Build order (each lands with its oracle):** (1) symbolic layer (children-CSC + emap/k1 +
+arena simulation; pure, CPU-testable); (2) **CPU multifrontal numeric** (PureBLAS, host arena)
+oracle vs `cholesky!` — validates formulation+maps+arena with zero GPU; (3) extend-add device
+kernel, unit-oracled; (4) all-GPU multifrontal, oracle + predicted launch-count assert + first
+perf; (5) hybrid (per-front dispatch + crossing uploads), oracle + gate; (6) streams only if (5)
+misses 3×. Write **fresh** (~350 lines); steal only the QR engine's children-CSC idiom +
+sizing-as-simulation pattern.
+
 ## §10 Correctness + invariants
 
 ### §10.1 Numeric oracle
