@@ -485,7 +485,7 @@ low-flop pivoted diagonal — so "M6a closes on a pure kernel" is true only for 
 trailing update + solves; a fully vendor-free, fully portable factorization lands with the pure
 `potrf`/`trsm` follow-up.
 
-**D — GPU failure semantics (v3, referenced by §4.3).** *"On a GPU factor, a non-SPD pivot does
+**D — GPU failure semantics. ✅ APPROVED (user, 2026-07-17).** (v3, referenced by §4.3.) *"On a GPU factor, a non-SPD pivot does
 **not** early-return (deferred batched `d_devinfo`, one D2H at end; `ok`/`fail_col` resolved
 post-hoc as the lowest-index failed supernode). `check_finite` is **not** a backstop (cuSOLVER
 leaves finite-but-wrong values, and StrictMode checks are off in the gate config) — `d_devinfo`
@@ -493,7 +493,7 @@ is the sole failure signal. In the hybrid loop a **CPU-side** failure early-retu
 synchronizing both streams, and `fail_col` reconciles the CPU failure column against the GPU
 set."*
 
-**E — LDLᵀ inertia + order-free zero test (v3, referenced by §6).** *"Device inertia is emitted
+**E — LDLᵀ inertia + order-free zero test. ✅ APPROVED (user, 2026-07-17; M6b-only).** (v3, referenced by §6.) *"Device inertia is emitted
 per-supernode from the **pre-perturbation** pivot into a stats array reduced once (not derived
 from the regularized `d_dvec`); the zero-pivot test is redefined order-free (per-supernode-local
 `dmax`, delta-anchored) since the CPU path's running-global `dmax` is a sequential dependency
