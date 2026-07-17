@@ -31,7 +31,8 @@ fac_persist()=ext.gpu_multifrontal_ldlt_hybrid!(xh,dz,ha,da,dv,dd,M,G,K,signs;d2
 fac_persist()  # warm
 msr()=(ext.gpu_upload_cpu_panels!(dz,xh,G); copyto!(d_dd,1,dv,1,n))
 rhs()=CuArray(b[perm])
-dy=CuArray(b[perm]); slv()=ext.gpu_solve_ldlt!(dy,dz,d_dd,G,dup,dga)
+sched=ext.solve_schedule(G)   # analysis-once level schedule (built at setup, reused per solve)
+dy=CuArray(b[perm]); slv()=ext.gpu_solve_ldlt!(dy,dz,d_dd,G,dup,dga;sched=sched)
 msr(); slv()
 @printf("  factor (rebuild d_emap/signs/ws each call) : %7.1f ms\n", med(fac_rebuild)*1e3)
 @printf("  factor (persistent buffers, amendment A)   : %7.1f ms\n", med(fac_persist)*1e3)

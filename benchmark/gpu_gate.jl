@@ -105,10 +105,11 @@ function bench_spd(label, A, ext)
             perm = G.cpu.perm; mer = max(G.cpu.max_extend_rows, 1)
             dup = CUDA.zeros(Float64, mer); dga = CUDA.zeros(Float64, mer)
             db = CuArray(b[perm])
+            sched = ext.solve_schedule(G)                 # analysis-once level schedule
             factsolve() = begin
                 ext.gpu_multifrontal_hybrid!(xh, dz, ha, da, M, G, A; d2h = false)
                 ext.gpu_upload_cpu_panels!(dz, xh, G)
-                ext.gpu_solve!(db, dz, G, dup, dga)
+                ext.gpu_solve!(db, dz, G, dup, dga; sched = sched)
             end
             factsolve()                                   # warm
             t = _gpu_elapsed(factsolve)
@@ -153,10 +154,11 @@ function bench_sqd(nt, ext)
             signs = Vector{Int8}(F.signs)                 # factor-ordering signs
             perm = G.cpu.perm; mer = max(G.cpu.max_extend_rows, 1)
             dup = CUDA.zeros(Float64, mer); dga = CUDA.zeros(Float64, mer); d_dd = CUDA.zeros(Float64, n)
+            sched = ext.solve_schedule(G)                 # analysis-once level schedule
             factsolve() = begin
                 ext.gpu_multifrontal_ldlt_hybrid!(xh, dz, ha, da, dv, dd, M, G, K, signs; d2h = false)
                 ext.gpu_upload_cpu_panels!(dz, xh, G); copyto!(d_dd, 1, dv, 1, n)
-                dy = CuArray(b[perm]); ext.gpu_solve_ldlt!(dy, dz, d_dd, G, dup, dga)
+                dy = CuArray(b[perm]); ext.gpu_solve_ldlt!(dy, dz, d_dd, G, dup, dga; sched = sched)
             end
             factsolve()
             t = _gpu_elapsed(factsolve)

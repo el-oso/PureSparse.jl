@@ -14,7 +14,7 @@ module PureSparseCUDAExt
 using PureSparse: PureSparse
 using CUDA
 using KernelAbstractions
-using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend
+using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend, @atomic
 using Base.Cartesian: @nexprs
 
 # Host-side frontier partition (design_gpu.md §5.2) — pure, no CUDA dep, CPU-unit-testable.
@@ -104,6 +104,7 @@ gpu_syrk_nt!(C, A, alpha, beta) = gpu_gemm_nt!(C, A, A, alpha, beta)
 # --- Pure device dense kernels (potrf/trsm/front) — amendment C portability ---
 include("gpu_dense.jl")
 include("gpu_ldlt_dense.jl")   # fused signed-LDL front (the LDLᵀ analogue of gpu_front!)
+include("gpu_solve.jl")        # level-scheduled batched triangular solve (backend-generic)
 
 # ---------------------------------------------------------------------------------------
 # GPUSymbolic (design_gpu.md §2.3): the CPU Symbolic + the upward-closed frontier partition

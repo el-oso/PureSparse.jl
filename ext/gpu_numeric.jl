@@ -406,55 +406,25 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
 end
 
 # =======================================================================================
-# Device supernodal triangular SOLVE (design_gpu.md §7, amendment B) — factor stays device-
-# resident; only b/x vectors transfer. Forward L·y=b then backward Lᵀ·x=y, per supernode:
-# trsv on the diagonal block + gemv for the below-diagonal + scatter/gather via rowind.
-using CUDA.CUBLAS: trsv!, gemv!
-
-@kernel function _scatter_y!(y, @Const(upd), @Const(rowind), rp0, nscol, below)
-    k = @index(Global)
-    k ≤ below && (@inbounds y[Int(rowind[rp0 + nscol + k - 1])] += upd[k])
-end
-@kernel function _gather_y!(g, @Const(y), @Const(rowind), rp0, nscol, below)
-    k = @index(Global)
-    k ≤ below && (@inbounds g[k] = y[Int(rowind[rp0 + nscol + k - 1])])
-end
+# Device supernodal triangular SOLVE (design_gpu.md §7/§8, amendment B) — factor stays device-
+# resident; only b/x vectors transfer. LEVEL-SCHEDULED batched kernels (ext/gpu_solve.jl, pure
+# KA): one launch per elimination level instead of per-supernode trsv/gemv/scatter (which was
+# launch-bound — ~63k launches ≈ the whole factor time on SQD 40³).
+solve_schedule(G::GPUSymbolic) = solve_schedule(G.cpu.sparent, G.cpu.px, G.d_rowind)
 
 """
-    gpu_solve!(d_y, d_nzval, G, d_upd, d_gath)
+    gpu_solve!(d_y, d_nzval, G[, d_upd, d_gath]; sched=solve_schedule(G))
 
 In-place supernodal solve `A·x = b` on device (`A = L·Lᵀ` permuted): `d_y` holds the permuted
 RHS on entry, the permuted solution on exit. Factor panels are read from `d_nzval` (must be the
-FULL device-resident factor). `d_upd`/`d_gath` are `max_extend_rows` scratch vectors.
+FULL device-resident factor). Pass a prebuilt `sched` to amortize the schedule upload across
+solves ("analyze once, solve many"). `d_upd`/`d_gath` are accepted for call compatibility but
+unused (the batched kernels need no scratch).
 """
-function gpu_solve!(d_y, d_nzval, G::GPUSymbolic, d_upd, d_gath)
-    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
-    d_rowind = G.d_rowind; backend = get_backend(d_y); T = eltype(d_y)
-    @inbounds for s in 1:ns                                   # forward L·y = b
-        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
-        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
-        panel = _dpanel(d_nzval, px, s, nsrow, nscol)
-        yblk = view(d_y, j0:(j0 + nscol - 1)); Ldiag = view(panel, 1:nscol, 1:nscol)
-        trsv!('L', 'N', 'N', Ldiag, yblk)
-        if below > 0
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); upd = view(d_upd, 1:below)
-            gemv!('N', -one(T), Lbelow, yblk, zero(T), upd)
-            _scatter_y!(backend, 256)(d_y, upd, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
-        end
-    end
-    @inbounds for s in ns:-1:1                                # backward Lᵀ·x = y
-        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
-        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
-        panel = _dpanel(d_nzval, px, s, nsrow, nscol)
-        yblk = view(d_y, j0:(j0 + nscol - 1)); Ldiag = view(panel, 1:nscol, 1:nscol)
-        if below > 0
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); gath = view(d_gath, 1:below)
-            _gather_y!(backend, 256)(gath, d_y, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
-            gemv!('T', -one(T), Lbelow, gath, one(T), yblk)
-        end
-        trsv!('L', 'T', 'N', Ldiag, yblk)
-    end
-    return d_y
+function gpu_solve!(d_y, d_nzval, G::GPUSymbolic, d_upd = nothing, d_gath = nothing;
+                    sched::SolveSchedule = solve_schedule(G))
+    return batched_solve!(d_y, d_nzval, G.d_rowind, G.d_rowind_ptr, G.d_super, sched,
+                          false, nothing)
 end
 
 # Upload all CPU-front panels to d_nzval so the whole factor is device-resident for the solve
@@ -643,31 +613,9 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
 end
 
 # Device LDLᵀ solve: forward L·z=b (unit), D⁻¹ scale, backward Lᵀ·x=w (unit). L is unit-lower.
-function gpu_solve_ldlt!(d_y, d_nzval, d_dvec, G::GPUSymbolic, d_upd, d_gath)
-    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
-    d_rowind = G.d_rowind; backend = get_backend(d_y); T = eltype(d_y)
-    @inbounds for s in 1:ns                                   # forward L·z = b (unit lower)
-        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
-        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
-        panel = _dpanel(d_nzval, px, s, nsrow, nscol); yblk = view(d_y, j0:(j0 + nscol - 1))
-        trsv!('L', 'N', 'U', view(panel, 1:nscol, 1:nscol), yblk)
-        if below > 0
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); upd = view(d_upd, 1:below)
-            gemv!('N', -one(T), Lbelow, yblk, zero(T), upd)
-            _scatter_y!(backend, 256)(d_y, upd, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
-        end
-    end
-    d_y ./= d_dvec                                            # D⁻¹ scale (w = D⁻¹·z)
-    @inbounds for s in ns:-1:1                                # backward Lᵀ·x = w (unit lower)
-        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
-        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
-        panel = _dpanel(d_nzval, px, s, nsrow, nscol); yblk = view(d_y, j0:(j0 + nscol - 1))
-        if below > 0
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); gath = view(d_gath, 1:below)
-            _gather_y!(backend, 256)(gath, d_y, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
-            gemv!('T', -one(T), Lbelow, gath, one(T), yblk)
-        end
-        trsv!('L', 'T', 'U', view(panel, 1:nscol, 1:nscol), yblk)
-    end
-    return d_y
+# Level-scheduled batched kernels (ext/gpu_solve.jl); d_upd/d_gath compat-only, unused.
+function gpu_solve_ldlt!(d_y, d_nzval, d_dvec, G::GPUSymbolic, d_upd = nothing, d_gath = nothing;
+                         sched::SolveSchedule = solve_schedule(G))
+    return batched_solve!(d_y, d_nzval, G.d_rowind, G.d_rowind_ptr, G.d_super, sched,
+                          true, d_dvec)
 end
