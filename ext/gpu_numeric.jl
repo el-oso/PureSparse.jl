@@ -520,7 +520,7 @@ function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, 
         copyto!(d_dvec, j0, dvals, 1, nscol)               # H2D D
         if below_s > 0
             L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
-            trsm!('R', 'L', 'T', 'U', one(T), blk_dev, L21)         # W = A21·L11⁻ᵀ (in place)
+            gpu_trsm_rlt!(L21, blk_dev)         # pure: W = A21·L11⁻ᵀ (L11 unit → stored diag=1)
             nd = cld(below_s * nscol, 256) * 256
             _col_scale!(backend, 256)(L21, L21, d_dvec, j0 - 1, true, below_s, nscol; ndrange = nd)  # L21 = W·D⁻¹
             W2 = view(d_W, 1:below_s, 1:nscol)
@@ -579,7 +579,7 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
             @views dvec[j0:(j0 + nscol - 1)] .= dv; copyto!(d_dvec, j0, dv, 1, nscol)
             if below_s > 0
                 L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
-                trsm!('R', 'L', 'T', 'U', one(T), view(panel, 1:nscol, 1:nscol), L21)
+                gpu_trsm_rlt!(L21, view(panel, 1:nscol, 1:nscol))   # pure (L11 unit → stored diag=1)
                 nd = cld(below_s * nscol, 256) * 256
                 _col_scale!(backend, 256)(L21, L21, d_dvec, j0 - 1, true, below_s, nscol; ndrange = nd)
                 W2 = view(d_W, 1:below_s, 1:nscol)
