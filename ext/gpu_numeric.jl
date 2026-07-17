@@ -12,7 +12,7 @@
 
 using CUDA.CUSOLVER: potrf!
 using CUDA.CUBLAS: trsm!
-using LinearAlgebra: LAPACK, BLAS, mul!
+using LinearAlgebra: LAPACK, BLAS, mul!, PosDefException
 
 @kernel unsafe_indices = true function _scatter_add!(panel, @Const(C), @Const(ir), k1, ctot)
     idx = @index(Global)
@@ -379,11 +379,13 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
                     end
                 end
             end
-            diag = view(panel, 1:nscol, 1:nscol); _, info = LAPACK.potrf!('L', diag)
-            info != 0 && (ok = false; failcol = Int(super[s]); break)
+            diag = view(panel, 1:nscol, 1:nscol)
+            try; PureSparse.potrf!(diag; uplo = 'L')           # PureBLAS on CPU fronts (design §M.4)
+            catch e; e isa PosDefException || rethrow(); ok = false; failcol = Int(super[s]); break; end
             if below_s > 0
                 L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
-                BLAS.trsm!('R', 'L', 'T', 'N', one(T), diag, L21); BLAS.syrk!('L', 'N', -one(T), L21, one(T), U_s)
+                PureSparse.trsm!(L21, diag; side = 'R', uplo = 'L', transA = 'T', diag = 'N', alpha = one(T))
+                PureSparse.syrk!(U_s, L21; uplo = 'L', trans = 'N', alpha = -one(T), beta = one(T))
                 copyto!(host_arena, uo, host_arena, 1, us)        # compact work slot → host STACK
             end
             # crossing (CPU front, GPU parent): upload its U to the device arena (same STACK offset)
@@ -611,8 +613,8 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                 panel[j, j] = one(T); invd = inv(dj)
                 for i in (j + 1):nsrow; panel[i, j] *= invd; end
                 if j < nscol
-                    BLAS.ger!(-dj, view(panel, (j + 1):nsrow, j), view(panel, (j + 1):nscol, j),
-                              view(panel, (j + 1):nsrow, (j + 1):nscol))
+                    PureSparse.ger!(-dj, view(panel, (j + 1):nsrow, j), view(panel, (j + 1):nscol, j),
+                                    view(panel, (j + 1):nsrow, (j + 1):nscol))
                 end
             end
             if below_s > 0
@@ -620,7 +622,7 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                 for jj in 1:nscol
                     d = dvec[j0 + jj - 1]; for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
                 end
-                BLAS.gemm!('N', 'T', -one(T), W, Matrix(L21), one(T), U_s)
+                PureSparse.gemm!(U_s, W, Matrix(L21); transA = 'N', transB = 'T', alpha = -one(T), beta = one(T))
                 copyto!(host_arena, uo, host_arena, 1, us)        # compact work slot → host STACK
             end
             # crossing (CPU front, GPU parent): upload its U to the device arena (same STACK offset)

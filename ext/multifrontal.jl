@@ -146,12 +146,16 @@ function cpu_multifrontal_cholesky!(x_host::Vector{T}, arena::Vector{T}, M::MFSy
         end
 
         diag = view(panel, 1:nscol, 1:nscol)
-        _, info = LAPACK.potrf!('L', diag)
-        info != 0 && (ok = false; failcol = Int(super[s]); break)
+        try                                                   # PureBLAS potrf! throws on non-PD (amendment C)
+            PureSparse.potrf!(diag; uplo = 'L')
+        catch e
+            e isa PosDefException || rethrow()
+            ok = false; failcol = Int(super[s]); break
+        end
         if below_s > 0
             L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
-            BLAS.trsm!('R', 'L', 'T', 'N', one(T), diag, L21)
-            BLAS.syrk!('L', 'N', -one(T), L21, one(T), U_s)   # U_s = children − L21·L21ᵀ
+            PureSparse.trsm!(L21, diag; side = 'R', uplo = 'L', transA = 'T', diag = 'N', alpha = one(T))
+            PureSparse.syrk!(U_s, L21; uplo = 'L', trans = 'N', alpha = -one(T), beta = one(T))  # U_s = children − L21·L21ᵀ
             copyto!(arena, uo, arena, 1, us)                  # compact work slot → STACK at uoff[s]
         end
     end
@@ -215,7 +219,7 @@ function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vecto
             if j < nscol
                 lcol = view(panel, (j + 1):nsrow, j); lrow = view(panel, (j + 1):nscol, j)
                 trail = view(panel, (j + 1):nsrow, (j + 1):nscol)
-                BLAS.ger!(-dj, lcol, lrow, trail)
+                PureSparse.ger!(-dj, lcol, lrow, trail)
             end
         end
         if below_s > 0                                        # U_s = children − L21·D·L21ᵀ
@@ -225,7 +229,7 @@ function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vecto
                 d = dvec[j0 + jj - 1]
                 for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
             end
-            BLAS.gemm!('N', 'T', -one(T), W, Matrix(L21), one(T), U_s)
+            PureSparse.gemm!(U_s, W, Matrix(L21); transA = 'N', transB = 'T', alpha = -one(T), beta = one(T))
             copyto!(arena, uo, arena, 1, us)                  # compact work slot → STACK at uoff[s]
         end
     end
@@ -256,7 +260,7 @@ function _ldl_block!(block::AbstractMatrix{T}, sg, delta::T, zeta::T) where {T}
         for i in (j + 1):nscol; block[i, j] *= invd; end
         if j < nscol
             lc = view(block, (j + 1):nscol, j); tr = view(block, (j + 1):nscol, (j + 1):nscol)
-            BLAS.ger!(-dj, lc, lc, tr)
+            PureSparse.ger!(-dj, lc, lc, tr)
         end
     end
     return dvals, np, nn, nz, npert, maxp
