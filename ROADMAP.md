@@ -2667,9 +2667,10 @@ segfaults in `check_ir!` on any USE of an atomic-rmw's return value (bare Int32 
 Int64 crashes even bare) — so the "last-group-writes-diagonal" election was replaced by an
 election-free **group-1-to-disjoint-scratch** write + driver copy (no atomic, deadlock-free,
 perf-neutral on CUDA). Validation harness `benchmark/gpu/amd_kernel_test.jl` (env
-`~/Documents/claude/amd_probe`). **CUDA (galen) re-verification of this change PENDING** (galen
-busy with PureBLAS bench) — same KA code so correctness expected, but the fused oracles + 44³ 5×
-perf must be re-run before re-confirming the CUDA path; do NOT sync ext/ to galen until then.
+`~/Documents/claude/amd_probe`). **CUDA (galen) re-verification of this change DONE + PASSED** — the group-1-to-scratch redesign
+preserves the CUDA path: all fused oracles machine-precision (relL 1e-18, inertia exact,
+solve-res 1e-16) and the 44³ LDLᵀ perf held at **5.10×** (was 5.08×, within noise). Validated on
+BOTH hosts (gfx1151 machine-precision + galen 5.10×).
 Note: gfx1151 is an FP64-weak iGPU, so absolute AMD perf is low — the deliverable is the
 portability PROOF, not AMD speed. **NEXT: formal §8 gate**
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
