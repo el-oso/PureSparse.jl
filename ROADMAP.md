@@ -2647,12 +2647,17 @@ oracles machine-precision. **Gate target raised 3× → 5×** (user, after vendo
 **PERF SPLIT MEASURED:** the **fusion is load-bearing** (separate potrf+trsm lose 0.67×) — so
 the **SPD Cholesky recovered to vendor parity** (grid3d 44³ 2.91×, ≥ old cuSOLVER) but the
 **SQD LDLᵀ can't fuse** (its diagonal factors on CPU via signed `_ldl_block!`) → only the
-standalone trsm applies → stuck at **3.41×** (vs 5.04× vendor), missing 5×. **User chose: build
-the pure device signed-LDL FRONT** (the LDLᵀ analogue of `gpu_front!` — fused signed-LDL diag +
-regularization + inertia + panel trsm in one kernel; the CPU `cpu_multifrontal_ldlt!` loop IS
-already this fused form). Fable building it now (`benchmark/gpu/pure_ldlt_front.jl`). **Then:
-integrate + re-measure LDLᵀ vs 5×; then formal §8 gate** (pinned SPD+SQD stratum ≥6, both req-2
-arms, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
+standalone trsm applies → stuck at **3.41×** (vs 5.04× vendor), missing 5×. **Pure device signed-LDL FRONT BUILT + INTEGRATED** (commit `71bda3c`, `ext/gpu_ldlt_dense.jl`):
+`gpu_ldlt_front!` fuses the signed-LDL diagonal (fixed-pivot signed reg + order-free inertia,
+amendment E) with the panel solve in ONE kernel — the LDLᵀ analogue of `gpu_front!` — removing
+the nscol³ CPU-diag round-trip that pinned the KKT path. Machine-precision (relL 1e-18, inertia
+EXACT); flop-weighted 4.42× vs the vendor front. **PURE LDLᵀ NOW MEETS 5×:** KKT hybrid vs CPU
+`ldlt!` — 36³ 4.29×, 40³ 4.44×, **44³ 5.08×** (vs 5.04× vendor — pure now beats it). **Both SPD
+(fused Cholesky front, vendor parity) and SQD (fused signed-LDL front, ≥ vendor) are fully
+pure/portable AND ≥ vendor speed → kernel-policy resolved as pure-primary, no backend dispatch.**
+Removes the last residual device alloc (strided-diag D2H staging). **NEXT: formal §8 gate**
+(pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
+CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
 ## Standing rules
 
