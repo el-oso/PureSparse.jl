@@ -243,3 +243,78 @@ function gpu_cholesky_hybrid!(x_host::Vector{T}, d_nzval, G::GPUSymbolic{Ti}, A;
     CUDA.synchronize()
     return (ok, failcol)
 end
+
+# =======================================================================================
+# MULTIFRONTAL GPU Cholesky (design_gpu.md §M, amendment F) — Path B. Replaces the launch-bound
+# left-looking per-descendant updates with front assembly: per front, one extend-add scatter per
+# child + one potrf + trsm + syrk. Reuses the CPU-validated formulation (multifrontal.jl); panels
+# in d_nzval (in place, bit-compatible), update matrices U_s in a device arena.
+@inline _dslab(dx, off, m, n) = reshape(view(dx, off:(off + m * n - 1)), m, n)
+
+# Extend-add: scatter the lower triangle of child update U_c into the parent — panel cells
+# (emap ≤ nscol) or U_s cells (emap > nscol) — via the ascending per-child emap (§M.2). Distinct
+# target cells per (a,b) → no atomics (children applied sequentially).
+@kernel unsafe_indices = true function _mf_extend_add!(panel, U_s, @Const(U_c), @Const(emap_c),
+                                                       nscol, below_c)
+    idx = @index(Global)
+    if idx ≤ below_c * below_c
+        a = (idx - 1) % below_c + 1
+        b = (idx - 1) ÷ below_c + 1
+        if a ≥ b
+            @inbounds begin
+                ra = Int(emap_c[a]); rb = Int(emap_c[b]); v = U_c[a, b]
+                if rb ≤ nscol
+                    panel[ra, rb] += v
+                else
+                    U_s[ra - nscol, rb - nscol] += v
+                end
+            end
+        end
+    end
+end
+
+"""
+    gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym, G, A) -> (ok, fail_col)
+
+All-GPU multifrontal supernodal Cholesky (design_gpu.md §M). `d_nzval` holds the factor panels
+(length `G.xlen`); `d_arena` the update matrices (length `Msym.arena_peak`). Correctness-first
+(monotonic arena, per-call `d_emap` upload).
+"""
+function gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym::MFSymbolic{Ti}, G::GPUSymbolic, A) where {Ti}
+    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
+    T = eltype(d_nzval)
+    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)     # A into panel regions
+    d_emap = CuArray(Msym.emap)
+    backend = get_backend(d_nzval)
+    d_dummy = CUDA.zeros(T, 1, 1)
+    ok = true; failcol = 0
+    @inbounds for s in 1:ns
+        nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
+        below_s = nsrow - nscol
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol)
+        uo = Int(Msym.uoff[s]); us = Int(Msym.usize[s])
+        us > 0 && CUDA.fill!(view(d_arena, uo:(uo + us - 1)), zero(T))   # zero U_s (pitfall #4)
+        U_s = below_s > 0 ? _dslab(d_arena, uo, below_s, below_s) : d_dummy
+
+        for ci in Int(Msym.children_ptr[s]):(Int(Msym.children_ptr[s + 1]) - 1)
+            c = Int(Msym.children[ci])
+            below_c = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - (Int(super[c + 1]) - Int(super[c]))
+            below_c == 0 && continue
+            U_c = _dslab(d_arena, Int(Msym.uoff[c]), below_c, below_c)
+            emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
+            _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, below_c;
+                                          ndrange = cld(below_c * below_c, 256) * 256)
+        end
+
+        diag = view(panel, 1:nscol, 1:nscol)
+        _, info = potrf!('L', diag)
+        info != 0 && (ok = false; failcol = Int(super[s]); break)
+        if below_s > 0
+            L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
+            trsm!('R', 'L', 'T', 'N', one(T), diag, L21)
+            gpu_syrk_nt!(U_s, L21, -one(T), one(T))          # U_s = children − L21·L21ᵀ
+        end
+    end
+    CUDA.synchronize()
+    return (ok, failcol)
+end

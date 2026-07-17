@@ -185,7 +185,9 @@ function gpu_assemble!(dx, nzval, amap)
     return dx
 end
 
-# Synchronous all-GPU Cholesky numeric loop (design_gpu.md §4, correctness-first).
+# Multifrontal symbolic + CPU numeric (design_gpu.md §M, amendment F) — pure, before the GPU loop.
+include("multifrontal.jl")
+# Synchronous all-GPU Cholesky numeric loops (left-looking §4 + multifrontal §M).
 include("gpu_numeric.jl")
 
 end # module
