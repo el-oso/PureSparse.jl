@@ -318,3 +318,73 @@ function gpu_multifrontal_cholesky!(d_nzval, d_arena, Msym::MFSymbolic{Ti}, G::G
     CUDA.synchronize()
     return (ok, failcol)
 end
+
+# =======================================================================================
+# HYBRID MULTIFRONTAL (design_gpu.md §M.4, amendment F) — per-front on_gpu[] dispatch. Small
+# fronts factor on CPU (host arena/panels), the upward-closed GPU crown on device. A crossing CPU
+# front (CPU with a GPU parent) uploads its U to the device arena at the SAME offset, so a GPU
+# parent's extend-add reads all children's U's from the device arena uniformly. No U downloads
+# (upward closure). One uoff layout, two physical arenas (host + device).
+function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector{T}, device_arena,
+                                  Msym::MFSymbolic{Ti}, G::GPUSymbolic, A; d2h::Bool = true) where {T,Ti}
+    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
+    px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
+    fill!(x_host, zero(T))
+    @inbounds for p in eachindex(A.nzval); m = Int(amap[p]); m != 0 && (x_host[m] = A.nzval[p]); end
+    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)
+    d_emap = CuArray(Msym.emap); backend = get_backend(d_nzval); d_dummy = CUDA.zeros(T, 1, 1)
+    ok = true; failcol = 0
+    GC.@preserve x_host host_arena begin
+    @inbounds for s in 1:ns
+        nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
+        below_s = nsrow - nscol; uo = Int(Msym.uoff[s]); us = Int(Msym.usize[s])
+        c0 = Int(Msym.children_ptr[s]); c1 = Int(Msym.children_ptr[s + 1]) - 1
+        childbelow(c) = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - (Int(super[c + 1]) - Int(super[c]))
+
+        if on_gpu[s]
+            panel = _dpanel(d_nzval, px, s, nsrow, nscol)
+            us > 0 && CUDA.fill!(view(device_arena, uo:(uo + us - 1)), zero(T))
+            U_s = below_s > 0 ? _dslab(device_arena, uo, below_s, below_s) : d_dummy
+            for ci in c0:c1
+                c = Int(Msym.children[ci]); bc = childbelow(c); bc == 0 && continue
+                U_c = _dslab(device_arena, Int(Msym.uoff[c]), bc, bc)
+                emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
+                _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
+            end
+            diag = view(panel, 1:nscol, 1:nscol); _, info = potrf!('L', diag)
+            info != 0 && (ok = false; failcol = Int(super[s]); break)
+            if below_s > 0
+                L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
+                trsm!('R', 'L', 'T', 'N', one(T), diag, L21); gpu_syrk_nt!(U_s, L21, -one(T), one(T))
+            end
+            d2h && copyto!(x_host, Int(px[s]), d_nzval, Int(px[s]), nsrow * nscol)   # panel D2H (oracle)
+        else
+            panel = _hpanel(x_host, Int(px[s]), nsrow, nscol)
+            for i in uo:(uo + us - 1); host_arena[i] = zero(T); end
+            U_s = below_s > 0 ? _hpanel(host_arena, uo, below_s, below_s) : nothing
+            for ci in c0:c1
+                c = Int(Msym.children[ci]); bc = childbelow(c); bc == 0 && continue
+                U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])
+                for b in 1:bc
+                    rb = Int(Msym.emap[eb + b - 1])
+                    for a in b:bc
+                        ra = Int(Msym.emap[eb + a - 1]); v = U_c[a, b]
+                        rb ≤ nscol ? (panel[ra, rb] += v) : (U_s[ra - nscol, rb - nscol] += v)
+                    end
+                end
+            end
+            diag = view(panel, 1:nscol, 1:nscol); _, info = LAPACK.potrf!('L', diag)
+            info != 0 && (ok = false; failcol = Int(super[s]); break)
+            if below_s > 0
+                L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
+                BLAS.trsm!('R', 'L', 'T', 'N', one(T), diag, L21); BLAS.syrk!('L', 'N', -one(T), L21, one(T), U_s)
+            end
+            # crossing (CPU front, GPU parent): upload its U to the device arena (same offset)
+            (Int(sparent[s]) != 0 && on_gpu[Int(sparent[s])] && us > 0) &&
+                copyto!(device_arena, uo, host_arena, uo, us)
+        end
+    end
+    end
+    CUDA.synchronize()
+    return (ok, failcol)
+end
