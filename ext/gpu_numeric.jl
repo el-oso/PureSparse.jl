@@ -452,3 +452,65 @@ function gpu_upload_cpu_panels!(d_nzval, x_host, G::GPUSymbolic)
     end
     return d_nzval
 end
+
+# =======================================================================================
+# MULTIFRONTAL GPU LDLᵀ (design_gpu.md §6/§M, amendment E) — blocked device-LDL. The small
+# nscol×nscol diagonal block's signed-regularization LDL runs on CPU (D2H → _ldl_block! → H2D);
+# the tall parts (L21 panel solve, U_s update) run on device. Reuses the Cholesky multifrontal
+# structure with potrf→block-LDL, trsm→unit-trsm+D⁻¹-scale, syrk→D-scaled-gemm.
+@kernel function _col_scale!(out, @Const(inp), @Const(dvec), base, invflag, m, n)
+    idx = @index(Global)
+    if idx ≤ m * n
+        i = (idx - 1) % m + 1; j = (idx - 1) ÷ m + 1
+        @inbounds begin
+            d = dvec[base + j]
+            out[i, j] = inp[i, j] * (invflag ? inv(d) : d)
+        end
+    end
+end
+
+function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, G::GPUSymbolic,
+                                A, signs::Vector{Int8}) where {Ti}
+    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
+    T = eltype(d_nzval)
+    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)
+    ascale = zero(T); @inbounds for v in A.nzval; a = abs(v); a > ascale && (ascale = a); end
+    delta = T(PureSparse.LDLT_DELTA) * (iszero(ascale) ? one(T) : ascale); zeta = eps(real(T))
+    d_emap = CuArray(Msym.emap); backend = get_backend(d_nzval); d_dummy = CUDA.zeros(T, 1, 1)
+    mer = max(sym.max_extend_rows, 1); d_W = CUDA.zeros(T, mer, mer)
+    np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; ok = true; failcol = 0
+    @inbounds for s in 1:ns
+        nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
+        below_s = nsrow - nscol; j0 = Int(super[s])
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol)
+        uo = Int(Msym.uoff[s]); us = Int(Msym.usize[s])
+        us > 0 && CUDA.fill!(view(d_arena, uo:(uo + us - 1)), zero(T))
+        U_s = below_s > 0 ? _dslab(d_arena, uo, below_s, below_s) : d_dummy
+        for ci in Int(Msym.children_ptr[s]):(Int(Msym.children_ptr[s + 1]) - 1)
+            c = Int(Msym.children[ci])
+            bc = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - (Int(super[c + 1]) - Int(super[c]))
+            bc == 0 && continue
+            U_c = _dslab(d_arena, Int(Msym.uoff[c]), bc, bc)
+            emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
+            _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
+        end
+        # blocked device-LDL: diagonal block on CPU
+        blk_dev = view(panel, 1:nscol, 1:nscol)
+        blk_h = Array(blk_dev)                              # D2H (small)
+        dvals, dnp, dnn, dnz, dnpert, dmaxp = _ldl_block!(blk_h, view(signs, j0:(j0 + nscol - 1)), delta, zeta)
+        np += dnp; nn += dnn; nz += dnz; npert += dnpert; dmaxp > maxp && (maxp = dmaxp)
+        copyto!(blk_dev, blk_h)                             # H2D L11
+        copyto!(d_dvec, j0, dvals, 1, nscol)               # H2D D
+        if below_s > 0
+            L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
+            trsm!('R', 'L', 'T', 'U', one(T), blk_dev, L21)         # W = A21·L11⁻ᵀ (in place)
+            nd = cld(below_s * nscol, 256) * 256
+            _col_scale!(backend, 256)(L21, L21, d_dvec, j0 - 1, true, below_s, nscol; ndrange = nd)  # L21 = W·D⁻¹
+            W2 = view(d_W, 1:below_s, 1:nscol)
+            _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = nd)  # W2 = L21·D
+            gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))             # U_s −= L21·D·L21ᵀ
+        end
+    end
+    CUDA.synchronize()
+    return (ok, failcol, (; n_pos = np, n_neg = nn, n_zero = nz, n_perturbed = npert, max_pert = maxp))
+end

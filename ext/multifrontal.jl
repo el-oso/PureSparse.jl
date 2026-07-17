@@ -225,3 +225,32 @@ function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vecto
     end
     return (true, 0, (; n_pos, n_neg, n_zero, n_perturbed, max_pert))
 end
+
+# Dense signed-regularization LDLᵀ of a small nscol×nscol block (the blocked device-LDL's
+# sequential part, run on CPU per GPU front — design_gpu.md §6, amendment E). In place:
+# `block` ← unit-lower L11; returns D + inertia deltas. `sg` = permuted signs for this block.
+function _ldl_block!(block::AbstractMatrix{T}, sg, delta::T, zeta::T) where {T}
+    nscol = size(block, 1); dvals = Vector{T}(undef, nscol)
+    np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; dmax = zero(T)
+    @inbounds for j in 1:nscol
+        dj = block[j, j]; adj = abs(dj)
+        if adj ≤ zeta * max(dmax, delta); nz += 1
+        elseif dj > zero(T); np += 1
+        else; nn += 1 end
+        s = sg[j]
+        wrong = (s == Int8(1) && !(dj > zero(T))) || (s == Int8(-1) && !(dj < zero(T)))
+        if wrong || adj < delta
+            target = s == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(s)
+            newd = target * max(delta, adj); npert += 1
+            p = Float64(abs(newd - dj)); p > maxp && (maxp = p); dj = newd
+        end
+        dvals[j] = dj; ad = abs(dj); ad > dmax && (dmax = ad)
+        block[j, j] = one(T); invd = inv(dj)
+        for i in (j + 1):nscol; block[i, j] *= invd; end
+        if j < nscol
+            lc = view(block, (j + 1):nscol, j); tr = view(block, (j + 1):nscol, (j + 1):nscol)
+            BLAS.ger!(-dj, lc, lc, tr)
+        end
+    end
+    return dvals, np, nn, nz, npert, maxp
+end
