@@ -128,9 +128,11 @@ by "not what Julia ships," not clean-room.
   factorization isn't built until §6. Complex is excluded by **scope**, not capability (cuSOLVER
   *does* support `Complex{F32,F64}` potrf) — SPD/SQD Hermitian GPU factorization is a later
   increment. Stated so the generic-`T` promise isn't overclaimed.
+- **Device solves are IN (v4, user-directed 2026-07-17):** the gate path is symbolic(CPU, once)
+  → numerical factor(GPU) → solve(GPU); the factor stays device-resident, no full-factor D2H
+  (§7). Supernodal device triangular solves are new kernels (§12).
 - **OUT of M6:** sparse QR (different multifrontal-WY arch; gate already closed vs SPQR).
-  Simplicial update/downdate (latency-bound; stays CPU). Device solves (§7 — solves stay CPU
-  in M6; the gate accounts for the factor D2H).
+  Simplicial update/downdate (latency-bound; stays CPU).
 
 Primary gate number: **warm refactor + make-solve-ready** (§8.1) — the IPM-relevant path.
 
@@ -184,7 +186,8 @@ GPUSupernodalFactor{T,Ti}               # (M6a, LLᵀ)
   d_boundbuf::CuVector{T} (device)      #   persisted boundary panels, Σ_boundary bytes (§5.3)
   d_potrf_ws::CuVector{T} (device)      #   pre-allocated cuSOLVER potrf workspace (§9.A)
   d_devinfo::CuVector{Cint} (device)   #   pivot-failure flags, one per GPU supernode (§4.3)
-  host_mirror::SupernodalFactor{T,Ti}  #   CUDA.register'd; filled on make-solve-ready (§7)
+  d_b, d_x::CuVector{T}   (device)     #   solve RHS/solution device buffers (§7 device solves;
+                                       #     no host_mirror — factor stays device-resident)
   ok::Bool, fail_col::Ti  (host)       #   resolved post-hoc from d_devinfo (§4.3)
   streams::NTuple{2,CuStream}          #   compute + upload streams (§5.4)
 
@@ -375,38 +378,40 @@ if the device block-LDL kernel isn't used; the tall panel stays device-resident)
 numeric code with its own `GPULDLFactor` type (§2.3), BigFloat/CPU-`ldlt` oracle, inertia-match
 test, and zero-alloc gate** — M6b, sequenced after M6a's gate.
 
-## §7 Solves + the D2H (Fable BLOCKER)
+## §7 Solves — ON DEVICE (v4, user-directed 2026-07-17)
 
-Factor is device-resident; solves run on CPU after a **make-solve-ready** step that D2H's the
-GPU-slice of the factor into `host_mirror`. **Pinning (v3, Fable/Opus DEFECT):** `host_mirror`'s
-storage is `CUDA.register`ed (or a pinned bounce buffer) so the D2H hits pinned bandwidth;
-**pageable** D2H runs ~0.5–0.7× of pinned, so an unpinned mirror would understate the cost that
-sits inside the gated region. The pinned mirror bytes are added to the §5.3 budget. Reconciled
-cost: at galen's measured pinned D2H (Phase-0: 13.4 GB/s; v1's "170 ms for 4 GB" was wrong —
-4 GB ÷ 13.4 GB/s ≈ 300 ms), a device factor of `g` GB costs `g/13.4` s to make solve-ready.
-Also recurring per refactor: the A-value **H2D** for device assembly (`nnz(A)·sizeof(T)`, pinned)
-— §9.A gates "0 *pattern* H2D," not zero value H2D; both the D2H and this H2D appear in the §7/§8
-per-cycle economics. **This recurs per warm refactor** in the IPM loop (each refactor invalidates
-the mirror). Therefore:
-- The gate's timed region **includes** make-solve-ready (§8.1) — the GPU arm is not credited a
-  free D2H.
-- An **IPM-cycle context arm** (§8.2) reports refactor+D2H+solve×k both ways, so the per-cycle
-  economics are visible, not hidden.
-- Device solves (eliminating the recurring D2H for repeated solves on one factor) are the
-  obvious next increment but are **out of M6** — flagged, with the cost stated so the decision
-  is data-driven.
+**Solves run on device** (`solve_L!`/`solve_Lt!` as supernodal triangular-solve kernels against
+the device-resident factor). The factor **never** does a full make-solve-ready D2H — it stays on
+device across factor→solve and across refactors. Per solve, only the **RHS `b`** is H2D'd and the
+**solution `x`** D2H'd (length-`n` vectors, `n·sizeof(T)` — negligible vs the factor). This is the
+change that made amendment B's clause 1 clean: the whole `symbolic(CPU, once) → numerical
+factor(GPU) → solve(GPU)` pipeline is device-resident after the one-time pattern upload, with no
+per-refactor factor-sized transfer.
+
+Consequences vs the v3 "solves-on-CPU + make-solve-ready-D2H" design (now retired):
+- The v3 recurring per-refactor **factor D2H** is **gone** (was the dominant IPM-cycle tax). The
+  only per-refactor value transfer is the A-value **H2D** for assembly (`nnz(A)·sizeof(T)`, pinned;
+  §9.A gates "0 *pattern* H2D", not value H2D) and the tiny per-solve `b`/`x` vectors.
+- `host_mirror` (v3) is dropped; there is no host factor copy. A user who wants the factor on the
+  host asks for it explicitly (an opt-in D2H), outside the gated path.
+- Repeated solves on one factor are cheap (no re-transfer) — the natural IPM shape.
+- The device triangular solves are new kernels (supernodal forward/back substitution) with their
+  own CPU-oracle test and their own zero-alloc discipline (pre-allocated, amendment A).
 
 ## §8 Gate
 
-### §8.1 Definition (req 2, corrected)
+### §8.1 Definition (req 2, corrected; v4 amendments user-approved 2026-07-17)
 On the §8.3 large-matrix stratum, all median wall-time, **single-thread CPU methodology**
-(stated so it's not mistaken for threaded-CPU), timed region = **warm refactor +
-make-solve-ready**:
-1. GPU-enabled `cholesky!`+D2H ≥ **2×** faster than our own single-thread CPU PureSparse.
-   *(2× is **provisional pending §8.3 measurement**; it will be derived from the *achieved*
-   crossover — cuBLAS-class 305 GF / our 349 GF pure vs measured single-thread DGEMM ~55–65
-   GF ≈ 5–6× dense headroom, discounted by assembly/scatter/launch/D2H Amdahl — not from the
-   455 GF peak.)*
+(stated so it's not mistaken for threaded-CPU). Both arms share the CPU `symbolic` (analyze
+once); the timed region is the **warm numerical factor + solve** — on the GPU arm both run on
+device (§7, no full-factor D2H; only `b`/`x` vectors transfer), on the CPU arm both run on CPU.
+1. GPU-enabled `cholesky!`+solve ≥ **3×** faster than our own single-thread CPU PureSparse
+   (`cholesky!`+solve). *(3× — user-set target, believed achievable on this GPU (2026-07-17);
+   **provisional pending §8.3 measurement**, to be confirmed from the *achieved* crossover —
+   our 349 GF pure kernel vs measured single-thread DGEMM ~55–65 GF ≈ 5–6× dense headroom,
+   discounted by assembly/scatter/launch Amdahl — not from the 455 GF peak. Held under the
+   no-fudge rule: if the hybrid cannot reach 3× on the stratum we investigate or report the
+   miss, we do not silently lower it.)*
 2. **No regression** on the existing M1/M2 gate set: with the auto frontier, small/medium
    matrices stay on CPU (or the ext isn't even constructed, §2.2) → regression ≤ the harness's
    established locked-clock run-to-run band (a concrete number from galen/wintermute, not
@@ -420,7 +425,8 @@ were fine for the wide-margin flip decision but the gate must not inherit them).
 
 ### §8.2 Context arms (reported, not gated)
 cuDSS (NVIDIA sparse, black-box, like faer for QR); pure-vs-cuBLAS kernel attribution (§3);
-the §7 IPM-cycle cost both ways; **multi-threaded CHOLMOD+OpenBLAS** (Opus DEFECT — the gate is
+the IPM-cycle cost both ways (factor + solve×k — cheap on the GPU arm now that device solves
+avoid re-transfer, §7); **multi-threaded CHOLMOD+OpenBLAS** (Opus DEFECT — the gate is
 single-thread-CPU per req 2, which is the correct *contractual* comparison but reads as
 GPU-vs-one-core; this arm shows GPU-vs-best-CPU so the headline isn't misread).
 
@@ -454,8 +460,13 @@ constant (v3, Opus/Fable DEFECT — the count scales with #GPU-supernodes, so a 
 of nsuper* is the wrong shape; if a zero-host-alloc launch path is demonstrated first, gate that
 instead)."* The per-launch floor is measured first (remaining Phase-0), then gated as a ceiling.
 
-**B — req 2 (gate baseline) on GPU.** The §8.1 three-clause gate, including the restored
-`GivenOrdering` same-perm arm and the refactor+make-solve-ready timed region.
+**B — req 2 (gate baseline) on GPU. ✅ APPROVED WITH CHANGES (user, 2026-07-17).** The §8.1
+three-clause gate, with the user-directed changes: (i) clause 1 margin **3×** (was 2×), (ii)
+timed region = **numerical factor + solve, both on device** (§7 device solves; no full-factor
+D2H — only `b`/`x` vectors move). Retained: the `GivenOrdering` same-perm arm and clause 3 (GPU
+PureSparse still beats **CPU** CHOLMOD+OpenBLAS, both ordering arms — this carries the original
+non-negotiable req 2 forward; confirmed with the user that the opening "no GPU-CHOLMOD
+comparison" agreed with the *rewording rationale*, not dropping clause 3).
 
 **C — dense-kernel exclusivity on device.** CLAUDE.md says CPU dense work goes *exclusively*
 through PureBLAS. Proposed: *"dense per-supernode work goes through PureBLAS on CPU and through
