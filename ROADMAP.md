@@ -2672,7 +2672,21 @@ preserves the CUDA path: all fused oracles machine-precision (relL 1e-18, inerti
 solve-res 1e-16) and the 44³ LDLᵀ perf held at **5.10×** (was 5.08×, within noise). Validated on
 BOTH hosts (gfx1151 machine-precision + galen 5.10×).
 Note: gfx1151 is an FP64-weak iGPU, so absolute AMD perf is low — the deliverable is the
-portability PROOF, not AMD speed. **NEXT: formal §8 gate**
+portability PROOF, not AMD speed.
+
+**FORMAL §8 GATE RUN (2026-07-17, galen RTX 4070, `benchmark/gpu_gate.jl`, results
+`benchmark/results/gpu_gate_galen.json`).** Three arms (CPU-PureSparse / pure-GPU /
+CHOLMOD+OpenBLAS), SPD+SQD stratum, **factor+solve** timed region (amendment B). Result:
+**clause 1 (≥5× vs our CPU): 0/8 FAIL; clause 3 (beats CHOLMOD): 4/8** — the GPU LDLᵀ
+CRUSHES CHOLMOD on all SQD/KKT (up to 23×, the target IP workload) but SPD is ~parity.
+**Root cause (breakdown `benchmark/gpu/gpu_gate_breakdown.jl`, SQD 40³): the DEVICE SOLVE
+is the bottleneck** — factor 553ms, make-solve-ready 20ms, RHS 0.1ms, **solve 555ms** (as
+slow as the factor). The solve walks all 10468 supernodes with ~63k tiny per-supernode
+trsv/gemv/scatter launches → **launch-bound**, the SAME pathology multifrontal fixed for
+the factor. The factor-only 5× is real; the solve was never optimized. **IN PROGRESS: batch
+the device solve via elimination-tree level-scheduling** (independent supernodes per level →
+one batched pure-KA kernel per level, atomic-add scatter; ~100× fewer launches) — Fable
+delegation, validated galen (CUDA) + neuromancer (AMD). **NEXT (after solve): re-run §8 gate.**
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
