@@ -2683,10 +2683,13 @@ CRUSHES CHOLMOD on all SQD/KKT (up to 23×, the target IP workload) but SPD is ~
 is the bottleneck** — factor 553ms, make-solve-ready 20ms, RHS 0.1ms, **solve 555ms** (as
 slow as the factor). The solve walks all 10468 supernodes with ~63k tiny per-supernode
 trsv/gemv/scatter launches → **launch-bound**, the SAME pathology multifrontal fixed for
-the factor. The factor-only 5× is real; the solve was never optimized. **IN PROGRESS: batch
-the device solve via elimination-tree level-scheduling** (independent supernodes per level →
-one batched pure-KA kernel per level, atomic-add scatter; ~100× fewer launches) — Fable
-delegation, validated galen (CUDA) + neuromancer (AMD). **NEXT (after solve): re-run §8 gate.**
+the factor. The factor-only 5× is real; the solve was never optimized. **DEVICE SOLVE BATCHED (commit `864567a`, `ext/gpu_solve.jl`).** Level-scheduled pure-KA solve
+(elimination-tree levels computed once at symbolic time; one batched kernel per level — fwd
+trsv+gemv+bare-atomic scatter, D⁻¹, bwd gather+gemvᵀ+trsvᵀ). SQD 40³: **device solve 555ms →
+26.2ms (21× faster)**, 33 levels → 67 launches (was ~63k); now 4.7% of the factor, no longer
+the bottleneck. Machine-precision both hosts (galen res ≤ 8e-16 + inertia exact; gfx1151
+compiles+matches res ≤ 6e-16 — the fast solve is portable too, bare-atomic scatter). **RE-RUN
+§8 GATE IN FLIGHT** (batched solve + stratum extended to 44³ where the 5× factor was measured).
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
