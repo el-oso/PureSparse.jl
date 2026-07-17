@@ -159,3 +159,72 @@ The plots regenerate from `benchmark/results/qr_gate_neuromancer.json` and
 `benchmark/results/faer_vs_puresparse_7000x4000_neuromancer.json` — saved measurement
 snapshots; re-running a benchmark to make a plot is against this repo's benchmarking
 rules (results→JSON first, plots from saved JSON only).
+
+## GPU multifrontal (M6)
+
+The GPU backend (a weak-dependency CUDA extension) factors on the device with a
+**multifrontal** supernodal engine: an upward-closed etree frontier splits the small
+fronts onto the CPU from the large "crown" fronts on the GPU, and the whole dense
+inner loop runs through **pure-Julia KernelAbstractions.jl kernels** — no
+cuSOLVER/cuBLAS on the shipped path (they remain only as reference arms). The dense
+kernels beat cuBLAS FP64 on the shapes that matter because Julia is IEEE-strict and the
+kernels use `muladd`; the whole factor stays device-resident, and solves run on-device
+too (only the right-hand side and solution vectors cross the bus).
+
+!!! note "Measurement status"
+    These are galen (RTX 4070, clock-locked 1920 MHz) medians of the **warm,
+    device-resident refactor** — the zero-allocation path the API is built around, so
+    per-sample time is near-deterministic and the honest viz is a median line/bar (a
+    violin would be a flat line — the same reasoning as the QR gate figure above). The
+    formal pinned SPD+SQD stratum gate (`docs/design_gpu.md` §8), run on two
+    clock-locked hosts against CHOLMOD/OpenBLAS, is a separate, later artifact.
+
+### Symmetric quasi-definite LDLᵀ (the interior-point / KKT case)
+
+On symmetric quasi-definite KKT systems `[H Aᵀ; A −D]` (the interior-point workload
+PureSparse targets, §"Analyze once, factorize many"), the pure GPU LDLᵀ **matches and
+slightly exceeds** the cuSOLVER/cuBLAS reference, reaching **5.08× over single-thread
+CPU `ldlt!`** at H = 44³ (n ≈ 87 k, nnz(L) ≈ 46 M) — and the speedup grows with size:
+
+![GPU LDLᵀ speedup vs CPU](assets/gpu_ldlt_speedup.png)
+
+The dotted line is an earlier pure path that used a *standalone* triangular solve on the
+crown fronts; it stalled at ~3.4× because the LDLᵀ diagonal was still factored on the
+host. The shipped path (solid blue) instead runs a **fused signed-LDL front** — one
+kernel that factors the diagonal block (fixed-pivot signed regularization + on-device
+inertia) *and* solves the tall panel — which is what closes the gap to the vendor path.
+Per crown-front shape, that fused front removes the host round-trip whose cost scales as
+`nscol³`, so it wins big on the flop-heavy fronts (up to **7.15×** at the near-root
+supernodes), for a **flop-weighted 4.42×** over the vendor front; it only loses on the
+smallest fronts, where a CPU block is genuinely cheap:
+
+![Fused signed-LDL front vs vendor front](assets/gpu_front_kernel.png)
+
+### SPD Cholesky
+
+The SPD Cholesky path uses the analogous fused Cholesky front and sits at **vendor
+parity** (e.g. 2.91× over CPU `cholesky!` at a 44³ grid Laplacian — GPU speedups are
+lower here than on the KKT case because the pure grid's fronts are sparser and less
+GPU-favorable than the KKT coupling fill).
+
+### Memory: the bounded arena
+
+The multifrontal update matrices live in a **bounded stack-with-compaction arena** (each
+front builds its Schur complement in a work slot, then compacts it onto a stack over the
+space its children freed), rather than a monotonic per-front allocation. That is the
+difference between OOM and fit on the large KKTs — **5.9× smaller at 44³**, and the ratio
+grows with problem size:
+
+![Bounded vs monotonic arena](assets/gpu_arena.png)
+
+### Reproducing
+
+```bash
+julia --project=benchmark benchmark/plot_gpu_comparison.jl  # regenerate the three plots
+                                                            # above from the SAVED JSON
+```
+
+The figures regenerate from `benchmark/results/gpu_multifrontal_galen.json` (a saved
+measurement snapshot), never from a live benchmark — same rule as the rest of this page.
+The correctness oracles that back these numbers (device factor matches CPU factor at
+machine precision, exact inertia) live in `benchmark/gpu/`.
