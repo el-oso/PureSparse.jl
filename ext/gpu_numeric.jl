@@ -514,3 +514,136 @@ function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, 
     CUDA.synchronize()
     return (ok, failcol, (; n_pos = np, n_neg = nn, n_zero = nz, n_perturbed = npert, max_pert = maxp))
 end
+
+# =======================================================================================
+# HYBRID MULTIFRONTAL LDLᵀ (design_gpu.md §6/§M.4, amendments E/F) — per-front dispatch. CPU
+# fronts: CPU LDLᵀ (host panel/arena). GPU fronts: blocked device-LDL. Crossing-U uploads as in
+# the Cholesky hybrid. `dvec` (host) holds all D; `d_dvec` holds GPU-front D (device D-scales);
+# make-solve-ready uploads host dvec + CPU panels for the device solve.
+function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector{T}, device_arena,
+                                       dvec::Vector{T}, d_dvec, Msym::MFSymbolic{Ti}, G::GPUSymbolic,
+                                       A, signs::Vector{Int8}; d2h::Bool=true) where {T,Ti}
+    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
+    px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
+    fill!(x_host, zero(T)); ascale = zero(T)
+    @inbounds for p in eachindex(A.nzval)
+        m = Int(amap[p]); m == 0 && continue
+        v = A.nzval[p]; x_host[m] = v; a = abs(v); a > ascale && (ascale = a)
+    end
+    gpu_assemble!(d_nzval, CuArray(A.nzval), G.d_amap)
+    delta = T(PureSparse.LDLT_DELTA) * (iszero(ascale) ? one(T) : ascale); zeta = eps(real(T))
+    d_emap = CuArray(Msym.emap); backend = get_backend(d_nzval); d_dummy = CUDA.zeros(T, 1, 1)
+    mer = max(sym.max_extend_rows, 1); d_W = CUDA.zeros(T, mer, mer)
+    np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; ok = true; failcol = 0
+    GC.@preserve x_host host_arena begin
+    @inbounds for s in 1:ns
+        nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
+        below_s = nsrow - nscol; j0 = Int(super[s]); uo = Int(Msym.uoff[s]); us = Int(Msym.usize[s])
+        c0 = Int(Msym.children_ptr[s]); c1 = Int(Msym.children_ptr[s + 1]) - 1
+        cbelow(c) = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - (Int(super[c + 1]) - Int(super[c]))
+
+        if on_gpu[s]
+            panel = _dpanel(d_nzval, px, s, nsrow, nscol)
+            us > 0 && CUDA.fill!(view(device_arena, uo:(uo + us - 1)), zero(T))
+            U_s = below_s > 0 ? _dslab(device_arena, uo, below_s, below_s) : d_dummy
+            for ci in c0:c1
+                c = Int(Msym.children[ci]); bc = cbelow(c); bc == 0 && continue
+                U_c = _dslab(device_arena, Int(Msym.uoff[c]), bc, bc)
+                emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
+                _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
+            end
+            blk_h = Array(view(panel, 1:nscol, 1:nscol))
+            dv, dnp, dnn, dnz, dnpe, dmp = _ldl_block!(blk_h, view(signs, j0:(j0 + nscol - 1)), delta, zeta)
+            np += dnp; nn += dnn; nz += dnz; npert += dnpe; dmp > maxp && (maxp = dmp)
+            copyto!(view(panel, 1:nscol, 1:nscol), blk_h)
+            @views dvec[j0:(j0 + nscol - 1)] .= dv; copyto!(d_dvec, j0, dv, 1, nscol)
+            if below_s > 0
+                L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
+                trsm!('R', 'L', 'T', 'U', one(T), view(panel, 1:nscol, 1:nscol), L21)
+                nd = cld(below_s * nscol, 256) * 256
+                _col_scale!(backend, 256)(L21, L21, d_dvec, j0 - 1, true, below_s, nscol; ndrange = nd)
+                W2 = view(d_W, 1:below_s, 1:nscol)
+                _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = nd)
+                gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))
+            end
+            d2h && copyto!(x_host, Int(px[s]), d_nzval, Int(px[s]), nsrow * nscol)
+        else
+            panel = _hpanel(x_host, Int(px[s]), nsrow, nscol)
+            for i in uo:(uo + us - 1); host_arena[i] = zero(T); end
+            U_s = below_s > 0 ? _hpanel(host_arena, uo, below_s, below_s) : nothing
+            for ci in c0:c1
+                c = Int(Msym.children[ci]); bc = cbelow(c); bc == 0 && continue
+                U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])
+                for b in 1:bc
+                    rb = Int(Msym.emap[eb + b - 1])
+                    for a in b:bc
+                        ra = Int(Msym.emap[eb + a - 1]); v = U_c[a, b]
+                        rb ≤ nscol ? (panel[ra, rb] += v) : (U_s[ra - nscol, rb - nscol] += v)
+                    end
+                end
+            end
+            dmax_local = zero(T)
+            for j in 1:nscol
+                jg = j0 + j - 1; dj = panel[j, j]; adj = abs(dj)
+                if adj ≤ zeta * max(dmax_local, delta); nz += 1
+                elseif dj > zero(T); np += 1 else nn += 1 end
+                sg = signs[jg]
+                wrong = (sg == Int8(1) && !(dj > zero(T))) || (sg == Int8(-1) && !(dj < zero(T)))
+                if wrong || adj < delta
+                    target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
+                    newd = target * max(delta, adj); npert += 1
+                    p = Float64(abs(newd - dj)); p > maxp && (maxp = p); dj = newd
+                end
+                dvec[jg] = dj; adf = abs(dj); adf > dmax_local && (dmax_local = adf)
+                panel[j, j] = one(T); invd = inv(dj)
+                for i in (j + 1):nsrow; panel[i, j] *= invd; end
+                if j < nscol
+                    BLAS.ger!(-dj, view(panel, (j + 1):nsrow, j), view(panel, (j + 1):nscol, j),
+                              view(panel, (j + 1):nsrow, (j + 1):nscol))
+                end
+            end
+            if below_s > 0
+                L21 = view(panel, (nscol + 1):nsrow, 1:nscol); W = Matrix{T}(undef, below_s, nscol)
+                for jj in 1:nscol
+                    d = dvec[j0 + jj - 1]; for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
+                end
+                BLAS.gemm!('N', 'T', -one(T), W, Matrix(L21), one(T), U_s)
+            end
+            (Int(sparent[s]) != 0 && on_gpu[Int(sparent[s])] && us > 0) &&
+                copyto!(device_arena, uo, host_arena, uo, us)
+        end
+    end
+    end
+    CUDA.synchronize()
+    return (ok, failcol, (; n_pos = np, n_neg = nn, n_zero = nz, n_perturbed = npert, max_pert = maxp))
+end
+
+# Device LDLᵀ solve: forward L·z=b (unit), D⁻¹ scale, backward Lᵀ·x=w (unit). L is unit-lower.
+function gpu_solve_ldlt!(d_y, d_nzval, d_dvec, G::GPUSymbolic, d_upd, d_gath)
+    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
+    d_rowind = G.d_rowind; backend = get_backend(d_y); T = eltype(d_y)
+    @inbounds for s in 1:ns                                   # forward L·z = b (unit lower)
+        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
+        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol); yblk = view(d_y, j0:(j0 + nscol - 1))
+        trsv!('L', 'N', 'U', view(panel, 1:nscol, 1:nscol), yblk)
+        if below > 0
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); upd = view(d_upd, 1:below)
+            gemv!('N', -one(T), Lbelow, yblk, zero(T), upd)
+            _scatter_y!(backend, 256)(d_y, upd, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
+        end
+    end
+    d_y ./= d_dvec                                            # D⁻¹ scale (w = D⁻¹·z)
+    @inbounds for s in ns:-1:1                                # backward Lᵀ·x = w (unit lower)
+        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
+        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol); yblk = view(d_y, j0:(j0 + nscol - 1))
+        if below > 0
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); gath = view(d_gath, 1:below)
+            _gather_y!(backend, 256)(gath, d_y, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
+            gemv!('T', -one(T), Lbelow, gath, one(T), yblk)
+        end
+        trsv!('L', 'T', 'U', view(panel, 1:nscol, 1:nscol), yblk)
+    end
+    return d_y
+end
