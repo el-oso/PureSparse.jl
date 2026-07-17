@@ -103,6 +103,7 @@ gpu_syrk_nt!(C, A, alpha, beta) = gpu_gemm_nt!(C, A, A, alpha, beta)
 
 # --- Pure device dense kernels (potrf/trsm/front) — amendment C portability ---
 include("gpu_dense.jl")
+include("gpu_ldlt_dense.jl")   # fused signed-LDL front (the LDLᵀ analogue of gpu_front!)
 
 # ---------------------------------------------------------------------------------------
 # GPUSymbolic (design_gpu.md §2.3): the CPU Symbolic + the upward-closed frontier partition

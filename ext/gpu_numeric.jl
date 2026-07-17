@@ -488,7 +488,7 @@ end
 function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, G::GPUSymbolic,
                                 A, signs::Vector{Int8};
                                 d_emap = nothing, d_dummy = nothing, d_W = nothing, d_Anz = nothing,
-                                ws = nothing) where {Ti}
+                                d_signs = nothing, ldlws = nothing) where {Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
     T = eltype(d_nzval)
     gpu_assemble!(d_nzval, isnothing(d_Anz) ? CuArray(A.nzval) : copyto!(d_Anz, A.nzval), G.d_amap)
@@ -497,9 +497,9 @@ function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, 
     isnothing(d_emap) && (d_emap = CuArray(Msym.emap)); backend = get_backend(d_nzval)
     isnothing(d_dummy) && (d_dummy = CUDA.zeros(T, 1, 1))
     mer = max(sym.max_extend_rows, 1); isnothing(d_W) && (d_W = CUDA.zeros(T, mer, mer))
-    mnc = 0; @inbounds for s in 1:ns; c = Int(super[s + 1]) - Int(super[s]); c > mnc && (mnc = c); end
-    isnothing(ws) && (ws = FrontWS(T, cld(mnc, 64)))     # invD scratch for the optimized trsm
-    np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; ok = true; failcol = 0
+    isnothing(d_signs) && (d_signs = CuArray(signs))     # signs on device (front-local slices)
+    isnothing(ldlws) && (ldlws = LDLFrontWS(T)); CUDA.fill!(ldlws.stats, zero(T))   # inertia accum on device
+    ok = true; failcol = 0
     @inbounds for s in 1:ns
         nscol = Int(super[s + 1]) - Int(super[s]); nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
         below_s = nsrow - nscol; j0 = Int(super[s])
@@ -515,26 +515,21 @@ function gpu_multifrontal_ldlt!(d_nzval, d_arena, d_dvec, Msym::MFSymbolic{Ti}, 
             emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
             _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
         end
-        # blocked device-LDL: diagonal block on CPU
-        blk_dev = view(panel, 1:nscol, 1:nscol)
-        blk_h = Array(blk_dev)                              # D2H (small)
-        dvals, dnp, dnn, dnz, dnpert, dmaxp = _ldl_block!(blk_h, view(signs, j0:(j0 + nscol - 1)), delta, zeta)
-        np += dnp; nn += dnn; nz += dnz; npert += dnpert; dmaxp > maxp && (maxp = dmaxp)
-        copyto!(blk_dev, blk_h)                             # H2D L11
-        copyto!(d_dvec, j0, dvals, 1, nscol)               # H2D D
+        # fused pure signed-LDL front: diag LDL (signs+reg+inertia) + panel solve, one kernel (amendment C/E)
+        sgn_v = view(d_signs, j0:(j0 + nscol - 1)); dv_v = view(d_dvec, j0:(j0 + nscol - 1))
+        gpu_ldlt_front!(panel, nscol, sgn_v, dv_v, delta, zeta, ldlws)   # L11 unit, D→d_dvec, L21=W·D⁻¹
         if below_s > 0
             L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
-            gpu_trsm_rlt_opt!(L21, blk_dev, ws)  # pure opt: W = A21·L11⁻ᵀ (L11 unit → stored diag=1)
-            nd = cld(below_s * nscol, 256) * 256
-            _col_scale!(backend, 256)(L21, L21, d_dvec, j0 - 1, true, below_s, nscol; ndrange = nd)  # L21 = W·D⁻¹
             W2 = view(d_W, 1:below_s, 1:nscol)
-            _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = nd)  # W2 = L21·D
+            _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = cld(below_s * nscol, 256) * 256)  # W2 = L21·D
             gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))             # U_s −= L21·D·L21ᵀ
             copyto!(d_arena, uo, d_arena, 1, us)                    # compact work slot → STACK at uoff[s]
         end
     end
     CUDA.synchronize()
-    return (ok, failcol, (; n_pos = np, n_neg = nn, n_zero = nz, n_perturbed = npert, max_pert = maxp))
+    st = Array(ldlws.stats)                                # inertia accumulated on device
+    return (ok, failcol, (; n_pos = Int(st[1]), n_neg = Int(st[2]), n_zero = Int(st[3]),
+                          n_perturbed = Int(st[4]), max_pert = Float64(st[5])))
 end
 
 # =======================================================================================
@@ -546,11 +541,11 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                                        dvec::Vector{T}, d_dvec, Msym::MFSymbolic{Ti}, G::GPUSymbolic,
                                        A, signs::Vector{Int8}; d2h::Bool=true,
                                        d_emap = nothing, d_dummy = nothing, d_W = nothing, d_Anz = nothing,
-                                       ws = nothing) where {T,Ti}
+                                       d_signs = nothing, ldlws = nothing) where {T,Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
     px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
-    mnc = 0; @inbounds for s in 1:ns; c = Int(super[s + 1]) - Int(super[s]); c > mnc && (mnc = c); end
-    isnothing(ws) && (ws = FrontWS(T, cld(mnc, 64)))     # invD scratch for the optimized trsm
+    isnothing(d_signs) && (d_signs = CuArray(signs))     # signs on device (GPU-front slices)
+    isnothing(ldlws) && (ldlws = LDLFrontWS(T)); CUDA.fill!(ldlws.stats, zero(T))   # GPU-front inertia
     fill!(x_host, zero(T)); ascale = zero(T)
     @inbounds for p in eachindex(A.nzval)
         m = Int(amap[p]); m == 0 && continue
@@ -579,19 +574,16 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                 emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
                 _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
             end
-            blk_h = Array(view(panel, 1:nscol, 1:nscol))
-            dv, dnp, dnn, dnz, dnpe, dmp = _ldl_block!(blk_h, view(signs, j0:(j0 + nscol - 1)), delta, zeta)
-            np += dnp; nn += dnn; nz += dnz; npert += dnpe; dmp > maxp && (maxp = dmp)
-            copyto!(view(panel, 1:nscol, 1:nscol), blk_h)
-            @views dvec[j0:(j0 + nscol - 1)] .= dv; copyto!(d_dvec, j0, dv, 1, nscol)
+            # fused pure signed-LDL front (diag LDL + panel solve, one kernel — amendment C/E)
+            sgn_v = view(d_signs, j0:(j0 + nscol - 1)); dv_v = view(d_dvec, j0:(j0 + nscol - 1))
+            gpu_ldlt_front!(panel, nscol, sgn_v, dv_v, delta, zeta, ldlws)   # L11 unit, D→d_dvec, L21=W·D⁻¹
+            copyto!(dvec, j0, d_dvec, j0, nscol)               # mirror GPU-front D to host dvec (make-solve-ready)
             if below_s > 0
                 L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
-                gpu_trsm_rlt_opt!(L21, view(panel, 1:nscol, 1:nscol), ws)   # pure opt (L11 unit → diag=1)
-                nd = cld(below_s * nscol, 256) * 256
-                _col_scale!(backend, 256)(L21, L21, d_dvec, j0 - 1, true, below_s, nscol; ndrange = nd)
                 W2 = view(d_W, 1:below_s, 1:nscol)
-                _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = nd)
-                gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))
+                _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol;
+                                          ndrange = cld(below_s * nscol, 256) * 256)   # W2 = L21·D
+                gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))          # U_s −= L21·D·L21ᵀ
                 copyto!(device_arena, uo, device_arena, 1, us)       # compact → device STACK
             end
             d2h && copyto!(x_host, Int(px[s]), d_nzval, Int(px[s]), nsrow * nscol)
@@ -645,6 +637,8 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
     end
     end
     CUDA.synchronize()
+    st = Array(ldlws.stats)                                # add GPU-front inertia to the CPU-front totals
+    np += Int(st[1]); nn += Int(st[2]); nz += Int(st[3]); npert += Int(st[4]); maxp = max(maxp, Float64(st[5]))
     return (ok, failcol, (; n_pos = np, n_neg = nn, n_zero = nz, n_perturbed = npert, max_pert = maxp))
 end
 
