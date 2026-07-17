@@ -77,7 +77,7 @@ function t_gemm(M, N, K)
 end
 
 # ================= test 2: fused Cholesky front =================
-function t_front(nscol, below)
+function t_front(nscol, below; mode = :auto)
     rng = MersenneTwister(1); nsrow = nscol + below
     Mm = randn(rng, nscol, nscol); P11 = Mm' * Mm + nscol * I         # SPD
     A21 = randn(rng, below, nscol)
@@ -85,20 +85,25 @@ function t_front(nscol, below)
     L11 = Matrix(cholesky(Symmetric(P11, :L)).L)                       # CPU reference
     L21 = A21 / L11'
     ws = FrontWS(BK, Float64, cld(nscol, 64))
-    dP = roc(P); gpu_front!(dP, nscol, ws); KernelAbstractions.synchronize(BK)
+    dP = roc(P); gpu_front!(dP, nscol, ws; mode); KernelAbstractions.synchronize(BK)
     H = Array(dP)
     rL = rel(zl(H[1:nscol, 1:nscol]), zl(L11)); rP = below > 0 ? rel(H[(nscol+1):nsrow, 1:nscol], L21) : 0.0
-    @printf("  front %d×%d   relL11=%.2e relL21=%.2e  %s\n", nscol, below, rL, rP,
+    @printf("  front(%s) %d×%d   relL11=%.2e relL21=%.2e  %s\n", mode, nscol, below, rL, rP,
             (rL < 1e-10 && rP < 1e-10) ? "OK" : "FAIL")
     return rL < 1e-10 && rP < 1e-10
 end
 
 # ================= test 3: fused signed-LDL front =================
-# CPU signed-LDL reference (the cpu_multifrontal_ldlt! loop, dense)
+# CPU signed-LDL reference (the cpu_multifrontal_ldlt! loop, dense) + the kernel's exact
+# inertia classification (pre-perturbation dj, running post-perturbation dmax)
 function cpu_ldl!(P, signs, delta, zeta)
     nsrow, nscol = size(P); dvals = zeros(nscol); dmax = 0.0
+    np = 0; nn = 0; nz = 0
     for j in 1:nscol
         dj = P[j, j]; adj = abs(dj); sg = signs[j]
+        if adj <= zeta * max(dmax, delta); nz += 1
+        elseif dj > 0; np += 1
+        else; nn += 1; end
         wrong = (sg == 1 && !(dj > 0)) || (sg == -1 && !(dj < 0))
         if wrong || adj < delta
             target = sg == 0 ? (signbit(dj) ? -1.0 : 1.0) : Float64(sg); dj = target * max(delta, adj)
@@ -107,9 +112,9 @@ function cpu_ldl!(P, signs, delta, zeta)
         for i in (j+1):nsrow; P[i, j] *= invd; end
         for c in (j+1):nscol, r in (j+1):nsrow; P[r, c] -= dj * P[r, j] * P[c, j]; end
     end
-    return dvals
+    return dvals, (np, nn, nz)
 end
-function t_ldl_front(nscol, below)
+function t_ldl_front(nscol, below; mode = :auto)
     rng = MersenneTwister(2); nsrow = nscol + below; n1 = cld(nscol, 2)
     Mm = randn(rng, nscol, nscol); K11 = Mm' * Mm + nscol * I
     for i in (n1+1):nscol; K11[i, i] = -K11[i, i]; end                # make some pivots negative (SQD-ish)
@@ -117,20 +122,28 @@ function t_ldl_front(nscol, below)
     P = zeros(nsrow, nscol); P[1:nscol, 1:nscol] = K11; P[(nscol+1):nsrow, 1:nscol] = A21
     signs = Int8[i ≤ n1 ? 1 : -1 for i in 1:nscol]
     delta = 1e-13 * maximum(abs, K11); zeta = eps()
-    Pref = copy(P); dref = cpu_ldl!(Pref, signs, delta, zeta)
+    Pref = copy(P); dref, iref = cpu_ldl!(Pref, signs, delta, zeta)
     ws = LDLFrontWS(BK, Float64)
     dP = roc(P); dv = KernelAbstractions.zeros(BK, Float64, nscol)
-    gpu_ldlt_front!(dP, nscol, roc(signs), dv, delta, zeta, ws); KernelAbstractions.synchronize(BK)
+    gpu_ldlt_front!(dP, nscol, roc(signs), dv, delta, zeta, ws; mode); KernelAbstractions.synchronize(BK)
     H = Array(dP)
+    st = Array(ws.stats); igpu = (Int(st[1]), Int(st[2]), Int(st[3]))
     # note: gpu front folds D⁻¹ into L21 (unit L21), reference does not — compare only L11 + D
     rL = rel(zl(H[1:nscol, 1:nscol]), zl(Pref[1:nscol, 1:nscol])); rD = rel(Array(dv), dref)
-    @printf("  ldl-front %d×%d   relL11=%.2e relD=%.2e  %s\n", nscol, below, rL, rD,
-            (rL < 1e-9 && rD < 1e-9) ? "OK" : "FAIL")
-    return rL < 1e-9 && rD < 1e-9
+    ok = rL < 1e-9 && rD < 1e-9 && igpu == iref
+    @printf("  ldl-front(%s) %d×%d   relL11=%.2e relD=%.2e  inertia gpu=%s ref=%s  %s\n",
+            mode, nscol, below, rL, rD, igpu, iref, ok ? "OK" : "FAIL")
+    return ok
 end
 
 println("AMDGPU: ", AMDGPU.functional(), "  device: ", AMDGPU.device())
 println("\n[1] pure gemm");        ok1 = all([t_gemm(256, 256, 128), t_gemm(1000, 500, 300)])
-println("[2] fused Cholesky front"); ok2 = all([t_front(55, 754), t_front(234, 1436), t_front(300, 2000)])
-println("[3] fused signed-LDL front"); ok3 = all([t_ldl_front(55, 754), t_ldl_front(234, 1436)])
+println("[2] fused Cholesky front")
+ok2 = all([t_front(55, 754; mode = :fused2), t_front(234, 1436; mode = :fused2),
+           t_front(300, 2000; mode = :fused2),
+           t_front(55, 754; mode = :fused), t_front(234, 1436; mode = :fused),
+           t_front(300, 2000; mode = :fused)])
+println("[3] fused signed-LDL front")
+ok3 = all([t_ldl_front(55, 754; mode = :fused2), t_ldl_front(234, 1436; mode = :fused2),
+           t_ldl_front(55, 754; mode = :fused), t_ldl_front(234, 1436; mode = :fused)])
 println("\n", (ok1 && ok2 && ok3) ? "ALL PURE KERNELS RUN + MATCH ON AMD ✓" : "SOME FAILED — see above")

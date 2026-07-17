@@ -14,12 +14,13 @@
 # tile (thread-per-column forward substitution — race-free, each thread reads lower + its
 # own row), then computes its OWN 64-row tile of the tall panel as the dependency-free
 # multiply L21[i,j] = (Σ_{k≤j} A21[i,k]·invL[j,k])·(1/d_j), 4×4 register tiles. Group 1
-# writes dvec + (thread 1) the inertia/dmax stats; the LAST-arriving group (monotonic
-# atomic counter — same ordering proof as _front_fused64!) writes the unit-lower factored
-# diagonal back.
+# writes dvec + (thread 1) the inertia/dmax stats + the unit-lower factored diagonal to
+# the DISJOINT scratch Dout (lower = unit-L, strict upper = 0) — A is never written, so
+# no group's load of the unfactored A can race it (see _front_fused64!; replaces the
+# atomic-counter election, which gfx1151's compiler cannot compile).
 @kernel unsafe_indices = true function _ldl_front_fused64_v2!(A, B, n, m, @Const(sgn), dv,
                                                               stats, delta, zeta, firstblk,
-                                                              cnt, target)
+                                                              Dout)
     T = eltype(A)
     li = @index(Local, NTuple)            # (16,16)
     gi = @index(Group, Linear)
@@ -30,7 +31,6 @@
     Dinv = @localmem T (64,)              # 1/d_j — reciprocal once, FP64 div is slow
     Wc = @localmem T (64,)                # d_j·l_cc, hoisted per column (ger!'s `a` — keeps
     As = @localmem T (64, 8)              # the trailing sweep at ONE fma/element)
-    lastf = @localmem Int32 (1,)
     # zero-padded staging of lower(A) into the fixed 64×64 tile (bit-ops only)
     q = tid
     @inbounds while q <= 4096
@@ -101,6 +101,17 @@
     @inbounds if gi == 1 && tid <= n
         dv[tid] = Ds[tid]
     end
+    if gi == 1                            # group 1 → scratch (lower = unit-L, rest 0);
+        q = tid                           # reads only lower(Ls), disjoint from the
+        @inbounds while q <= 4096         # strict-upper inversion below
+            r = ((q - 1) & 63) + 1
+            c = ((q - 1) >> 6) + 1
+            if r <= n && c <= n
+                Dout[r, c] = r >= c ? Ls[r, c] : zero(T)
+            end
+            q += 256
+        end
+    end
     # invert the UNIT-lower L11: thread c writes column c of L⁻¹ TRANSPOSED into row c of
     # the strict upper triangle (reads only lower entries + its own row ⇒ race-free)
     if tid <= n
@@ -151,25 +162,6 @@
             B[gr + 1, gc + 1] = acc[i, j] * Dinv[gc + 1]   # D⁻¹ fold at write-back
         end
     end
-    # last-arriving group writes the factored unit-lower diagonal back (ordering proof:
-    # see _front_fused64! — every group's A-loads happen-before its fenced arrival)
-    @synchronize
-    if tid == 1
-        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
-    end
-    @synchronize
-    if lastf[1] == Int32(1)
-        q = tid
-        @inbounds while q <= 4096
-            r = ((q - 1) & 63) + 1
-            c = ((q - 1) >> 6) + 1
-            if r <= n && c <= n && r >= c
-                A[r, c] = Ls[r, c]
-            end
-            q += 256
-        end
-    end
 end
 
 # FUSED signed-LDL front kernel v1 (row-solve — the _front_fused64! analogue, for tall
@@ -179,7 +171,7 @@ end
 # L21·(D·L11ᵀ) = A21:  L21[i,j] = (A21[i,j] − Σ_{k<j} L21[i,k]·Lds[k,j])·(1/d_j).
 @kernel unsafe_indices = true function _ldl_front_fused64_v1!(A, B, n, m, @Const(sgn), dv,
                                                               stats, delta, zeta, firstblk,
-                                                              cnt, target)
+                                                              Dout)
     T = eltype(A)
     li = @index(Local, Linear)            # 1..256
     gi = @index(Group, Linear)
@@ -187,7 +179,6 @@ end
     Ds = @localmem T (64,)
     Dinv = @localmem T (64,)
     Wc = @localmem T (64,)                # d_j·l_cc, hoisted per column (see v2)
-    lastf = @localmem Int32 (1,)
     q = li
     @inbounds while q <= 4096
         r = ((q - 1) & 63) + 1
@@ -254,6 +245,17 @@ end
     @inbounds if gi == 1 && li <= n
         dv[li] = Ds[li]
     end
+    if gi == 1                            # group 1 → scratch (lower = unit-L, rest 0);
+        q = li                            # reads r ≥ c only, disjoint from the strict-
+        @inbounds while q <= 4096         # upper Lds fill below
+            r = ((q - 1) & 63) + 1
+            c = ((q - 1) >> 6) + 1
+            if r <= n && c <= n
+                Dout[r, c] = r >= c ? Ls[r, c] : zero(T)
+            end
+            q += 256
+        end
+    end
     # strict upper ← D-scaled transposed factor: Ls[k,j] = L11[j,k]·d_k (writes upper,
     # reads lower + Ds — disjoint cells, no barrier needed within the pass)
     q = li
@@ -274,23 +276,6 @@ end
                 s = muladd(-B[i, k], Ls[k, j], s)
             end
             B[i, j] = s * Dinv[j]
-        end
-    end
-    @synchronize
-    if li == 1
-        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
-    end
-    @synchronize
-    if lastf[1] == Int32(1)
-        q = li
-        @inbounds while q <= 4096
-            r = ((q - 1) & 63) + 1
-            c = ((q - 1) >> 6) + 1
-            if r <= n && c <= n && r >= c
-                A[r, c] = Ls[r, c]
-            end
-            q += 256
         end
     end
 end
@@ -360,22 +345,21 @@ end
 # =======================================================================================
 
 """
-Caller-provided workspace: `cnt` + `arrivals` (device Int64 arrival counter + host mirror,
-MONOTONIC — same pattern as FrontWS), `stats` (Float64[6] device buffer:
+Caller-provided workspace: `stats` (Float64[6] device buffer:
 [n_pos, n_neg, n_zero, n_perturbed, max_pert, dmax_carry] — counts accumulate across
 calls, zero slots 1:5 per factorization and read back once at the end; slot 6 is the
-per-front running dmax, reset inside the driver via the firstblk flag). Zero device-pool
-allocation per driver call.
+per-front running dmax, reset inside the driver via the firstblk flag), `Dout` (64×64
+Float scratch the fused kernels write the factored unit-lower diagonal block into —
+see _ldl_front_fused64_v2!). Zero device-pool allocation per driver call.
 """
-mutable struct LDLFrontWS{TC, TS}
-    cnt::TC
+struct LDLFrontWS{TS, TD}
     stats::TS
-    arrivals::Int32          # Int32: gfx1151 crashes on 64-bit global atomics (see FrontWS)
+    Dout::TD
 end
 
 # backend-generic (KernelAbstractions.zeros) — CUDA/AMDGPU/oneAPI
 LDLFrontWS(backend, ::Type{T}) where {T} =
-    LDLFrontWS(KernelAbstractions.zeros(backend, Int32, 1), KernelAbstractions.zeros(backend, T, 6), Int32(0))
+    LDLFrontWS(KernelAbstractions.zeros(backend, T, 6), KernelAbstractions.zeros(backend, T, 64, 64))
 
 # v1/v2 crossover — MEASURED (galen, this file's bench, post Wc-hoist): same window as
 # the Cholesky front's FUSE_M_MAX. v2 (invert + register-tiled multiply) wins for panel
@@ -419,15 +403,14 @@ function gpu_ldlt_front!(P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
         md = mode == :auto ? (m <= LDL_FUSE_M_MAX[] ? :fused2 : :fused) : mode
         if md == :fused2 || m == 0
             G = max(cld(m, 64), 1)
-            f2(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
-               ws.arrivals + Int32(G); ndrange = (G * 16, 16))
-            ws.arrivals += Int32(G)
+            f2(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.Dout;
+               ndrange = (G * 16, 16))
         else                                          # :fused (v1)
             G = max(cld(m, 256), 1)
-            f1(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
-               ws.arrivals + Int32(G); ndrange = G * 256)
-            ws.arrivals += Int32(G)
+            f1(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.Dout;
+               ndrange = G * 256)
         end
+        D .= view(ws.Dout, 1:jb, 1:jb)                # scratch → panel diag (stream-ordered)
         if j1 < n                         # trailing trapezoid: rows j1+1..nsrow, cols j1+1..n
             C = view(P, (j1 + 1):nsrow, (j1 + 1):n)
             A2 = view(P, (j1 + 1):nsrow, j0:j1)

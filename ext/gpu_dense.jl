@@ -142,18 +142,18 @@ end
 # different SMs concurrently) buys grid-wide availability of L without a second launch.
 # Each group then solves its 256-row slice of B against the shared factor (rows of
 # X·Lᵀ = B are independent; same-thread B[i,k] read-back hits L2, cf. _trsm_rlt_base!).
-# Write-back of the factored diagonal: the LAST group to arrive at the atomic counter
-# (monotonic Int64, host tracks the target — never reset on device) does it. Every group's
-# load of the UNfactored A happens-before its arrival increment (block barrier + fence),
-# and the writer's stores happen-after it observed all arrivals — so the write-back can
-# never race a load, with no co-residency assumption and no spin (deadlock-free).
-@kernel unsafe_indices = true function _front_fused64!(A, B, n, m, info, cnt, target, j0)
+# Write-back of the factored diagonal goes to the DISJOINT scratch Dout (group 1 writes
+# it; lower = L, strict upper = 0) — A is never written, so no group's load of the
+# UNfactored A can race it and no cross-group ordering is needed. (Replaces the old
+# last-arriving-group election via atomic counter: gfx1151's compiler segfaults on a
+# used atomic-rmw return value, and the scratch removes the mechanism entirely.) The
+# driver copies Dout into the panel after the launch (stream-ordered).
+@kernel unsafe_indices = true function _front_fused64!(A, B, n, m, info, Dout, j0)
     T = eltype(A)
     li = @index(Local, Linear)            # 1..256
     gi = @index(Group, Linear)
     Ls = @localmem T (64, 64)
     Ldi = @localmem T (64,)               # 1/L[j,j] — reciprocal once, FP64 div is slow
-    lastf = @localmem Int32 (1,)
     p = li
     @inbounds while p <= n * n
         r = (p - 1) % n + 1
@@ -192,6 +192,15 @@ end
         end
         @synchronize
     end
+    if gi == 1                            # group 1 has the full factor ⇒ write it to scratch
+        p = li
+        @inbounds while p <= n * n
+            r = (p - 1) % n + 1
+            c = (p - 1) ÷ n + 1
+            Dout[r, c] = r >= c ? Ls[r, c] : zero(T)
+            p += 256
+        end
+    end
     i = (gi - 1) * 256 + li
     if i <= m
         @inbounds for j in 1:n
@@ -200,23 +209,6 @@ end
                 s = muladd(-B[i, k], Ls[j, k], s)
             end
             B[i, j] = s * Ldi[j]
-        end
-    end
-    @synchronize                          # all this group's A-loads + B-writes are done
-    if li == 1
-        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
-    end
-    @synchronize
-    if lastf[1] == Int32(1)               # group-uniform: we arrived last ⇒ all loads done
-        p = li
-        @inbounds while p <= n * n
-            r = (p - 1) % n + 1
-            c = (p - 1) ÷ n + 1
-            if r >= c
-                A[r, c] = Ls[r, c]
-            end
-            p += 256
         end
     end
 end
@@ -234,8 +226,8 @@ end
 #     (MAGMA-style block-inverse trick), register-tiled 4×4 per thread over 64-row tiles ⇒
 #     cld(m,64) groups (4× the SMs of v1) and gemm-grade per-thread throughput,
 #   • in-place safe: each group stages only its OWN 64 rows of B through shared before any
-#     write; diag write-back still by the last-arriving group (same atomic-counter proof).
-@kernel unsafe_indices = true function _front_fused64_v2!(A, B, n, m, info, cnt, target, j0)
+#     write; diag write-back by group 1 into the disjoint scratch Dout (see _front_fused64!).
+@kernel unsafe_indices = true function _front_fused64_v2!(A, B, n, m, info, Dout, j0)
     T = eltype(A)
     li = @index(Local, NTuple)            # (16,16)
     gi = @index(Group, Linear)
@@ -245,7 +237,6 @@ end
     Ldi = @localmem T (64,)               # 1/L[j,j]
     invDiag = @localmem T (64,)           # diag of L⁻¹ (== Ldi, kept separate for clarity)
     As = @localmem T (64, 8)
-    lastf = @localmem Int32 (1,)
     # zero-padded staging of lower(A) into the fixed 64×64 tile (bit-ops only)
     q = tid
     @inbounds while q <= 4096
@@ -284,6 +275,17 @@ end
             q += 256
         end
         @synchronize
+    end
+    if gi == 1                            # group 1 → scratch (lower = L, rest 0); reads only
+        q = tid                           # lower(Ls), disjoint from the strict-upper inversion
+        @inbounds while q <= 4096
+            r = ((q - 1) & 63) + 1
+            c = ((q - 1) >> 6) + 1
+            if r <= n && c <= n
+                Dout[r, c] = r >= c ? Ls[r, c] : zero(T)
+            end
+            q += 256
+        end
     end
     # invert L in shared: thread c computes column c of L⁻¹ into ROW c of the strict upper
     # triangle (reads only lower entries + its own already-written row ⇒ race-free, no sync)
@@ -335,24 +337,6 @@ end
         gc = (ty - 1) * 4 + (j - 1)
         if gr < m && gc < n
             B[gr + 1, gc + 1] = acc[i, j]
-        end
-    end
-    # last-arriving group writes the factored diagonal back (see v1 for the ordering proof)
-    @synchronize
-    if tid == 1
-        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
-    end
-    @synchronize
-    if lastf[1] == Int32(1)
-        q = tid
-        @inbounds while q <= 4096
-            r = ((q - 1) & 63) + 1
-            c = ((q - 1) >> 6) + 1
-            if r <= n && c <= n && r >= c
-                A[r, c] = Ls[r, c]
-            end
-            q += 256
         end
     end
 end
@@ -581,22 +565,20 @@ end
 """
 Caller-provided workspace: `info` ([1], Int32, zeroed by the caller once per
 factorization — non-zero after sync = 1-based column of first non-positive pivot),
-`cnt`+`arrivals` (device Int64 arrival counter + its host mirror; MONOTONIC, never reset —
-the host mirror makes per-launch targets free), `invD` (64×64×nblk Float scratch for the
-inverted diagonal blocks). One `FrontWS` per factorization stream; zero device-pool
-allocation on any driver call.
+`invD` (64×64×nblk Float scratch for the inverted diagonal blocks; block 1 doubles as
+the fused kernels' factored-diagonal scratch `Dout` — the fused modes never use the
+inverse). One `FrontWS` per factorization stream; zero device-pool allocation on any
+driver call.
 """
-mutable struct FrontWS{TI, TC, TD}
+struct FrontWS{TI, TD}
     info::TI
-    cnt::TC
     invD::TD
-    arrivals::Int32          # Int32 (not Int64): gfx1151's compiler crashes on 64-bit global atomics;
-end                          # the counter only tallies workgroups, monotonic overflow wraps harmlessly
+end
 
 # backend-generic (KernelAbstractions.zeros) so the same workspace serves CUDA/AMDGPU/oneAPI
 FrontWS(backend, ::Type{T}, maxblk::Int) where {T} =
-    FrontWS(KernelAbstractions.zeros(backend, Int32, 1), KernelAbstractions.zeros(backend, Int32, 1),
-            KernelAbstractions.zeros(backend, T, 64, 64, maxblk), Int32(0))
+    FrontWS(KernelAbstractions.zeros(backend, Int32, 1),
+            KernelAbstractions.zeros(backend, T, 64, 64, maxblk))
 
 # Panel-rows threshold for :auto — MEASURED (galen sweep over the real shape mix): v2
 # (invert + register-tiled multiply, cld(m,64) groups) wins for m ≲ 2500; above that its
@@ -637,13 +619,15 @@ function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :au
         if md == :fused2 || (md != :fused && m == 0)
             G = max(cld(m, 64), 1)
             Bv = view(P, (j1 + 1):nsrow, j0:j1)
-            f2(D, Bv, jb, m, ws.info, ws.cnt, ws.arrivals + Int32(G), j0; ndrange = (G * 16, 16))
-            ws.arrivals += Int32(G)
+            Dout = view(ws.invD, :, :, 1)
+            f2(D, Bv, jb, m, ws.info, Dout, j0; ndrange = (G * 16, 16))
+            D .= view(ws.invD, 1:jb, 1:jb, 1)     # scratch → panel diag (stream-ordered)
         elseif md == :fused || m == 0
             G = max(cld(m, 256), 1)
             Bv = view(P, (j1 + 1):nsrow, j0:j1)
-            fk(D, Bv, jb, m, ws.info, ws.cnt, ws.arrivals + Int32(G), j0; ndrange = G * 256)
-            ws.arrivals += Int32(G)
+            Dout = view(ws.invD, :, :, 1)
+            fk(D, Bv, jb, m, ws.info, Dout, j0; ndrange = G * 256)
+            D .= view(ws.invD, 1:jb, 1:jb, 1)     # scratch → panel diag (stream-ordered)
         else
             Bv = view(P, (j1 + 1):nsrow, j0:j1)
             iD = view(ws.invD, :, :, 1)
