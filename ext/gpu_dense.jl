@@ -204,8 +204,8 @@ end
     end
     @synchronize                          # all this group's A-loads + B-writes are done
     if li == 1
-        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
+        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
+        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
     end
     @synchronize
     if lastf[1] == Int32(1)               # group-uniform: we arrived last ⇒ all loads done
@@ -340,8 +340,8 @@ end
     # last-arriving group writes the factored diagonal back (see v1 for the ordering proof)
     @synchronize
     if tid == 1
-        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
+        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
+        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
     end
     @synchronize
     if lastf[1] == Int32(1)
@@ -590,13 +590,13 @@ mutable struct FrontWS{TI, TC, TD}
     info::TI
     cnt::TC
     invD::TD
-    arrivals::Int64
-end
+    arrivals::Int32          # Int32 (not Int64): gfx1151's compiler crashes on 64-bit global atomics;
+end                          # the counter only tallies workgroups, monotonic overflow wraps harmlessly
 
 # backend-generic (KernelAbstractions.zeros) so the same workspace serves CUDA/AMDGPU/oneAPI
 FrontWS(backend, ::Type{T}, maxblk::Int) where {T} =
-    FrontWS(KernelAbstractions.zeros(backend, Int32, 1), KernelAbstractions.zeros(backend, Int64, 1),
-            KernelAbstractions.zeros(backend, T, 64, 64, maxblk), 0)
+    FrontWS(KernelAbstractions.zeros(backend, Int32, 1), KernelAbstractions.zeros(backend, Int32, 1),
+            KernelAbstractions.zeros(backend, T, 64, 64, maxblk), Int32(0))
 
 # Panel-rows threshold for :auto — MEASURED (galen sweep over the real shape mix): v2
 # (invert + register-tiled multiply, cld(m,64) groups) wins for m ≲ 2500; above that its
@@ -637,13 +637,13 @@ function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :au
         if md == :fused2 || (md != :fused && m == 0)
             G = max(cld(m, 64), 1)
             Bv = view(P, (j1 + 1):nsrow, j0:j1)
-            f2(D, Bv, jb, m, ws.info, ws.cnt, ws.arrivals + G, j0; ndrange = (G * 16, 16))
-            ws.arrivals += G
+            f2(D, Bv, jb, m, ws.info, ws.cnt, ws.arrivals + Int32(G), j0; ndrange = (G * 16, 16))
+            ws.arrivals += Int32(G)
         elseif md == :fused || m == 0
             G = max(cld(m, 256), 1)
             Bv = view(P, (j1 + 1):nsrow, j0:j1)
-            fk(D, Bv, jb, m, ws.info, ws.cnt, ws.arrivals + G, j0; ndrange = G * 256)
-            ws.arrivals += G
+            fk(D, Bv, jb, m, ws.info, ws.cnt, ws.arrivals + Int32(G), j0; ndrange = G * 256)
+            ws.arrivals += Int32(G)
         else
             Bv = view(P, (j1 + 1):nsrow, j0:j1)
             iD = view(ws.invD, :, :, 1)

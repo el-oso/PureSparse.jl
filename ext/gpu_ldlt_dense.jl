@@ -155,8 +155,8 @@
     # see _front_fused64! — every group's A-loads happen-before its fenced arrival)
     @synchronize
     if tid == 1
-        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
+        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
+        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
     end
     @synchronize
     if lastf[1] == Int32(1)
@@ -278,8 +278,8 @@ end
     end
     @synchronize
     if li == 1
-        old = (@atomic cnt[1] += one(Int64)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
-        lastf[1] = old == target - 1 ? Int32(1) : Int32(0)
+        old = (@atomic cnt[1] += one(Int32)).first   # Atomix — portable (was CUDA.atomic_add!+threadfence)
+        lastf[1] = old == target - one(Int32) ? Int32(1) : Int32(0)
     end
     @synchronize
     if lastf[1] == Int32(1)
@@ -370,12 +370,12 @@ allocation per driver call.
 mutable struct LDLFrontWS{TC, TS}
     cnt::TC
     stats::TS
-    arrivals::Int64
+    arrivals::Int32          # Int32: gfx1151 crashes on 64-bit global atomics (see FrontWS)
 end
 
 # backend-generic (KernelAbstractions.zeros) — CUDA/AMDGPU/oneAPI
 LDLFrontWS(backend, ::Type{T}) where {T} =
-    LDLFrontWS(KernelAbstractions.zeros(backend, Int64, 1), KernelAbstractions.zeros(backend, T, 6), 0)
+    LDLFrontWS(KernelAbstractions.zeros(backend, Int32, 1), KernelAbstractions.zeros(backend, T, 6), Int32(0))
 
 # v1/v2 crossover — MEASURED (galen, this file's bench, post Wc-hoist): same window as
 # the Cholesky front's FUSE_M_MAX. v2 (invert + register-tiled multiply) wins for panel
@@ -420,13 +420,13 @@ function gpu_ldlt_front!(P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
         if md == :fused2 || m == 0
             G = max(cld(m, 64), 1)
             f2(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
-               ws.arrivals + G; ndrange = (G * 16, 16))
-            ws.arrivals += G
+               ws.arrivals + Int32(G); ndrange = (G * 16, 16))
+            ws.arrivals += Int32(G)
         else                                          # :fused (v1)
             G = max(cld(m, 256), 1)
             f1(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
-               ws.arrivals + G; ndrange = G * 256)
-            ws.arrivals += G
+               ws.arrivals + Int32(G); ndrange = G * 256)
+            ws.arrivals += Int32(G)
         end
         if j1 < n                         # trailing trapezoid: rows j1+1..nsrow, cols j1+1..n
             C = view(P, (j1 + 1):nsrow, (j1 + 1):n)
