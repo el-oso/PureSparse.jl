@@ -2639,14 +2639,20 @@ fronts routed through PureBLAS** (design §M.4; commit `e35629b`). (3) **pure de
 potrf+trsm** (Fable-authored, galen-validated ≤3.9e-16; commits `379fb12`/`9cb075d`) wired
 into both Cholesky (potrf+trsm) and LDLᵀ (trsm) GPU paths — cuSOLVER/cuBLAS now used only by
 the retained left-looking reference arms; failure via deferred `d_info` (= amendment D).
-**HONEST perf tradeoff MEASURED:** pure kernels win on isolated large panels but the
-multifrontal crown is dominated by SMALL fronts (44³: 128/153 fronts nscol≤200) where they
-lose — LDLᵀ 44³ dropped 5.04×(vendor)→3.33×(pure). **User chose: optimize the pure kernels
-for the real crown-shape mix (`benchmark/gpu/crown_shapes.jl`) before the pure-vs-vendor
-kernel-policy decision.** Fable optimization round in flight (fused small-front path +
-MAGMA-style diag-inversion trsm). **Kernel policy (pure-primary vs backend-dispatch vs the
-optimized pure) is PENDING that result. Next after: formal §8 gate** (pinned SPD+SQD stratum
-≥6, both req-2 arms, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
+**Fable optimization round DONE** (fused `gpu_front!`: single-launch small-front path +
+in-shared MAGMA diag-inverse + trapezoidal trailing update; `benchmark/gpu/pure_potrf_opt.jl`
+→ `ext/gpu_dense.jl`) — weighted 1.13× vs vendor on the real crown mix. **Integrated** (commit
+`159b866`): `gpu_front!` on both Cholesky paths, `gpu_trsm_rlt_opt!` on both LDLᵀ paths; all
+oracles machine-precision. **Gate target raised 3× → 5×** (user, after vendor measured 5.04×).
+**PERF SPLIT MEASURED:** the **fusion is load-bearing** (separate potrf+trsm lose 0.67×) — so
+the **SPD Cholesky recovered to vendor parity** (grid3d 44³ 2.91×, ≥ old cuSOLVER) but the
+**SQD LDLᵀ can't fuse** (its diagonal factors on CPU via signed `_ldl_block!`) → only the
+standalone trsm applies → stuck at **3.41×** (vs 5.04× vendor), missing 5×. **User chose: build
+the pure device signed-LDL FRONT** (the LDLᵀ analogue of `gpu_front!` — fused signed-LDL diag +
+regularization + inertia + panel trsm in one kernel; the CPU `cpu_multifrontal_ldlt!` loop IS
+already this fused form). Fable building it now (`benchmark/gpu/pure_ldlt_front.jl`). **Then:
+integrate + re-measure LDLᵀ vs 5×; then formal §8 gate** (pinned SPD+SQD stratum ≥6, both req-2
+arms, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
 ## Standing rules
 

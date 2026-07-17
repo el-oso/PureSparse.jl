@@ -7,7 +7,7 @@ function grid3d(nx,ny,nz)
         k<nz&&(A[p,lin(i,j,k+1)]=A[lin(i,j,k+1),p]=-1.0) end; A+0.1I
 end
 mint(f,n=5)=minimum(f() for _ in 1:n)
-for (nx,ny,nz) in [(28,28,28),(32,32,32),(40,40,40)]
+for (nx,ny,nz) in [(28,28,28),(36,36,36),(44,44,44)]
     A=grid3d(nx,ny,nz); S=PureSparse.symbolic(A); F=PureSparse.cholesky(S,A)
     snf=sort([sum(Float64(S.colcount[j])^2 for j in S.super[s]:(S.super[s+1]-1)) for s in 1:S.nsuper])
     PureSparse.cholesky!(F,A); cpu_t=mint(()->@elapsed(PureSparse.cholesky!(F,A)))
