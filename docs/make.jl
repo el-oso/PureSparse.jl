@@ -24,6 +24,7 @@ makedocs(;
         "Interior-Point Guide" => "ipm-guide.md",
         "Benchmarking" => "benchmarking.md",
         "API Reference" => "api.md",
+        "Developer Guide" => "developer.md",
         "Provenance & Licensing" => "provenance.md",
         "References" => "references.md",
     ],

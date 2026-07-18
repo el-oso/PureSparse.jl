@@ -80,6 +80,25 @@ function _qr_block(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Un
     return F
 end
 
+# Which element types the multifrontal (`:frontal`, M5b) path accepts (P2, §A7.3): any
+# REAL, isbits `T`. The path's dense front storage is pointer/`unsafe_wrap`-based, so a
+# non-isbits `T` (e.g. `BigFloat`) can't live in it (segfaults); and its Householder
+# reflectors are the real formulation (no conjugation), so complex `T` is wrong (needs
+# a separate conjugate-Householder pass — a filed follow-up, not P2). Everything else —
+# the numeric loop and PureBLAS's `wy_t!`/`wy_apply!`/`gemm!` (which already dispatch a
+# generic AD-traceable triple-loop for non-BLAS `T`) — is fully generic. So `Float32`,
+# `Float16`, and `ForwardDiff.Dual` (AD, the CLAUDE.md req-3 target) all route here;
+# `ComplexF64`/`BigFloat` fall through to the `:column` path (generic by construction).
+_frontal_capable(::Type{T}) where {T} = isbitstype(T) && T <: Real
+
+# Float64 primal of the dropped-mass diagnostic (`QRStats.dropped_norm`, a rank
+# certificate — NOT on the differentiable path, so its derivative is never needed).
+# Plain reals convert directly; AD number types (`ForwardDiff.Dual`, whose `Float64(::Dual)`
+# is deliberately undefined so a derivative can't be silently dropped) get a MORE-SPECIFIC
+# method from the weak-dep extension (`ext/PureSparseForwardDiffExt.jl`) that returns the
+# primal — keeping `src` free of any ForwardDiff dependency (P2, CLAUDE.md req 3 / req 4).
+_stat_f64(x::Real) = Float64(x)
+
 """
     qr(A::SparseMatrixCSC; ordering::AbstractOrdering, tol=nothing, singletons=true, method=:column) -> QRFactor | QRFrontFactor
 
@@ -105,7 +124,7 @@ compare timings with/without the optimization).
   own body below), returns a `QRFactor`; generic over `T<:Real`, singleton-aware.
 - `:frontal` — M5b's multifrontal path ([`qr_frontal`](@ref)), returns a
   `QRFrontFactor`; Float64-tuned but generic over any REAL isbits `T` (P2, §A7.3 —
-  see [`_frontal_capable`](@ref)): `Float32`/`Float16`/`ForwardDiff.Dual` (AD) route
+  see `_frontal_capable`): `Float32`/`Float16`/`ForwardDiff.Dual` (AD) route
   here (PureBLAS's `wy_t!`/`wy_apply!`/`gemm!` already provide a generic AD-traceable
   fallback for non-BLAS `T`); `ComplexF64` (needs conjugate Householder) and `BigFloat`
   (non-isbits — the front's pointer-based dense storage can't hold it) fall through to
@@ -116,7 +135,7 @@ compare timings with/without the optimization).
   [`QR_AUTO_METHOD_RATIO`](@ref) (task 16e, `tuning.jl` — measured on the M5 gate
   set, not guessed: every gate matrix where `:column` won sat at ratio ≤ 7, every
   matrix where `:frontal` won sat at ratio ≥ 863, a wide margin). Types not
-  [`_frontal_capable`](@ref) (complex, `BigFloat`) always use `:column`.
+  `_frontal_capable` (complex, `BigFloat`) always use `:column`.
 
 Singletons are exploited only in the `:column` path (never `:frontal`, §A1.2). The
 resulting `QRFactor` (`sym.n1 > 0`) is fully warm-refactorable via [`qr!`](@ref)
@@ -125,25 +144,6 @@ one live nonzero") is pattern-only and therefore refactor-invariant; only the
 magnitude test is value-dependent, and `qr!` re-checks it per pivot against the new
 values (see its docstring for the drop semantics when a pivot goes numerically small).
 """
-# Which element types the multifrontal (`:frontal`, M5b) path accepts (P2, §A7.3): any
-# REAL, isbits `T`. The path's dense front storage is pointer/`unsafe_wrap`-based, so a
-# non-isbits `T` (e.g. `BigFloat`) can't live in it (segfaults); and its Householder
-# reflectors are the real formulation (no conjugation), so complex `T` is wrong (needs
-# a separate conjugate-Householder pass — a filed follow-up, not P2). Everything else —
-# the numeric loop and PureBLAS's `wy_t!`/`wy_apply!`/`gemm!` (which already dispatch a
-# generic AD-traceable triple-loop for non-BLAS `T`) — is fully generic. So `Float32`,
-# `Float16`, and `ForwardDiff.Dual` (AD, the CLAUDE.md req-3 target) all route here;
-# `ComplexF64`/`BigFloat` fall through to the `:column` path (generic by construction).
-_frontal_capable(::Type{T}) where {T} = isbitstype(T) && T <: Real
-
-# Float64 primal of the dropped-mass diagnostic (`QRStats.dropped_norm`, a rank
-# certificate — NOT on the differentiable path, so its derivative is never needed).
-# Plain reals convert directly; AD number types (`ForwardDiff.Dual`, whose `Float64(::Dual)`
-# is deliberately undefined so a derivative can't be silently dropped) get a MORE-SPECIFIC
-# method from the weak-dep extension (`ext/PureSparseForwardDiffExt.jl`) that returns the
-# primal — keeping `src` free of any ForwardDiff dependency (P2, CLAUDE.md req 3 / req 4).
-_stat_f64(x::Real) = Float64(x)
-
 function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing,
         singletons::Bool = true, method::Symbol = :column) where {T,Ti<:Integer}
     method in (:column, :frontal, :auto) ||
