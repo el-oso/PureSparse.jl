@@ -24,7 +24,7 @@ end
 Build the multifrontal symbolic layer from a CPU `Symbolic` (design_gpu.md §M.2/§M.3). Asserts
 the pattern-containment `rowind(c)\\cols(c) ⊆ rowind(sparent(c))` that makes every `emap` lookup hit.
 """
-function mf_symbolic(sym) where {}
+function mf_symbolic(sym)
     Ti = eltype(sym.super)
     ns = sym.nsuper
     super = sym.super; sparent = sym.sparent; rowind = sym.rowind; rowind_ptr = sym.rowind_ptr
@@ -95,8 +95,24 @@ function mf_symbolic(sym) where {}
 end
 
 # --- CPU multifrontal numeric (pure; the oracle + dev vehicle for the GPU engine, §M.6 step 2) ---
-using LinearAlgebra: LAPACK, BLAS
 @inline _mfpanel(x, off, m, n) = unsafe_wrap(Array, pointer(x, off), (m, n))
+
+# Extend-add a child's contribution block `U_c` into the parent front: the child's local rows
+# (via `emap`, base offset `eb`) scatter to the parent's panel (parent row ≤ nscol) or its
+# below-part `U_s` (parent row > nscol); lower triangle only (a ≥ b). Shared by the CPU
+# multifrontal factor (Cholesky + LDLᵀ) and the hybrid engines' CPU-front branches — it was
+# inlined verbatim at four sites. `@inline` ⇒ the body splices back identically (same `U_s`
+# `Union{Matrix,Nothing}` type at each call, same union-split, same codegen).
+@inline function _extend_add_cpu!(panel, U_s, U_c, emap, eb::Int, bc::Int, nscol::Int)
+    for b in 1:bc
+        rb = Int(emap[eb + b - 1])
+        for a in b:bc                                     # lower triangle of U_c (a ≥ b)
+            ra = Int(emap[eb + a - 1]); v = U_c[a, b]
+            rb ≤ nscol ? (panel[ra, rb] += v) : (U_s[ra - nscol, rb - nscol] += v)
+        end
+    end
+    return nothing
+end
 
 """
     cpu_multifrontal_cholesky!(x_host, arena, M, sym, A) -> (ok, fail_col)
@@ -132,17 +148,7 @@ function cpu_multifrontal_cholesky!(x_host::Vector{T}, arena::Vector{T}, M::MFSy
             below_c == 0 && continue
             U_c = _mfpanel(arena, Int(M.uoff[c]), below_c, below_c)   # child on the STACK
             eb = Int(M.emap_ptr[c])
-            for b in 1:below_c
-                rb = Int(M.emap[eb + b - 1])
-                for a in b:below_c                            # lower triangle of U_c (a ≥ b)
-                    ra = Int(M.emap[eb + a - 1]); v = U_c[a, b]
-                    if rb ≤ nscol
-                        panel[ra, rb] += v
-                    else
-                        U_s[ra - nscol, rb - nscol] += v
-                    end
-                end
-            end
+            _extend_add_cpu!(panel, U_s, U_c, M.emap, eb, below_c, nscol)
         end
 
         diag = view(panel, 1:nscol, 1:nscol)
@@ -191,13 +197,7 @@ function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vecto
             c = Int(M.children[ci]); nsc_c = Int(super[c + 1]) - Int(super[c])
             below_c = Int(rowind_ptr[c + 1]) - Int(rowind_ptr[c]) - nsc_c; below_c == 0 && continue
             U_c = _mfpanel(arena, Int(M.uoff[c]), below_c, below_c); eb = Int(M.emap_ptr[c])
-            for b in 1:below_c
-                rb = Int(M.emap[eb + b - 1])
-                for a in b:below_c
-                    ra = Int(M.emap[eb + a - 1]); v = U_c[a, b]
-                    rb ≤ nscol ? (panel[ra, rb] += v) : (U_s[ra - nscol, rb - nscol] += v)
-                end
-            end
+            _extend_add_cpu!(panel, U_s, U_c, M.emap, eb, below_c, nscol)
         end
         dmax_local = zero(T)                                  # order-free local dmax (amendment E)
         for j in 1:nscol

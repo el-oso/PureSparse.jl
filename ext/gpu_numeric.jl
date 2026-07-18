@@ -376,13 +376,7 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
             for ci in c0:c1
                 c = Int(Msym.children[ci]); bc = childbelow(c); bc == 0 && continue
                 U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])   # child on the host STACK
-                for b in 1:bc
-                    rb = Int(Msym.emap[eb + b - 1])
-                    for a in b:bc
-                        ra = Int(Msym.emap[eb + a - 1]); v = U_c[a, b]
-                        rb ≤ nscol ? (panel[ra, rb] += v) : (U_s[ra - nscol, rb - nscol] += v)
-                    end
-                end
+                _extend_add_cpu!(panel, U_s, U_c, Msym.emap, eb, bc, nscol)
             end
             diag = view(panel, 1:nscol, 1:nscol)
             try; PureSparse.potrf!(diag; uplo = 'L')           # PureBLAS on CPU fronts (design §M.4)
@@ -585,13 +579,7 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
             for ci in c0:c1
                 c = Int(Msym.children[ci]); bc = cbelow(c); bc == 0 && continue
                 U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])   # child on the host STACK
-                for b in 1:bc
-                    rb = Int(Msym.emap[eb + b - 1])
-                    for a in b:bc
-                        ra = Int(Msym.emap[eb + a - 1]); v = U_c[a, b]
-                        rb ≤ nscol ? (panel[ra, rb] += v) : (U_s[ra - nscol, rb - nscol] += v)
-                    end
-                end
+                _extend_add_cpu!(panel, U_s, U_c, Msym.emap, eb, bc, nscol)
             end
             dmax_local = zero(T)
             for j in 1:nscol
