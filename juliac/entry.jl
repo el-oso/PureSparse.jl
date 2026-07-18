@@ -97,7 +97,7 @@ function (@main)(argv::Vector{String})::Cint
     # QR (M5b task 17): the multifrontal path (design_qr_m5b.md §A9 point 7 — the
     # method kwarg exercised both ways). `qr_frontal` is the frontal one-shot entry
     # (mirrors `qr`'s own singletons=false-equivalent: sym.n1==0 always, §A1.2).
-    Fqrf = qr_frontal(A; ordering = AMDOrdering(), tol = 0)
+    Fqrf = PureSparse.qr_frontal(A; ordering = AMDOrdering(), tol = 0)  # unexported internal (public API is qr(…; method=:frontal))
     solve!(x, Fqrf, b)
     r6 = residual_inf(A, x, b)
     println(out, "qr_frontal residual_inf = ", r6)
