@@ -2706,9 +2706,16 @@ trsm) + per-supernode cuBLAS solve; frontmode kwarg defaults to the shipped pure
 re-verified unaffected). **Pure-GPU factor+solve beats the vendor-GPU equivalent at EVERY stratum
 size:** SPD 4.35×(28³)→2.25×(44³), SQD 3.32×(28³)→**1.92×(44³, worst margin)**; vendor-arm residual
 ≤8.62e-16. Clause 3 (beats CHOLMOD) also 10/10. **M6 GATE CLOSED on the re-scoped target (pure ≥
-vendor everywhere + beats CHOLMOD everywhere).** REMAINING: neuromancer-eGPU two-host bar (pending
-hw); optional pin the frontier auto-policy. (Original 5×-vs-own-CPU was an optimistic factor-only-min
-number; honest factor+solve median tops ~4.5× — superseded by the re-scoped vendor clause.)
+vendor everywhere + beats CHOLMOD everywhere).** **NUMBERS PUBLISHED** to `docs/src/benchmarking.md`
+(commit `7685d03`, figures `gpu_gate_ratios`/`gpu_chol_allsizes`/`gpu_arena` from saved JSON).
+**eGPU cross-host bar DEFERRED** — the only spare GPU is a weaker NVIDIA 3050 (redundant tick on an
+already-solid galen gate, not the AMD-perf prize), and neuromancer's nvidia driver stack is broken
+(DKMS sources purged from /usr/src, 5 conflicting versions, mainline kernel 7.0) — not worth a
+kernel/driver fight for a redundant data point. AMD portability already proven on the gfx1151 iGPU
+(correctness + machine precision; FP64-weak so no speed story). Optional: pin the frontier
+auto-policy. **NEXT PHASE (user, 2026-07-18): optimize LU and QR** (scope TBC — GPU-accelerate the
+existing sparse QR (M5, CPU) same as Cholesky/LDLᵀ; "LU" scope to confirm — PureSparse is currently
+symmetric-only, no unsymmetric LU).
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
