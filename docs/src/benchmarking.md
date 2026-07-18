@@ -164,48 +164,58 @@ rules (results→JSON first, plots from saved JSON only).
 
 The GPU backend (a weak-dependency CUDA extension) factors on the device with a
 **multifrontal** supernodal engine: an upward-closed etree frontier splits the small
-fronts onto the CPU from the large "crown" fronts on the GPU, and the whole dense
-inner loop runs through **pure-Julia KernelAbstractions.jl kernels** — no
-cuSOLVER/cuBLAS on the shipped path (they remain only as reference arms). The dense
-kernels beat cuBLAS FP64 on the shapes that matter because Julia is IEEE-strict and the
-kernels use `muladd`; the whole factor stays device-resident, and solves run on-device
-too (only the right-hand side and solution vectors cross the bus).
+fronts onto the CPU from the large "crown" fronts on the GPU, and the whole dense inner
+loop — the front factorizations *and* the triangular solve — runs through **pure-Julia
+KernelAbstractions.jl kernels**. There is no cuSOLVER/cuBLAS on the shipped path (they
+remain only as reference/comparison arms). The whole factor stays device-resident, the
+solve is device-resident too, and only the right-hand side and solution vectors cross the
+bus. Because the kernels are pure KernelAbstractions they are also **portable** — the
+entire path compiles, runs, and matches at machine precision on AMD (ROCm) hardware, not
+just NVIDIA.
 
 !!! note "Measurement status"
-    These are galen (RTX 4070, clock-locked 1920 MHz) medians of the **warm,
-    device-resident refactor** — the zero-allocation path the API is built around, so
-    per-sample time is near-deterministic and the honest viz is a median line/bar (a
-    violin would be a flat line — the same reasoning as the QR gate figure above). The
-    formal pinned SPD+SQD stratum gate (`docs/design_gpu.md` §8), run on two
-    clock-locked hosts against CHOLMOD/OpenBLAS, is a separate, later artifact.
+    Numbers are galen (RTX 4070, clock-locked) medians of the **warm, device-resident
+    factor+solve** — near-deterministic, so the honest viz is a median line/bar (a violin
+    would be a flat line — same reasoning as the QR gate figure above). The gate
+    (`docs/design_gpu.md` §8) times **factor + solve**, both on device.
 
-### Symmetric quasi-definite LDLᵀ (the interior-point / KKT case)
+### The gate: pure Julia vs the CUDA vendor libraries and CHOLMOD
 
-On symmetric quasi-definite KKT systems `[H Aᵀ; A −D]` (the interior-point workload
-PureSparse targets, §"Analyze once, factorize many"), the pure GPU LDLᵀ **matches and
-slightly exceeds** the cuSOLVER/cuBLAS reference, reaching **5.08× over single-thread
-CPU `ldlt!`** at H = 44³ (n ≈ 87 k, nnz(L) ≈ 46 M) — and the speedup grows with size:
+The design target is that the pure kernels are **≥ 1.0× the CUDA vendor equivalent**
+(cuSOLVER/cuBLAS) and beat CHOLMOD+OpenBLAS, on a large SPD + SQD stratum. Both hold at
+every size — measured as **one clean run** with a vendor GPU arm (same multifrontal
+structure, dense front ops + solve swapped to cuSOLVER/cuBLAS):
 
-![GPU LDLᵀ speedup vs CPU](assets/gpu_ldlt_speedup.png)
+![GPU factor+solve: pure vs vendor vs CHOLMOD](assets/gpu_gate_ratios.png)
 
-The dotted line is an earlier pure path that used a *standalone* triangular solve on the
-crown fronts; it stalled at ~3.4× because the LDLᵀ diagonal was still factored on the
-host. The shipped path (solid blue) instead runs a **fused signed-LDL front** — one
-kernel that factors the diagonal block (fixed-pivot signed regularization + on-device
-inertia) *and* solves the tall panel — which is what closes the gap to the vendor path.
-Per crown-front shape, that fused front removes the host round-trip whose cost scales as
-`nscol³`, so it wins big on the flop-heavy fronts (up to **7.15×** at the near-root
-supernodes), for a **flop-weighted 4.42×** over the vendor front; it only loses on the
-smallest fronts, where a CPU block is genuinely cheap:
+| stratum | pure vs cuSOLVER/cuBLAS | pure vs CHOLMOD |
+|---|---|---|
+| SPD grids 28³–44³ | 4.35× → 2.25× | 1.9× → parity⁺ |
+| SQD KKTs 28³–44³ (interior-point) | 3.32× → 1.92× | **8× → 51×** |
 
-![Fused signed-LDL front vs vendor front](assets/gpu_front_kernel.png)
+**Pure-GPU factor+solve beats the cuSOLVER/cuBLAS equivalent at all 10 stratum points**
+(worst margin 1.92× at the 87k-DOF KKT), and beats CHOLMOD everywhere — up to **51×** on
+the KKT/interior-point workload PureSparse is built for (CHOLMOD's sparse `ldlt` is genuinely
+slow there). The vendor arm was verified correct-to-correct (residual ≤ 8.6e-16).
 
-### SPD Cholesky
+### Cholesky at every front size
 
-The SPD Cholesky path uses the analogous fused Cholesky front and sits at **vendor
-parity** (e.g. 2.91× over CPU `cholesky!` at a 44³ grid Laplacian — GPU speedups are
-lower here than on the KKT case because the pure grid's fronts are sparser and less
-GPU-favorable than the KKT coupling fill).
+Cholesky is the load-bearing operation, and the requirement is strict: the pure front must
+beat cuSOLVER+cuBLAS at *every* supernode width, not just on average. It does — the fused
+register-resident front (`_front_fused64_v3!`, one right-looking sweep driving the factor
+and the panel solve together) clears parity from `nscol` 64 to 1536, on both the typical
+crown panels and the hardest potrf-dominated fronts (tiny below-panel), worst case 1.14×:
+
+![Pure Cholesky front vs cuSOLVER at every size](assets/gpu_chol_allsizes.png)
+
+### The triangular solve
+
+The device solve is **level-scheduled and batched**: elimination-tree levels are computed
+once at symbolic time (independent supernodes per level), and each level is one batched
+pure-KA kernel launch instead of thousands of tiny per-supernode `trsv`/`gemv` calls. That
+turned a launch-bound sweep (≈63 000 launches, as slow as the factor) into ≈67 launches —
+a **21× speedup** on a 44³ KKT — which is what makes the end-to-end factor+solve track the
+factor's advantage rather than being throttled by the solve.
 
 ### Memory: the bounded arena
 
@@ -220,11 +230,14 @@ grows with problem size:
 ### Reproducing
 
 ```bash
-julia --project=benchmark benchmark/plot_gpu_comparison.jl  # regenerate the three plots
-                                                            # above from the SAVED JSON
+julia --project=gpu_probe  benchmark/gpu_gate.jl            # the §8 gate (needs a GPU) → JSON
+julia --project=benchmark  benchmark/plot_gpu_comparison.jl # regenerate the plots from SAVED JSON
 ```
 
-The figures regenerate from `benchmark/results/gpu_multifrontal_galen.json` (a saved
-measurement snapshot), never from a live benchmark — same rule as the rest of this page.
-The correctness oracles that back these numbers (device factor matches CPU factor at
-machine precision, exact inertia) live in `benchmark/gpu/`.
+The figures regenerate from the saved measurement snapshots
+`benchmark/results/gpu_gate_galen.json` (the §8 gate: pure / vendor / CHOLMOD),
+`gpu_chol_sweep_galen.json` (the Cholesky-front sweep), and `gpu_multifrontal_galen.json`
+(arena) — never from a live benchmark, per this page's rule. The correctness oracles that
+back these numbers (device factor matches CPU factor at machine precision, exact inertia,
+solve residuals) live in `benchmark/gpu/`; the AMD-portability check is
+`benchmark/gpu/amd_kernel_test.jl`.
