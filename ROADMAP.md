@@ -2700,11 +2700,15 @@ on the target KKT workload) + ~4.5× vs our own single-thread CPU.** **DECISION 
 a quiet galen; worst row 1.14× at nscol=1536/below=186), LDLᵀ front 4.42×, batched solve 21×;
 end-to-end factor+solve ~1.5× the vendor path. The Cholesky all-sizes win came from
 `_front_fused64_v3!` (commit `f662b69`, fully register-resident fused factor+solve rank-1 sweep;
-closed the potrf-dominated large-nscol gap where cuSOLVER used to win 0.86–0.97×). **M6 gate state:
-clause 3 (beats CHOLMOD) 10/10 up to 51× on KKT + clause 1 (≥1.0× vendor) PASS. REMAINING: (1)
-re-run §8 gate under the re-scoped clause for one clean table; (2) neuromancer-eGPU two-host bar
-(pending hw); (3) optional: pin frontier auto-policy. The original 5×-vs-own-CPU was an optimistic
-factor-only-min number; honest factor+solve median tops ~4.5×.**
+closed the potrf-dominated large-nscol gap where cuSOLVER used to win 0.86–0.97×). **§8 GATE re-run with a VENDOR GPU arm (commit `229c02e`, `gpu_gate_galen.json`) — ONE CLEAN TABLE,
+PASSES 10/10.** Arm 4 = same multifrontal, vendor fronts (cuSOLVER potrf+cuBLAS trsm / CPU-diag+cuBLAS
+trsm) + per-supernode cuBLAS solve; frontmode kwarg defaults to the shipped pure path (oracles
+re-verified unaffected). **Pure-GPU factor+solve beats the vendor-GPU equivalent at EVERY stratum
+size:** SPD 4.35×(28³)→2.25×(44³), SQD 3.32×(28³)→**1.92×(44³, worst margin)**; vendor-arm residual
+≤8.62e-16. Clause 3 (beats CHOLMOD) also 10/10. **M6 GATE CLOSED on the re-scoped target (pure ≥
+vendor everywhere + beats CHOLMOD everywhere).** REMAINING: neuromancer-eGPU two-host bar (pending
+hw); optional pin the frontier auto-policy. (Original 5×-vs-own-CPU was an optimistic factor-only-min
+number; honest factor+solve median tops ~4.5× — superseded by the re-scoped vendor clause.)
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
