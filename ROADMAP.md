@@ -2694,9 +2694,17 @@ every SPD (1.4–2.7×) AND every SQD (19–51× faster than CHOLMOD's slow spar
 (≥5× vs our own CPU): 0/10, best 4.48× (SQD 40³), 4.06× (44³).** The 5× target was set from an
 OPTIMISTIC number (factor-only, min-of-4, best-cutoff = 5.10×@44³); the rigorous **factor+solve
 median** the gate measures tops out ~4.5×. Honest state: **beats CHOLMOD everywhere (up to 51×
-on the target KKT workload) + ~4.5× vs our own single-thread CPU.** **OPEN DECISION (user):
-re-scope the 5× headline to this honest result, OR push the FACTOR (now the sole gap; solve is
-4.7%) for the last ~0.5× via streams/PureBLAS-CPU-fronts/frontier — diminishing returns.**
+on the target KKT workload) + ~4.5× vs our own single-thread CPU.** **DECISION (user): re-scope clause 1 from "5× vs our CPU" to "≥1.0× the CUDA vendor equivalent
+(cuBLAS/cuSOLVER)".** Under that target M6 PASSES: pure ≥ vendor on every op — gemm 1.14×,
+**Cholesky front 1.14–2.00× at EVERY size** (`chol_front_sweep.jl`, independently re-verified on
+a quiet galen; worst row 1.14× at nscol=1536/below=186), LDLᵀ front 4.42×, batched solve 21×;
+end-to-end factor+solve ~1.5× the vendor path. The Cholesky all-sizes win came from
+`_front_fused64_v3!` (commit `f662b69`, fully register-resident fused factor+solve rank-1 sweep;
+closed the potrf-dominated large-nscol gap where cuSOLVER used to win 0.86–0.97×). **M6 gate state:
+clause 3 (beats CHOLMOD) 10/10 up to 51× on KKT + clause 1 (≥1.0× vendor) PASS. REMAINING: (1)
+re-run §8 gate under the re-scoped clause for one clean table; (2) neuromancer-eGPU two-host bar
+(pending hw); (3) optional: pin frontier auto-policy. The original 5×-vs-own-CPU was an optimistic
+factor-only-min number; honest factor+solve median tops ~4.5×.**
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
