@@ -1,18 +1,22 @@
-# M6 GPU wall-time gate (design_gpu.md §8, amendment B — the 5× target).
+# M6 GPU wall-time gate (design_gpu.md §8, re-scoped: pure ≥ 1.0× the CUDA vendor equivalent).
 #
-# Three arms per matrix on a LARGE stratum (where the GPU crown fronts exist), SPD + SQD:
+# Four arms per matrix on a LARGE stratum (where the GPU crown fronts exist), SPD + SQD:
 #   1. CPU  PureSparse+PureBLAS       — cholesky!/ldlt! + solve!, warm, single-thread
 #   2. GPU  PureSparse (pure kernels) — device-resident multifrontal factor + device solve
 #   3. CHOLMOD+OpenBLAS               — the baseline (both own-ordering and same-perm)
+#   4. GPU  vendor (cuSOLVER/cuBLAS)  — SAME multifrontal structure, but the GPU-front dense
+#      ops (potrf/trsm; LDLᵀ: CPU-diag+trsm) and the solve swapped to the vendor libraries
+#      (frontmode=:vendor + gpu_solve_vendor!/gpu_solve_ldlt_vendor!)
 #
-# Timed region (amendment B): warm NUMERICAL factor + solve, both on device for the GPU arm
+# Timed region (amendment B): warm NUMERICAL factor + solve, both on device for the GPU arms
 # (no full-factor D2H — only b/x vectors cross). CPU arms: warm factor + solve.
 #
 # Verdict clauses:
-#   (1) GPU factor+solve ≤ CPU-PureSparse factor+solve / 5           [amendment B, 5×]
-#   (3) GPU-enabled PureSparse factor+solve < CHOLMOD+OpenBLAS       [req-2 carried forward]
+#   (vendor) pure-GPU factor+solve ≤ vendor-GPU factor+solve         [re-scoped gate target]
+#   (3)      GPU-enabled PureSparse factor+solve < CHOLMOD+OpenBLAS  [req-2 carried forward]
 # (Clause 2 — no regression on the M1/M2 gate set — is benchmark/gate.jl + gate_ldlt.jl run
 #  separately; the auto frontier keeps those small matrices on CPU, so they are unchanged.)
+# Arm 4 correctness: ‖A·x−b‖/‖b‖ ≤ 1e-8 checked per matrix (comparing correct-to-correct).
 #
 # Frontier cutoff: a small deterministic sweep over top-flop quantiles, best kept (the
 # auto-frontier policy targets this near-optimal cutoff; recorded per matrix as `q`).
@@ -92,9 +96,9 @@ function bench_spd(label, A, ext)
     fc_sp() = (LinearAlgebra.cholesky!(Fcp, Symmetric(A)); Fcp \ b)
     r["cholmod_sameperm"] = _median_time(@be fc_sp() seconds = SECONDS samples = SAMPLES evals = 1)
 
-    # --- arm 2: GPU pure (device factor + device solve), best over the frontier sweep ---
+    # --- arms 2+4: GPU pure and GPU vendor (device factor + device solve), best over sweep ---
     if !REPORT_ONLY
-        best = (Inf, 0.0, 0)
+        best = (Inf, 0.0, 0); bestv = (Inf, 0.0); vres = NaN
         for q in QSWEEP
             G = ext.gpu_symbolic(A; ordering = PureSparse.AMDOrdering(), frontier_cutoff = flop_cutoff(sym, q))
             ng = count(G.on_gpu); ng == 0 && continue
@@ -114,9 +118,22 @@ function bench_spd(label, A, ext)
             factsolve()                                   # warm
             t = _gpu_elapsed(factsolve)
             t < best[1] && (best = (t, q, ng))
+            # arm 4: identical structure, vendor fronts (cuSOLVER/cuBLAS) + vendor solve
+            factsolve_v() = begin
+                ext.gpu_multifrontal_hybrid!(xh, dz, ha, da, M, G, A; d2h = false, frontmode = :vendor)
+                ext.gpu_upload_cpu_panels!(dz, xh, G)
+                ext.gpu_solve_vendor!(db, dz, G, dup, dga)
+            end
+            factsolve_v()                                 # warm
+            copyto!(db, b[perm]); factsolve_v()           # correctness pass on a fresh RHS
+            x = zeros(n); x[perm] = Array(db)
+            res = norm(A * x - b) / norm(b)
+            tv = _gpu_elapsed(factsolve_v)
+            tv < bestv[1] && (bestv = (tv, q); vres = res)
             CUDA.unsafe_free!(da); CUDA.unsafe_free!(dz)
         end
         r["gpu_ps"] = best[1]; r["gpu_q"] = best[2]; r["gpu_fronts"] = best[3]
+        r["gpu_vendor"] = bestv[1]; r["gpu_vendor_q"] = bestv[2]; r["vendor_resid"] = vres
     end
     return r
 end
@@ -140,9 +157,9 @@ function bench_sqd(nt, ext)
     fc_sp() = (LinearAlgebra.ldlt!(Fcp, Symmetric(K, :L)); Fcp \ b)
     r["cholmod_sameperm"] = _median_time(@be fc_sp() seconds = SECONDS samples = SAMPLES evals = 1)
 
-    # --- arm 2: GPU pure LDLᵀ (device factor + device solve) ---
+    # --- arms 2+4: GPU pure and GPU vendor LDLᵀ (device factor + device solve) ---
     if !REPORT_ONLY
-        best = (Inf, 0.0, 0)
+        best = (Inf, 0.0, 0); bestv = (Inf, 0.0); vres = NaN
         for q in QSWEEP
             G = ext.gpu_symbolic(K; ordering = PureSparse.AMDOrdering(), frontier_cutoff = flop_cutoff(sym, q))
             ng = count(G.on_gpu); ng == 0 && continue
@@ -163,9 +180,22 @@ function bench_sqd(nt, ext)
             factsolve()
             t = _gpu_elapsed(factsolve)
             t < best[1] && (best = (t, q, ng))
+            # arm 4: identical structure, vendor fronts (CPU-diag LDL + cuBLAS) + vendor solve
+            factsolve_v() = begin
+                ext.gpu_multifrontal_ldlt_hybrid!(xh, dz, ha, da, dv, dd, M, G, K, signs;
+                                                  d2h = false, frontmode = :vendor)
+                ext.gpu_upload_cpu_panels!(dz, xh, G); copyto!(d_dd, 1, dv, 1, n)
+                dy = CuArray(b[perm]); ext.gpu_solve_ldlt_vendor!(dy, dz, d_dd, G, dup, dga)
+            end
+            dyv = factsolve_v()                           # warm (fresh RHS each call)
+            x = zeros(n); x[perm] = Array(dyv)
+            res = norm(K * x - b) / norm(b)
+            tv = _gpu_elapsed(factsolve_v)
+            tv < bestv[1] && (bestv = (tv, q); vres = res)
             CUDA.unsafe_free!(da); CUDA.unsafe_free!(dz)
         end
         r["gpu_ps"] = best[1]; r["gpu_q"] = best[2]; r["gpu_fronts"] = best[3]
+        r["gpu_vendor"] = bestv[1]; r["gpu_vendor_q"] = bestv[2]; r["vendor_resid"] = vres
     end
     return r
 end
@@ -195,27 +225,33 @@ function run_gate()
 end
 
 function print_verdict(payload)
-    R = payload["results"]; tgt = get(payload, "target", TARGET)
-    println("\n=== M6 GPU wall-time gate (design_gpu.md §8, amendment B) — factor+solve, median seconds ===")
-    println(@sprintf("host=%s  gpu=%s  target=%.0f×\n", payload["host"], get(payload, "gpu", "?"), tgt))
-    println(rpad("matrix", 15), rpad("n", 9), rpad("CPU-PS", 12), rpad("GPU-PS", 12), rpad("CHOLMOD", 12),
-            rpad("q", 7), rpad("×vsCPU", 9), rpad("c1(5×)", 8), "c3(<CHM)")
-    n1 = 0; n3 = 0; nt = 0
+    R = payload["results"]
+    println("\n=== M6 GPU wall-time gate (design_gpu.md §8, re-scoped: pure ≥ 1.0× vendor) — factor+solve, median seconds ===")
+    println(@sprintf("host=%s  gpu=%s\n", payload["host"], get(payload, "gpu", "?")))
+    println(rpad("matrix", 15), rpad("n", 9), rpad("CPU-PS", 11), rpad("GPU-pure", 11),
+            rpad("GPU-vend", 11), rpad("CHOLMOD", 11), rpad("q", 7), rpad("×vsCPU", 9),
+            rpad("pure/vend", 11), rpad("c-vend", 8), "c3(<CHM)")
+    nv = 0; n3 = 0; nt = 0; maxres = 0.0
     for r in R
         haskey(r, "gpu_ps") || continue
         nt += 1
         cpu = r["cpu_ps"]; gpu = r["gpu_ps"]; chm = min(r["cholmod_own"], r["cholmod_sameperm"])
-        spd = cpu / gpu
-        c1 = spd >= tgt; c3 = gpu < chm
-        c1 && (n1 += 1); c3 && (n3 += 1)
+        ven = get(r, "gpu_vendor", NaN)
+        spd = cpu / gpu; pv = ven / gpu                   # pure wins when pv ≥ 1.0
+        cv = pv >= 1.0; c3 = gpu < chm
+        cv && (nv += 1); c3 && (n3 += 1)
+        res = get(r, "vendor_resid", NaN); isnan(res) || (maxres = max(maxres, res))
         println(rpad(r["matrix"], 15), rpad(r["n"], 9),
-                rpad(@sprintf("%.2fms", cpu * 1e3), 12), rpad(@sprintf("%.2fms", gpu * 1e3), 12),
-                rpad(@sprintf("%.2fms", chm * 1e3), 12), rpad(@sprintf("%.3f", get(r, "gpu_q", 0.0)), 7),
-                rpad(@sprintf("%.2f×", spd), 9), rpad(c1 ? "PASS" : "fail", 8), c3 ? "PASS" : "fail")
+                rpad(@sprintf("%.2fms", cpu * 1e3), 11), rpad(@sprintf("%.2fms", gpu * 1e3), 11),
+                rpad(@sprintf("%.2fms", ven * 1e3), 11), rpad(@sprintf("%.2fms", chm * 1e3), 11),
+                rpad(@sprintf("%.3f", get(r, "gpu_q", 0.0)), 7),
+                rpad(@sprintf("%.2f×", spd), 9), rpad(@sprintf("%.2f×", pv), 11),
+                rpad(cv ? "PASS" : "fail", 8), c3 ? "PASS" : "fail")
     end
-    println(@sprintf("\nclause 1 (GPU ≥ %.0f× CPU-PureSparse): %d/%d", tgt, n1, nt))
-    println(@sprintf("clause 3 (GPU beats CHOLMOD+OpenBLAS):    %d/%d", n3, nt))
-    ok = n1 == nt && n3 == nt
+    println(@sprintf("\nclause vendor (pure ≥ 1.0× cuSOLVER/cuBLAS): %d/%d", nv, nt))
+    println(@sprintf("clause 3 (GPU beats CHOLMOD+OpenBLAS):       %d/%d", n3, nt))
+    println(@sprintf("max vendor-arm residual ‖Ax−b‖/‖b‖ = %.2e (gate ≤ 1e-8)", maxres))
+    ok = nv == nt && n3 == nt
     println("\nOVERALL: ", ok ? "PASS" : "NOT YET PASSING (see per-row)")
 end
 

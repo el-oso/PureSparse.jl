@@ -333,7 +333,7 @@ end
 function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector{T}, device_arena,
                                   Msym::MFSymbolic{Ti}, G::GPUSymbolic, A; d2h::Bool = true,
                                   d_emap = nothing, d_dummy = nothing, d_Anz = nothing,
-                                  ws = nothing) where {T,Ti}
+                                  ws = nothing, frontmode::Symbol = :auto) where {T,Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
     px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
     fill!(x_host, zero(T))
@@ -362,7 +362,7 @@ function gpu_multifrontal_hybrid!(x_host::Vector{T}, d_nzval, host_arena::Vector
                 emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
                 _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
             end
-            gpu_front!(panel, nscol, ws)                     # fused pure potrf(diag)+solve(L21)
+            gpu_front!(panel, nscol, ws; mode = frontmode)   # fused pure potrf(diag)+solve(L21)
             if below_s > 0
                 L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
                 gpu_syrk_nt!(U_s, L21, -one(T), one(T))              # U_s = children − L21·L21ᵀ
@@ -511,7 +511,8 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                                        dvec::Vector{T}, d_dvec, Msym::MFSymbolic{Ti}, G::GPUSymbolic,
                                        A, signs::Vector{Int8}; d2h::Bool=true,
                                        d_emap = nothing, d_dummy = nothing, d_W = nothing, d_Anz = nothing,
-                                       d_signs = nothing, ldlws = nothing) where {T,Ti}
+                                       d_signs = nothing, ldlws = nothing,
+                                       frontmode::Symbol = :auto) where {T,Ti}
     sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr
     px = sym.px; sparent = sym.sparent; amap = sym.amap; on_gpu = G.on_gpu
     isnothing(d_signs) && (d_signs = CuArray(signs))     # signs on device (GPU-front slices)
@@ -544,6 +545,25 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                 emc = view(d_emap, Int(Msym.emap_ptr[c]):(Int(Msym.emap_ptr[c + 1]) - 1))
                 _mf_extend_add!(backend, 256)(panel, U_s, U_c, emc, nscol, bc; ndrange = cld(bc * bc, 256) * 256)
             end
+            if frontmode == :vendor
+                # vendor reference front (gate arm 4) — the pre-fused path: CPU signed-LDL of
+                # the diag block (D2H → _ldl_block! → H2D) + cuBLAS unit-trsm + D⁻¹ scale
+                blk_h = Array(view(panel, 1:nscol, 1:nscol))
+                dvals, dnp, dnn, dnz, dnpe, dmp = _ldl_block!(blk_h, view(signs, j0:(j0 + nscol - 1)), delta, zeta)
+                np += dnp; nn += dnn; nz += dnz; npert += dnpe; dmp > maxp && (maxp = dmp)
+                copyto!(view(panel, 1:nscol, 1:nscol), blk_h)
+                @views dvec[j0:(j0 + nscol - 1)] .= dvals; copyto!(d_dvec, j0, dvals, 1, nscol)
+                if below_s > 0
+                    L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
+                    trsm!('R', 'L', 'T', 'U', one(T), view(panel, 1:nscol, 1:nscol), L21)   # cuBLAS
+                    nd = cld(below_s * nscol, 256) * 256
+                    _col_scale!(backend, 256)(L21, L21, d_dvec, j0 - 1, true, below_s, nscol; ndrange = nd)   # L21 = W·D⁻¹
+                    W2 = view(d_W, 1:below_s, 1:nscol)
+                    _col_scale!(backend, 256)(W2, L21, d_dvec, j0 - 1, false, below_s, nscol; ndrange = nd)   # W2 = L21·D
+                    gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))          # U_s −= L21·D·L21ᵀ
+                    copyto!(device_arena, uo, device_arena, 1, us)       # compact → device STACK
+                end
+            else
             # fused pure signed-LDL front (diag LDL + panel solve, one kernel — amendment C/E)
             sgn_v = view(d_signs, j0:(j0 + nscol - 1)); dv_v = view(d_dvec, j0:(j0 + nscol - 1))
             gpu_ldlt_front!(panel, nscol, sgn_v, dv_v, delta, zeta, ldlws)   # L11 unit, D→d_dvec, L21=W·D⁻¹
@@ -555,6 +575,7 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                                           ndrange = cld(below_s * nscol, 256) * 256)   # W2 = L21·D
                 gpu_gemm_nt!(U_s, W2, L21, -one(T), one(T))          # U_s −= L21·D·L21ᵀ
                 copyto!(device_arena, uo, device_arena, 1, us)       # compact → device STACK
+            end
             end
             d2h && copyto!(x_host, Int(px[s]), d_nzval, Int(px[s]), nsrow * nscol)
         else
@@ -618,4 +639,89 @@ function gpu_solve_ldlt!(d_y, d_nzval, d_dvec, G::GPUSymbolic, d_upd = nothing, 
                          sched::SolveSchedule = solve_schedule(G))
     return batched_solve!(d_y, d_nzval, G.d_rowind, G.d_rowind_ptr, G.d_super, sched,
                           true, d_dvec)
+end
+
+# =======================================================================================
+# VENDOR device solve (cuBLAS trsv/gemv per supernode) — the pre-batched solve, retained
+# verbatim (commit 9aef65d) as the §8-gate reference arm 4. CUDA-only, never on the shipped
+# path.
+using CUDA.CUBLAS: trsv!, gemv!
+
+@kernel function _scatter_y!(y, @Const(upd), @Const(rowind), rp0, nscol, below)
+    k = @index(Global)
+    k ≤ below && (@inbounds y[Int(rowind[rp0 + nscol + k - 1])] += upd[k])
+end
+@kernel function _gather_y!(g, @Const(y), @Const(rowind), rp0, nscol, below)
+    k = @index(Global)
+    k ≤ below && (@inbounds g[k] = y[Int(rowind[rp0 + nscol + k - 1])])
+end
+
+"""
+    gpu_solve_vendor!(d_y, d_nzval, G, d_upd, d_gath)
+
+Vendor (cuBLAS) supernodal solve `A·x = b` on device — per-supernode trsv/gemv/scatter.
+`d_upd`/`d_gath` are `max_extend_rows` scratch vectors.
+"""
+function gpu_solve_vendor!(d_y, d_nzval, G::GPUSymbolic, d_upd, d_gath)
+    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
+    d_rowind = G.d_rowind; backend = get_backend(d_y); T = eltype(d_y)
+    @inbounds for s in 1:ns                                   # forward L·y = b
+        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
+        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol)
+        yblk = view(d_y, j0:(j0 + nscol - 1)); Ldiag = view(panel, 1:nscol, 1:nscol)
+        trsv!('L', 'N', 'N', Ldiag, yblk)
+        if below > 0
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); upd = view(d_upd, 1:below)
+            gemv!('N', -one(T), Lbelow, yblk, zero(T), upd)
+            _scatter_y!(backend, 256)(d_y, upd, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
+        end
+    end
+    @inbounds for s in ns:-1:1                                # backward Lᵀ·x = y
+        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
+        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol)
+        yblk = view(d_y, j0:(j0 + nscol - 1)); Ldiag = view(panel, 1:nscol, 1:nscol)
+        if below > 0
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); gath = view(d_gath, 1:below)
+            _gather_y!(backend, 256)(gath, d_y, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
+            gemv!('T', -one(T), Lbelow, gath, one(T), yblk)
+        end
+        trsv!('L', 'T', 'N', Ldiag, yblk)
+    end
+    return d_y
+end
+
+"""
+    gpu_solve_ldlt_vendor!(d_y, d_nzval, d_dvec, G, d_upd, d_gath)
+
+Vendor (cuBLAS) LDLᵀ solve: forward unit-L·z=b, D⁻¹ scale, backward unit-Lᵀ·x=w.
+"""
+function gpu_solve_ldlt_vendor!(d_y, d_nzval, d_dvec, G::GPUSymbolic, d_upd, d_gath)
+    sym = G.cpu; ns = sym.nsuper; super = sym.super; rowind_ptr = sym.rowind_ptr; px = sym.px
+    d_rowind = G.d_rowind; backend = get_backend(d_y); T = eltype(d_y)
+    @inbounds for s in 1:ns                                   # forward L·z = b (unit lower)
+        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
+        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol); yblk = view(d_y, j0:(j0 + nscol - 1))
+        trsv!('L', 'N', 'U', view(panel, 1:nscol, 1:nscol), yblk)
+        if below > 0
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); upd = view(d_upd, 1:below)
+            gemv!('N', -one(T), Lbelow, yblk, zero(T), upd)
+            _scatter_y!(backend, 256)(d_y, upd, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
+        end
+    end
+    d_y ./= d_dvec                                            # D⁻¹ scale (w = D⁻¹·z)
+    @inbounds for s in ns:-1:1                                # backward Lᵀ·x = w (unit lower)
+        j0 = Int(super[s]); nscol = Int(super[s + 1]) - j0
+        rp0 = Int(rowind_ptr[s]); nsrow = Int(rowind_ptr[s + 1]) - rp0; below = nsrow - nscol
+        panel = _dpanel(d_nzval, px, s, nsrow, nscol); yblk = view(d_y, j0:(j0 + nscol - 1))
+        if below > 0
+            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol); gath = view(d_gath, 1:below)
+            _gather_y!(backend, 256)(gath, d_y, d_rowind, rp0, nscol, below; ndrange = cld(below, 256) * 256)
+            gemv!('T', -one(T), Lbelow, gath, one(T), yblk)
+        end
+        trsv!('L', 'T', 'U', view(panel, 1:nscol, 1:nscol), yblk)
+    end
+    return d_y
 end

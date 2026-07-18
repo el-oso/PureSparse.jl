@@ -702,7 +702,8 @@ views), as a right-looking partial Cholesky over 64-wide panels:
              (or, `mode=:split_gemm`, diag factor+inverse (1 group) → in-place trmm)
              → [one trapezoidal trailing update of the remaining columns].
 `mode`: `:fused` | `:split_gemm` | `:split_base` | `:auto` (fused iff panel rows ≤
-FUSE_M_MAX[]).
+FUSE_M_MAX[]) | `:vendor` (cuSOLVER potrf + cuBLAS trsm — the §8-gate reference arm,
+whole-front, no 64-panel loop; identical views as the retained gpu_cholesky_hybrid! path).
 """
 function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :auto)
     nsrow = size(P, 1)
@@ -710,6 +711,14 @@ function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :au
     @assert size(P, 2) == n && nsrow >= n
     n == 0 && return P
     T = eltype(P)
+    if mode == :vendor                    # vendor reference arm (gate arm 4)
+        diag = view(P, 1:n, 1:n)
+        _, info = CUDA.CUSOLVER.potrf!('L', diag)
+        info != 0 && copyto!(ws.info, Int32[Int32(info)])   # mirror the deferred-devinfo contract
+        nsrow > n && CUDA.CUBLAS.trsm!('R', 'L', 'T', 'N', one(T), diag,
+                                       view(P, (n + 1):nsrow, 1:n))
+        return P
+    end
     backend = get_backend(P)
     fk = _front_fused64!(backend, 256)
     f2 = _front_fused64_v2!(backend, (16, 16))
