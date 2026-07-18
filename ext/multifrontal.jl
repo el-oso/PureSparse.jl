@@ -114,6 +114,49 @@ end
     return nothing
 end
 
+# The signed-regularization LDLᵀ factorization of one front's panel (order-free per-front-local
+# `dmax`, amendment E) plus the D-scaled below-part update `U_s -= L21·D·L21ᵀ`. In place: `panel`
+# ← unit-lower L + its below-part; `dvec[j0 : j0+nscol-1]` ← signed D. Returns the front's inertia
+# DELTAS `(n_pos, n_neg, n_zero, n_perturbed, max_pert)` for the caller to accumulate — per-front
+# deltas sum/max to the same totals as the old inline counting, and the factor is `dmax`-independent
+# so it matches `ldlt!` bit-for-bit. Shared by `cpu_multifrontal_ldlt!` and the hybrid engine's
+# CPU-front branch (was inlined verbatim at both). `@inbounds` matches the callers' enclosing
+# `@inbounds for s` (a function body does not inherit the caller's @inbounds).
+function _cpu_ldl_front!(panel, U_s, dvec::Vector{T}, signs, j0::Int, nscol::Int, nsrow::Int,
+                         below_s::Int, delta::T, zeta::T) where {T}
+    np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; dmax_local = zero(T)
+    @inbounds for j in 1:nscol
+        jg = j0 + j - 1; dj = panel[j, j]; adj = abs(dj)
+        if adj ≤ zeta * max(dmax_local, delta)                # zero test, order-free (amendment E)
+            nz += 1
+        elseif dj > zero(T); np += 1
+        else; nn += 1 end
+        sg = signs[jg]
+        wrong = (sg == Int8(1) && !(dj > zero(T))) || (sg == Int8(-1) && !(dj < zero(T)))
+        if wrong || adj < delta                               # signed regularization (dmax-independent)
+            target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
+            newd = target * max(delta, adj); npert += 1
+            p = Float64(abs(newd - dj)); p > maxp && (maxp = p); dj = newd
+        end
+        dvec[jg] = dj; adf = abs(dj); adf > dmax_local && (dmax_local = adf)
+        panel[j, j] = one(T); invd = inv(dj)
+        for i in (j + 1):nsrow; panel[i, j] *= invd; end
+        if j < nscol
+            PureSparse.ger!(-dj, view(panel, (j + 1):nsrow, j), view(panel, (j + 1):nscol, j),
+                            view(panel, (j + 1):nsrow, (j + 1):nscol))
+        end
+    end
+    @inbounds if below_s > 0                                   # U_s = children − L21·D·L21ᵀ
+        L21 = view(panel, (nscol + 1):nsrow, 1:nscol); W = Matrix{T}(undef, below_s, nscol)
+        for jj in 1:nscol
+            d = dvec[j0 + jj - 1]
+            for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
+        end
+        PureSparse.gemm!(U_s, W, Matrix(L21); transA = 'N', transB = 'T', alpha = -one(T), beta = one(T))
+    end
+    return (np, nn, nz, npert, maxp)
+end
+
 """
     cpu_multifrontal_cholesky!(x_host, arena, M, sym, A) -> (ok, fail_col)
 
@@ -199,39 +242,11 @@ function cpu_multifrontal_ldlt!(x_host::Vector{T}, arena::Vector{T}, dvec::Vecto
             U_c = _mfpanel(arena, Int(M.uoff[c]), below_c, below_c); eb = Int(M.emap_ptr[c])
             _extend_add_cpu!(panel, U_s, U_c, M.emap, eb, below_c, nscol)
         end
-        dmax_local = zero(T)                                  # order-free local dmax (amendment E)
-        for j in 1:nscol
-            jg = j0 + j - 1; dj = panel[j, j]; adj = abs(dj)
-            if adj ≤ zeta * max(dmax_local, delta)            # zero test, order-free (amendment E)
-                n_zero += 1
-            elseif dj > zero(T); n_pos += 1
-            else; n_neg += 1 end
-            sg = signs[jg]
-            wrongsign = (sg == Int8(1) && !(dj > zero(T))) || (sg == Int8(-1) && !(dj < zero(T)))
-            if wrongsign || adj < delta                       # signed regularization (dmax-independent)
-                target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
-                newd = target * max(delta, adj); n_perturbed += 1
-                pert = Float64(abs(newd - dj)); pert > max_pert && (max_pert = pert); dj = newd
-            end
-            dvec[jg] = dj; adf = abs(dj); adf > dmax_local && (dmax_local = adf)
-            panel[j, j] = one(T); invd = inv(dj)
-            for i in (j + 1):nsrow; panel[i, j] *= invd; end
-            if j < nscol
-                lcol = view(panel, (j + 1):nsrow, j); lrow = view(panel, (j + 1):nscol, j)
-                trail = view(panel, (j + 1):nsrow, (j + 1):nscol)
-                PureSparse.ger!(-dj, lcol, lrow, trail)
-            end
-        end
-        if below_s > 0                                        # U_s = children − L21·D·L21ᵀ
-            L21 = view(panel, (nscol + 1):nsrow, 1:nscol)
-            W = Matrix{T}(undef, below_s, nscol)
-            for jj in 1:nscol
-                d = dvec[j0 + jj - 1]
-                for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
-            end
-            PureSparse.gemm!(U_s, W, Matrix(L21); transA = 'N', transB = 'T', alpha = -one(T), beta = one(T))
-            copyto!(arena, uo, arena, 1, us)                  # compact work slot → STACK at uoff[s]
-        end
+        np_s, nn_s, nz_s, npert_s, maxp_s =
+            _cpu_ldl_front!(panel, U_s, dvec, signs, j0, nscol, nsrow, below_s, delta, zeta)
+        n_pos += np_s; n_neg += nn_s; n_zero += nz_s; n_perturbed += npert_s
+        maxp_s > max_pert && (max_pert = maxp_s)
+        below_s > 0 && copyto!(arena, uo, arena, 1, us)       # compact work slot → STACK at uoff[s]
     end
     end
     return (true, 0, (; n_pos, n_neg, n_zero, n_perturbed, max_pert))

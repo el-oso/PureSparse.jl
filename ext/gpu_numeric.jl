@@ -581,34 +581,10 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                 U_c = _hpanel(host_arena, Int(Msym.uoff[c]), bc, bc); eb = Int(Msym.emap_ptr[c])   # child on the host STACK
                 _extend_add_cpu!(panel, U_s, U_c, Msym.emap, eb, bc, nscol)
             end
-            dmax_local = zero(T)
-            for j in 1:nscol
-                jg = j0 + j - 1; dj = panel[j, j]; adj = abs(dj)
-                if adj ≤ zeta * max(dmax_local, delta); nz += 1
-                elseif dj > zero(T); np += 1 else nn += 1 end
-                sg = signs[jg]
-                wrong = (sg == Int8(1) && !(dj > zero(T))) || (sg == Int8(-1) && !(dj < zero(T)))
-                if wrong || adj < delta
-                    target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
-                    newd = target * max(delta, adj); npert += 1
-                    p = Float64(abs(newd - dj)); p > maxp && (maxp = p); dj = newd
-                end
-                dvec[jg] = dj; adf = abs(dj); adf > dmax_local && (dmax_local = adf)
-                panel[j, j] = one(T); invd = inv(dj)
-                for i in (j + 1):nsrow; panel[i, j] *= invd; end
-                if j < nscol
-                    PureSparse.ger!(-dj, view(panel, (j + 1):nsrow, j), view(panel, (j + 1):nscol, j),
-                                    view(panel, (j + 1):nsrow, (j + 1):nscol))
-                end
-            end
-            if below_s > 0
-                L21 = view(panel, (nscol + 1):nsrow, 1:nscol); W = Matrix{T}(undef, below_s, nscol)
-                for jj in 1:nscol
-                    d = dvec[j0 + jj - 1]; for ii in 1:below_s; W[ii, jj] = L21[ii, jj] * d; end
-                end
-                PureSparse.gemm!(U_s, W, Matrix(L21); transA = 'N', transB = 'T', alpha = -one(T), beta = one(T))
-                copyto!(host_arena, uo, host_arena, 1, us)        # compact work slot → host STACK
-            end
+            np_s, nn_s, nz_s, npert_s, maxp_s =
+                _cpu_ldl_front!(panel, U_s, dvec, signs, j0, nscol, nsrow, below_s, delta, zeta)
+            np += np_s; nn += nn_s; nz += nz_s; npert += npert_s; maxp_s > maxp && (maxp = maxp_s)
+            below_s > 0 && copyto!(host_arena, uo, host_arena, 1, us)  # compact work slot → host STACK
             # crossing (CPU front, GPU parent): upload its U to the device arena (same STACK offset)
             (Int(sparent[s]) != 0 && on_gpu[Int(sparent[s])] && us > 0) &&
                 copyto!(device_arena, uo, host_arena, uo, us)
