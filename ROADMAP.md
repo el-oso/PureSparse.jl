@@ -2745,6 +2745,24 @@ the vendor buys nothing and abandons the pure thesis. NEXT (pending owner consul
 registration waits on the deps-first chain PureBLAS → StrictMode/TypeContracts → PureSparse, since the
 Manifest currently dev-tracks PureBLAS master).
 
+**2026-07-18: StrictMode 0.3.9 + guarantee gates.** Bumped StrictMode 0.3.8 → 0.3.9 (compat lower
+bound raised to 0.3.9). Adopted two of 0.3.9's `@assert_*` guarantee macros as a new CI gate,
+`test/strictmode_guarantees_tests.jl` (an isolated **checks-ON** subprocess — the main suite runs
+checks-OFF for the zero-alloc gate, and `assert_enabled()` ⇒ `checks_enabled()`, so the guarantees
+must run in their own temp env with AllocCheck+JET; ~168 s/run): (1) **`@assert_concurrency_safe
+cholesky/ldlt(sym, A)`** — machine-proof that the allocating factor treats its `Symbolic` argument
+read-only, i.e. one immutable `Symbolic` is safe to share by reference across concurrent
+factorizations (the analyze-once thesis, req 7 — previously prose-only); (2) **`@assert_typestable
+solve!`** for all three factor kinds (req 3). Targets are the **check-free** `solve!` + allocating
+constructors, so the checks-ON body the macro analyzes equals the shipped checks-OFF path.
+**Finding (tracked, not a release blocker):** `@assert_noalloc` PASSES for the QR `solve!` but
+FAILS for Cholesky/LDLᵀ `solve!` — AllocCheck (all-paths, `ignore_throw`) finds a non-throw
+allocation path the happy-path `@allocated == 0` gate does not exercise; the shipped hot path is
+alloc-free (that gate passes), so tightening the Chol/LDLᵀ solve tree to AllocCheck-clean is a
+follow-up. `@assert_trim_safe` also passes on `solve!` but only as a static heuristic (not juliac-
+authoritative), and `TrimCheck.@validate` already covers `solve!` positionally, so it was not
+adopted. Full suite green on 0.3.9 (225 950/225 950) incl. the new item; juliac --trim=safe green.
+
 ## Standing rules
 
 - **Clean-room, absolute:** never read CHOLMOD/SuiteSparse source, in any form. Only
