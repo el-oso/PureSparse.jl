@@ -243,6 +243,18 @@ end
     return reshape(view(F.fval, lo:(lo + mmax_f * n_f - 1)), mmax_f, n_f)
 end
 
+# Base offset into the per-elimination τ storage for front f (capacity Σ min(mmax_f, n_f));
+# shared by the numeric factor loop (`_factorize_front!`) and the solve replay so both agree
+# on the slot. Distinct from the NB-scaled T-matrix slab (`fpanelptr`), which advances per
+# BLOCK, not per elimination.
+@inline function _tauv_base(fsym::QRFrontSymbolic, f::Int)
+    base = 1
+    @inbounds for fp in 1:(f - 1)
+        base += min(Int(fsym.fmmax[fp]), n_f_of(fsym, fp))
+    end
+    return base
+end
+
 include("frontal_assemble.jl")
 include("frontal_numeric.jl")
 include("frontal_solve.jl")

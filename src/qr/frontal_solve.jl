@@ -26,14 +26,8 @@
 # view into the front rectangle — `F.elimcol` (front-local column per elimination,
 # same indexing as `F.tauv`) is used to GATHER the correct (possibly scattered)
 # columns into `ws.wy.V` fresh, exactly mirroring how factorization built it.
-
-@inline function _tauv_base(fsym::QRFrontSymbolic, f::Int)
-    base = 1
-    @inbounds for fp in 1:(f - 1)
-        base += min(Int(fsym.fmmax[fp]), n_f_of(fsym, fp))
-    end
-    return base
-end
+# (`_tauv_base` — the per-elimination τ base offset — now lives in `frontal.jl`, shared
+# with the numeric factor loop.)
 
 # Gather panel `pnl`'s V (mp×pb, explicit unit diagonal) into `ws.wy.V` from the
 # front's stored rectangle, using `F.elimcol`/`F.tauv` (NOT a column-range view — see

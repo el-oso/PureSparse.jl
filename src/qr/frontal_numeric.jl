@@ -100,10 +100,7 @@ function _factorize_front!(F::QRFrontFactor{T,Ti}, f::Int, m_f::Int, tau::T) whe
     # `fsym.ftauptr`'s NB-scaled T-matrix slab — conflating the two was a real bug:
     # ftaubase must advance one slot per ELIMINATION, capacity Σ min(mmax_f,n_f); the
     # T-slab (ttaucur below) advances one slot per BLOCK, capacity Σ NB*min(mmax_f,n_f)).
-    ftaubase = 1
-    @inbounds for fp in 1:(f - 1)
-        ftaubase += min(Int(fsym.fmmax[fp]), n_f_of(fsym, fp))
-    end
+    ftaubase = _tauv_base(fsym, f)
     panelbase = Int(fsym.fpanelptr[f])
     frowlo = Int(fsym.frowptr2[f])
     colslo = Int(fsym.fcolptr[f])

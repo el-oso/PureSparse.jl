@@ -1,7 +1,8 @@
-# Supernodal triangular solves (design.md §4.4). Correctness-first pass; zero-allocation
-# hardening is M1 task list item 7 (a deliberately separate, later step — design.md
-# ROADMAP.md M1 task breakdown), so this allocates a permuted-RHS scratch buffer per call
-# for now rather than retrofitting `Workspace` under time pressure.
+# Supernodal triangular solves (design.md §4.4). Zero-allocation on the single-RHS warm
+# path (M1 task 7, done): the permuted-RHS scratch is the factor's `Workspace` (`F.ws.rhs`
+# + `rhs_blocks`), not a per-call allocation — `solve!` is gated `@allocated == 0`. Only the
+# multi-RHS (`b::AbstractMatrix`) form allocates an `n×nrhs` scratch, unavoidably (caller-
+# chosen, unbounded `nrhs`); see the `solve!` docstring below for the full rationale.
 #
 # Both supernodal factor types share the identical panel layout (design.md §1.2), so the
 # L/Lᵀ sweeps are written once over this union; the only difference is the diagonal:
