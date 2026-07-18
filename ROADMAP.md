@@ -2719,6 +2719,32 @@ symmetric-only, no unsymmetric LU).
 (pinned SPD+SQD stratum ≥6, both req-2 arms incl the `PureSparse+PureBLAS` vs `CHOLMOD+OpenBLAS`
 CPU baseline, still-beats-CHOLMOD, two-host galen + neuromancer-eGPU bar).
 
+**2026-07-18: M7 (GPU sparse QR) — EVALUATED AND SHELVED BY MEASUREMENT. A pure-Julia GPU-QR front
+cannot beat cuSOLVER `geqrf`; the M6-style "pure beats the CUDA vendor" milestone is not achievable
+for QR.** Full design process ran first (`docs/design_qr_gpu.md` v1 → two independent adversarial
+reviews `design_qr_gpu_review{,_fable}.md` → v2; then a Fable TSQR redesign `design_qr_gpu_v3_fable.md`
+→ Opus adversarial review `design_qr_gpu_v3_review_opus.md`). Opus's key move: verified all arithmetic
+against the raw probe JSON and identified that the true crux is **γ, the batched WY-apply gemm ratio**,
+not the panel. Three Phase-0 probes on galen (RTX 4070, Float64, warm `CUDA.@elapsed` medians;
+`benchmark/gpu/qr_{panel_phase0,front_project,gamma_phase0}.jl`) settled it before any production code:
+(1) pure single-workgroup Householder **panel** is 3–10× slower than `geqrf` standalone (1 SM of 46,
+occupancy-bound); (2) **front-level projection** best-NB 1.49–2.70× slower; (3) **γ_WY ≈ 0.77** — pure
+*loses* the trailing WY-apply 1.3×. The WY-apply is two equal-flop gemms: pure WINS the standard `nn`
+shape (γ_nn=1.15, as M6) but LOSES the `tn` tall-K/tiny-output shape badly (γ_tn=0.575) — cuBLAS's
+most-tuned batched-split-K regime. Even at hypothetical `tn` parity the trailing caps ~1.07× and the
+panel is parity-at-best → both places pure could win are losses or ties. ROOT CAUSE: M6's Cholesky win
+came from `potrf`/`syrk` fitting a fused register-resident pure kernel; QR's Householder tall-skinny
+panel + tall-K WY-apply is exactly what cuSOLVER/cuBLAS are most tuned for — the win does not transfer.
+The measurement-first process worked as intended: ~1 day of probes killed a milestone that would have
+cost weeks of TSQR building. **CPU sparse QR (M5) remains CLOSED and gate-passing — only the GPU-QR
+milestone is shelved.** A *non-pure* GPU-QR (vendor fronts) was considered and rejected: our pure
+kernels already beat CPU SuiteSparseQR on GPU throughput (GPU-vs-CPU, like M6 vs CHOLMOD), so calling
+the vendor buys nothing and abandons the pure thesis. NEXT (pending owner consult): LU via PureKLU.jl
+(SciML MIT, evaluated 0-alloc/1e-15) — a collaboration, not this repo's to start unilaterally.
+**Current focus: consolidate M1/M2/M4/M5/M6 and prepare a release** (tag v0.1.0 now; General
+registration waits on the deps-first chain PureBLAS → StrictMode/TypeContracts → PureSparse, since the
+Manifest currently dev-tracks PureBLAS master).
+
 ## Standing rules
 
 - **Clean-room, absolute:** never read CHOLMOD/SuiteSparse source, in any form. Only
