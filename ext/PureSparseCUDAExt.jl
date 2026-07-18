@@ -192,7 +192,9 @@ end
 
 # Multifrontal symbolic + CPU numeric (design_gpu.md §M, amendment F) — pure, before the GPU loop.
 include("multifrontal.jl")
-# Synchronous all-GPU Cholesky numeric loops (left-looking §4 + multifrontal §M).
+# GPU numeric engines (design_gpu.md §4/§M). See the orientation table at the top of gpu_numeric.jl
+# for which engine is SHIPPED vs a retained REFERENCE arm.
 include("gpu_numeric.jl")
+include("gpu_vendor_solve.jl")   # cuBLAS solve — §8-gate reference arm 4 (never shipped)
 
 end # module
