@@ -2783,6 +2783,27 @@ NVIDIA reproducing M6) on a rented CDNA part settles the premise before v2. Like
 gated on beats-multithreaded-CPU; "≥ vendor" recorded per backend. AMD first → Intel; Metal deferred
 (no FP64).
 
+**2026-07-19: M8 FUNCTIONAL WIRING DONE — end-to-end Cholesky + LDLᵀ on AMD ROCm (correctness).**
+Separated the *functional* half of M8 (does the solver RUN on ROCm) from the *optimization* half
+(the pure-≥-vendor FP64-matrix-core probe, still gated above — orthogonal). Did the §B1 driver
+de-CUDA refactor: the shipped multifrontal engine (`ext/gpu_numeric.jl`) is now backend-generic via a
+2-function shim (`_dev_zeros`=`KA.zeros`, `_dev_upload`=`KA.allocate`+`copyto!`; `CUDA.fill!`→`fill!`,
+`CUDA.synchronize`→`KA.synchronize(backend)`, `CUDA.@allowscalar x[1]`→`Array(x)[1]`). Restructure:
+`ext/gpu_shared.jl` (backend-generic engine: shim + gemm/front kernels + `GPUSymbolic`/`gpu_symbolic`
++ numeric, included by each per-backend ext) + `ext/gpu_leftlooking_reference.jl` (the CUDA-only
+§4 superseded arms — cuSOLVER/cuBLAS — split out) + new thin `ext/PureSparseAMDGPUExt.jl` (`using
+AMDGPU`; `_default_backend()=ROCBackend()`). `Project.toml`: AMDGPU weakdep + `PureSparseAMDGPUExt`
+extension + `AMDGPU="2"` compat. **Verified on the local gfx1152 iGPU** (`benchmark/gpu/amd_end2end_test.jl`,
+`amd_ldlt_e2e_test.jl`): end-to-end Cholesky factor matches CPU at every frontier cutoff (all-GPU →
+all-CPU) at ~1e-16 across rand/2D-grid/3D-grid; end-to-end LDLᵀ on KKT systems — hybrid factor
+(L relL~1e-18, D relD~2e-16, inertia exact) + device LDLᵀ solve (res~5e-16). **No CUDA regression**:
+both galen oracles (`gpu_mf_hybrid_test.jl` + `gpu_ldlt_e2e_test.jl`) re-run green after the refactor
+(the shim replacements are semantically identical; CUDA is just another KA backend). So the accurate
+GPU state is now: **CUDA = Cholesky+LDLᵀ end-to-end + perf-gated (beats cuSOLVER); ROCm = Cholesky+LDLᵀ
+end-to-end, CORRECT but UNOPTIMIZED** (FP64-weak iGPU; the Instinct-class MFMA tuning is the deferred
+optimization half above). Still no GPU QR on any backend (M7 shelved). Same kernels, both vendors —
+one KA source, `_default_backend()` per ext.
+
 ### Future milestone (research, uncommitted) — M9: MLIR investigation ("stay ahead of Mojo")
 
 **Motivation.** M6/M7/M8 all hit the same wall: a *pure* Julia kernel (KernelAbstractions → LLVM) can

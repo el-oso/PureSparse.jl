@@ -19,7 +19,7 @@ lives in the repository's `CLAUDE.md`; the full architecture is in `docs/design.
 | `src/contracts.jl` | TypeContracts.jl compile-time interface contracts (eliminated by the trimmer) |
 | `src/strict.jl` | The runtime StrictMode check layer (input-shape / finiteness guards), gated by `checks_enabled()` |
 | `src/tuning.jl` | Compile-time, Preferences-backed tuning constants (no runtime CPU detection — trim rule) |
-| `ext/PureSparseCUDAExt.jl` + `ext/*.jl` | The CUDA weak-dependency GPU backend (pure KernelAbstractions kernels) |
+| `ext/gpu_shared.jl` + `ext/PureSparse{CUDA,AMDGPU}Ext.jl` | The GPU backend: one backend-generic KernelAbstractions engine + a thin per-vendor weak-dep ext (CUDA, ROCm) |
 | `juliac/` | The `juliac --trim=safe` smoke build (`build.jl`, `entry.jl`) |
 | `test/` | ReTestItems `@testitem`s, one file per module |
 | `benchmark/` | Chairmarks harness + the GPU probes; results saved to `benchmark/results/*.json` (gitignored) |
@@ -141,11 +141,26 @@ constants are compile-time `Preferences`-backed consts). Two layers check this:
 
 ## GPU backend
 
-The GPU code is a **CUDA weak-dependency extension** (`ext/`), loaded only when the user has
-`CUDA.jl`. Its kernels are **pure KernelAbstractions** (portable to AMD/Intel), and on Float64
-they match or beat cuSOLVER/cuBLAS on the crown fronts (see [Benchmarking](benchmarking.md)); the
-vendor libraries are used only as reference/comparison arms. GPU work is validated on a machine
-with a CUDA device — the CPU test suite does not require one.
+The GPU code is a set of **weak-dependency extensions** (`ext/`), one per vendor, sharing a single
+backend-generic engine:
+
+| File | Role |
+|------|------|
+| `ext/gpu_shared.jl` | The backend-generic engine — the pure KernelAbstractions kernels + `GPUSymbolic`/`gpu_symbolic` + the multifrontal numeric driver. Reaches the device only through a 2-function shim (`_dev_zeros`, `_dev_upload`) + `fill!`/`KA.synchronize`/`Array`. |
+| `ext/PureSparseCUDAExt.jl` | NVIDIA: `using CUDA`; `_default_backend()=CUDABackend()`. Also includes the CUDA-only reference/vendor arms (`gpu_leftlooking_reference.jl`, `gpu_vendor_solve.jl` — cuSOLVER/cuBLAS). |
+| `ext/PureSparseAMDGPUExt.jl` | AMD ROCm: `using AMDGPU`; `_default_backend()=ROCBackend()`. |
+
+**One KA source, both vendors** — a per-backend ext supplies only `using CUDA`/`using AMDGPU` and its
+`_default_backend()`; everything else is shared. Adding Intel oneAPI is a third ~15-line ext.
+
+Status: **Cholesky + LDLᵀ run end-to-end on both CUDA and ROCm.** On CUDA/Float64 the pure kernels
+match or beat cuSOLVER/cuBLAS on the crown fronts (see [Benchmarking](benchmarking.md); vendor libs are
+reference arms only) and that path is perf-gated. The **ROCm path is correct but unoptimized** — FP64
+matrix-core (MFMA) tuning for Instinct-class parts is deferred M8 work; a consumer iGPU is FP64-throttled
+and used only as the portability/correctness canary. There is **no GPU QR** on any backend (the GPU-QR
+milestone M7 was shelved — pure Householder can't beat vendor `geqrf`). GPU work is validated on a
+machine with a device (`benchmark/gpu/gpu_mf_hybrid_test.jl` on CUDA, `amd_end2end_test.jl` on ROCm) —
+the CPU test suite does not require one.
 
 ## Proposing a larger change
 
