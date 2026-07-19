@@ -4,8 +4,10 @@
 # `using AMDGPU` (for the device-array type + `_default_backend()`); everything here is written
 # against KernelAbstractions + the shim below, so it compiles + runs on any KA backend.
 #
-# The ONLY backend-specific device ops are the two shim helpers (`_dev_zeros`, `_dev_upload`) and
-# `_default_backend()` (defined per-ext). Everything else — allocation via `_dev_zeros`, upload via
+# On the shipped `:auto` path the ONLY backend-specific device ops are the two shim helpers
+# (`_dev_zeros`, `_dev_upload`) and `_default_backend()` (per-ext); the `:vendor` reference arm
+# (cuSOLVER/cuBLAS, guarded by `_vendor_available()`) is the sole CUDA-only exception. Everything
+# else on :auto — allocation via `_dev_zeros`, upload via
 # `_dev_upload`, `fill!`, `KernelAbstractions.synchronize`, `Array(x)` for D2H — is backend-neutral.
 using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend, @atomic
 using Base.Cartesian: @nexprs
@@ -20,6 +22,12 @@ function _dev_upload(backend, host::AbstractArray)
     copyto!(d, host)
     return d
 end
+
+# The `:vendor`/`frontmode=:vendor` reference arm (§8 gate arm 4) calls cuSOLVER/cuBLAS directly and
+# is the ONE exception to "backend-generic": those calls live in gpu_dense.jl + gpu_numeric.jl's vendor
+# branches, guarded by `_vendor_available()`. Each per-backend ext MUST define `_vendor_available()`
+# exactly once (CUDA → true, others → false) — it is NOT defined here, so a shared-def-plus-override
+# (which errors as "method overwriting during precompilation" on Julia 1.12) is impossible by design.
 
 # Host-side frontier partition (design_gpu.md §5.2) — pure, no backend dep, CPU-unit-testable.
 include("frontier.jl")

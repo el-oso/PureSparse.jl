@@ -11,6 +11,7 @@ using CUDA
 using KernelAbstractions
 
 _default_backend() = CUDABackend()          # the shim's device for this extension
+_vendor_available() = true                   # cuSOLVER/cuBLAS present → the :vendor reference arm runs
 
 include("gpu_shared.jl")                     # backend-generic engine (kernels + symbolic + numeric)
 include("gpu_leftlooking_reference.jl")      # CUDA-only §4 reference arms (cuSOLVER potrf!/cuBLAS trsm!)

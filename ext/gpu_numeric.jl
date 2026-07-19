@@ -1,7 +1,9 @@
 # ==============================  GPU NUMERIC ENGINES — ORIENTATION  ==============================
-# Backend-generic (design_gpu_multibackend.md §B1): every device op goes through the shim in
-# gpu_shared.jl (_dev_zeros / _dev_upload / fill! / KernelAbstractions.synchronize / Array), so this
-# file compiles + runs on any KA backend (CUDA, ROCm, oneAPI). No CUDA-API calls here.
+# Backend-generic (design_gpu_multibackend.md §B1): every device op on the shipped :auto path goes
+# through the shim in gpu_shared.jl (_dev_zeros / _dev_upload / fill! / KernelAbstractions.synchronize
+# / Array), so this file compiles + runs on any KA backend (CUDA, ROCm, oneAPI). The ONE exception is
+# the `frontmode=:vendor` branch (gate arm 4), which calls cuBLAS `trsm!` — guarded by
+# `_vendor_available()` (CUDA-only) and never reached on :auto. Same exception in gpu_dense.jl.
 #
 #   SHIPPED (the M6 gate path — multifrontal, design_gpu.md §M, amendment F):
 #     gpu_multifrontal_cholesky!  / gpu_multifrontal_hybrid!        (Cholesky, all-GPU / hybrid)
@@ -324,6 +326,8 @@ function gpu_multifrontal_ldlt_hybrid!(x_host::Vector{T}, d_nzval, host_arena::V
                 # vendor reference front (gate arm 4, CUDA-only) — CPU signed-LDL of the diag block
                 # (D2H → _ldl_block! → H2D) + cuBLAS unit-trsm + D⁻¹ scale. `trsm!` resolves only in
                 # the CUDA ext (gpu_leftlooking_reference.jl); never taken on the shipped :auto path.
+                _vendor_available() || error("frontmode=:vendor is a CUDA-only reference arm " *
+                    "(cuBLAS trsm); it is not available on $(nameof(typeof(get_backend(d_nzval)))). Use :auto.")
                 blk_h = Array(view(panel, 1:nscol, 1:nscol))
                 dvals, dnp, dnn, dnz, dnpe, dmp = _ldl_block!(blk_h, view(signs, j0:(j0 + nscol - 1)), delta, zeta)
                 np += dnp; nn += dnn; nz += dnz; npert += dnpe; dmp > maxp && (maxp = dmp)

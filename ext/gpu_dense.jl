@@ -711,7 +711,9 @@ function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :au
     @assert size(P, 2) == n && nsrow >= n
     n == 0 && return P
     T = eltype(P)
-    if mode == :vendor                    # vendor reference arm (gate arm 4)
+    if mode == :vendor                    # vendor reference arm (gate arm 4) — CUDA-only
+        _vendor_available() || error("gpu_front! mode=:vendor is a CUDA-only reference arm " *
+            "(cuSOLVER potrf/cuBLAS trsm); it is not available on $(nameof(typeof(get_backend(P)))). Use :auto/:fused.")
         diag = view(P, 1:n, 1:n)
         _, info = CUDA.CUSOLVER.potrf!('L', diag)
         info != 0 && copyto!(ws.info, Int32[Int32(info)])   # mirror the deferred-devinfo contract

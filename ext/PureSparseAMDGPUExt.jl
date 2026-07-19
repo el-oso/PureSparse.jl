@@ -14,6 +14,7 @@ using AMDGPU
 using KernelAbstractions
 
 _default_backend() = ROCBackend()           # the shim's device for this extension
+_vendor_available() = false                  # no cuSOLVER/cuBLAS on ROCm → :vendor arm errors clearly
 
 include("gpu_shared.jl")                     # backend-generic engine (kernels + symbolic + numeric)
 
