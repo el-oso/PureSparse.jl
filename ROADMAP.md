@@ -2763,6 +2763,58 @@ follow-up. `@assert_trim_safe` also passes on `solve!` but only as a static heur
 authoritative), and `TrimCheck.@validate` already covers `solve!` positionally, so it was not
 adopted. Full suite green on 0.3.9 (225 950/225 950) incl. the new item; juliac --trim=safe green.
 
+**2026-07-18: code-duplication + organization pass (Fable audit).** Committed dedup + reorg, each
+gated (CPU: suite+trim; ext/CUDA: galen oracle bit-identical + same-session A/B perf): `_tauv_base`
+(frontal QR), `_extend_add_cpu!` (extend-add scatter ×4→1), `_cpu_ldl_front!` (signed-LDLᵀ front
+×2→1), + `gpu_numeric.jl` orientation table + `gpu_vendor_solve.jl` split. Deferred (diminishing
+returns / higher surface): GPU-front step dedup, physical left-looking-reference file extraction.
+
+**2026-07-19: M8 (multi-backend GPU: AMD ROCm + Intel oneAPI, FP64) — DESIGNED, REVIEWED,
+PROBE-GATED.** `docs/design_gpu_multibackend.md` v1 + two independent adversarial reviews (Fable +
+Opus) which **converged on a structural BLOCKER**: the M6 "pure ≥ vendor" win is likely NOT portable
+— M6 won only because Ada has no FP64 matrix path, but AMD CDNA (MFMA-f64) and Intel Max (XMX/DPAS-
+f64) DO have FP64 matrix cores that rocBLAS/oneMKL ride at ~2× the vector rate, and a pure
+KernelAbstractions `muladd` kernel can't emit them (the M7 instruction-class lesson again; confirmed
+by current hardware/software — AMDGPU.jl 2.7 exposes rocSOLVER + RDNA WMMA but not CDNA FP64 MFMA).
+DECISION (measurement-first): a ~$5 day-0 probe (`benchmark/gpu/dgemm_vendor_probe.jl`, validated on
+NVIDIA reproducing M6) on a rented CDNA part settles the premise before v2. Likely re-scope: M8 =
+*portable pure-Julia sparse DIRECT solver that dispatches dense fronts to each backend's best kernels*
+(pure where it wins, rocSOLVER/rocBLAS/oneMKL where matrix cores win — now cheap via AMDGPU.jl 2.7),
+gated on beats-multithreaded-CPU; "≥ vendor" recorded per backend. AMD first → Intel; Metal deferred
+(no FP64).
+
+### Future milestone (research, uncommitted) — M9: MLIR investigation ("stay ahead of Mojo")
+
+**Motivation.** M6/M7/M8 all hit the same wall: a *pure* Julia kernel (KernelAbstractions → LLVM) can
+reach portability only at the scalar-`muladd` level, which **cannot emit the FP64 matrix-core
+instructions** (AMD MFMA, Intel XMX/DPAS, NVIDIA/CPU AMX) that the vendor BLAS uses — so "pure beats
+vendor" is structurally foreclosed on matrix-core hardware. **MLIR is the one technology that could
+reclaim that portably**: a dense front kernel written once as `linalg.matmul` / `vector.contract`
+lowers through per-vendor dialects (`amdgpu.mfma` — FP64-capable on gfx94x, confirmed; `nvgpu` WMMA;
+`xegpu` DPAS; `amx`) to each vendor's matrix units. This is precisely the substrate **Mojo** is built
+on (Chris Lattner / Modular: Python-family syntax + MLIR portable perf); the strategic bet is to get
+the *same portable-matrix-core capability from Julia*, staying in the no-Python Pure ecosystem, rather
+than ceding that ground.
+
+**Scope (a measurement-gated R&D spike, NOT committed feature work).**
+- A minimal "front gemm via MLIR matrix-core dialect" prototype (`linalg.matmul` → `amdgpu.mfma`
+  FP64) benchmarked against the three routes to matrix cores: (a) call the vendor (rocSOLVER/rocBLAS
+  via AMDGPU.jl 2.7 — the easy hybrid baseline), (b) hand-written `llvmcall` to `llvm.amdgcn.mfma.f64.*`
+  intrinsics (unwrapped, low-level), (c) MLIR (this).
+- Assess the Julia→MLIR paths: **Reactant.jl** (Julia → StableHLO/MLIR → XLA; mature but ML/tensor-
+  oriented + drags in XLA) vs raw **MLIR.jl** bindings (low-level, hand-built IR). Neither is a
+  drop-in for custom solver kernels today — the spike measures the gap.
+- Explicit honesty items: does MLIR-lowered-to-MFMA count as "pure" (it's a compiler-level vendor-
+  path dependency — philosophically borderline, decide the policy); MLIR's `sparse_tensor` dialect is
+  **iterative tensor algebra (SpMV/SpMM), NOT sparse direct factorization** — so it does not help the
+  symbolic/multifrontal core, only the dense fronts.
+
+**Gate to promote from research → milestone:** the spike must show MLIR reaching ≥ the vendor's FP64
+matrix-core gemm on the crown-front shapes AND a viable, maintainable Julia integration — otherwise
+MLIR stays a watch-item and M8's dense fronts use route (a) (vendor kernels). Measurement-first, as
+always. Refs: `docs/design_gpu_multibackend{,_review_fable,_review_opus}.md`; JuliaGPU AMDGPU.jl 2.7
+post (2026-07-06); MLIR `amdgpu` dialect docs.
+
 ## Standing rules
 
 - **Clean-room, absolute:** never read CHOLMOD/SuiteSparse source, in any form. Only
