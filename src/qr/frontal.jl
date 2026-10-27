@@ -18,7 +18,7 @@ struct QRFrontWorkspace{T, Ti <: Integer}
     cg2l::Vector{Ti}
     bucket::Vector{Ti}
     stair::Vector{Ti}
-    wy::WYApplyWorkspace{T}
+    wy::WYApplyWorkspace{T, Matrix{T}}
     tau_panel::Vector{T}
     Tm::Matrix{T}
     yqt::Vector{T}
