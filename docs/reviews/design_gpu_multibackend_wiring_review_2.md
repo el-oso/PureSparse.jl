@@ -1,13 +1,13 @@
 # Adversarial review — commit 9140195 (M8 backend-generic GPU driver)
 
-Reviewer: Opus (independent audit-trail). Scope: the de-CUDA shim refactor that makes the
+Reviewer: independent audit trail. Scope: the de-CUDA shim refactor that makes the
 shipped multifrontal driver run on ROCm. Goal: break it — find correctness bugs, regressions,
 unsound assumptions the passing CUDA/AMD e2e tests don't cover.
 
 Environment caveat (read first): this review was performed on a **CPU-only host** — no CUDA and
 no ROCm device was available. Every claim about *device* runtime behavior (scalar-readback
 allocation parity, `fill!` on device views, extension load) is reasoned from the source + Julia
-semantics, not measured. Claims marked **[needs HW]** must be confirmed on galen/gfx before being
+semantics, not measured. Claims marked **[needs HW]** must be confirmed on an RTX 4070 or a gfx target before being
 trusted. Claims about source structure, symbol resolution, and precompile reachability are verified
 against the files and are not hardware-dependent.
 
@@ -176,7 +176,7 @@ and add one Float32 smoke test.
 
 ---
 
-## Resolution (Opus, applied — commit follows this file)
+## Resolution (applied)
 
 Both reviews converged: no BLOCKER; the shipped `:auto` path is a faithful, semantically-equivalent
 port on both backends; CUDA no-regression holds. Applied:
@@ -193,7 +193,7 @@ port on both backends; CUDA no-regression holds. Applied:
   `gpu_shared.jl` and overriding it in the CUDA-only file = *method overwriting during precompilation*,
   which **Julia 1.12 rejects** (the CUDA ext only loaded via non-precompiled fallback). Fixed by
   defining `_vendor_available()` **exactly once per ext** (CUDA→true, AMD→false); `gpu_shared.jl` does
-  not define it. Re-verified on galen: CUDA ext precompiles clean, `:auto` oracle PASSES, `:vendor` arm
+  not define it. Re-verified on an RTX 4070: CUDA ext precompiles clean, `:auto` oracle PASSES, `:vendor` arm
   WORKS (ok=true, relerr=7.9e-17).
 - **NOT changed (accepted as noted):** Float32 inertia-stats precision (NIT — realistic sizes fine);
   AMD test-env reproducibility (manual hardware-gated scripts, same status as the CUDA gpu tests).

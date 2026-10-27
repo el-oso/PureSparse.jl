@@ -1,6 +1,6 @@
-# M8 multi-backend GPU design — adversarial review (Opus)
+# M8 multi-backend GPU design — adversarial review
 
-> Review of `design_gpu_multibackend.md` v1. Independent of the parallel Fable review (verified
+> Review of `design_gpu_multibackend.md` v1. Independent of the parallel review (`design_gpu_multibackend_review_1.md`) (verified
 > against `ext/gpu_dense.jl`, `gpu_numeric.jl` (40 CUDA-API sites), `gpu_solve.jl`, `multifrontal.jl`,
 > `PureSparseCUDAExt.jl`). Permanent audit trail; findings fold into v2.
 
@@ -61,7 +61,7 @@ re-derive `frontier_cutoff`/`FUSE_M_MAX` per backend as an explicit build item.
 ## DEFECT — §B6/§B5: one-shot rental cost model is wrong for an iterative tuning campaign
 §B3 calls clause 2 "a per-backend tuning campaign"; §B6 budgets "$10–40 per gate session" one-shot.
 Each variant recompiles under Julia's compile tax; stateless rsync→run→teardown re-pays full precompile
-(no warm daemon like galen); MI210 slots intermittent, MI300X queued/pricier. **Fix:** separate a
+(no warm daemon as on a dedicated host); MI210 slots intermittent, MI300X queued/pricier. **Fix:** separate a
 correctness+clause-3 gate (one short session — the real deliverable) from clause-2 exploration
 (bounded, explicitly optional, O(sessions)); keep a persistent box for the loop.
 

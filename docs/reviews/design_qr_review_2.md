@@ -1,6 +1,6 @@
-# Adversarial review of `design_qr.md` (v1) — Fable, independent pass
+# Adversarial review of `design_qr.md` (v1) — independent pass
 
-Reviewer: Fable (second, independent reviewer; no other review consulted).
+Reviewer: second, independent reviewer; no other review consulted.
 Scope: full read of `design_qr.md` @ ff1150f, checked line-by-line against the five
 archive PDFs (COLAMD 2004 read in full, all 24 pp.; SPQR 2011 read in full, all 25 pp.;
 survey pp. 52–66 + 130–136; GNP92 §1; Larimore thesis TOC + printed pp. 19–22 and
@@ -320,7 +320,7 @@ primary source, not the design's paraphrase.
 9. **§9.2 baseline facts**: re-verified live in this environment (all pass).
 10. **§9.3 gate**: wall-time medians, locked clocks, single-thread, both permutation
     arms, per-stratum unconditional inequality, GFlops demoted to diagnostic —
-    conforms to CLAUDE.md req 2 / design.md D2. Cold-vs-cold is justified (stdlib
+    conforms to CONTRIBUTING.md req 2 / design.md D2. Cold-vs-cold is justified (stdlib
     exposes no analyze-once path — confirmed: each `SparseArrays.qr` call reanalyzes)
     and warm `qr!` reported-but-not-gated is the honest treatment. Only open edge is
     N6 (TBB contingency undefined).

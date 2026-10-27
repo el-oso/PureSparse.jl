@@ -1,14 +1,14 @@
 # PureSparse.jl — GPU offload (M6) design
 
-**Status: v3 (2026-07-17).** v1 → 2 blind reviews → v2 → 2 more blind reviews (Opus + Fable,
+**Status: v3 (2026-07-17).** v1 → 2 blind reviews → v2 → 2 more blind reviews (two reviewers,
 each verified against source) → this v3. The v2 reviews **converged**: both independently found
 the same two BLOCKERs (the cross-frontier upload/concurrency model; the M6b inertia mechanism),
 neither a wording fix. v3 reworks those two areas and folds the defects. Supersedes design.md §8
-and the stale ROADMAP `### M3`. Same v1→review process design.md and design_qr.md took, one round
+and the original M3 plan. Same v1→review process design.md and design_qr.md took, one round
 deeper (the GPU failure domain — async execution, device memory, remote-only verification —
 earned it).
 
-Inputs: Fable's M6 architecture review; the Phase-0 measurement pass on galen (incl. the verified
+Inputs: the M6 architecture review; the Phase-0 measurement pass on an RTX 4070 (incl. the verified
 pure-kernel win, §0); user decisions (scope = Cholesky+LDLᵀ; kernel = pure-primary, Option 1);
 four adversarial reviews across two rounds.
 
@@ -48,14 +48,14 @@ D; §4.2 scatter uses per-pair `ir`/`rs` (pattern-only, host-precomputed, upload
 dropped (it's a transient, not a pattern array), bytes budgeted (§5.3); §5.2 "puncture" option
 **deleted** (it would create the device→host edge the invariant forbids); §8 adds a
 **multi-threaded CHOLMOD** context arm (single-thread gate else reads as GPU-vs-one-core), and a
-**multi-device** confirmation note (galen + a coming neuromancer eGPU → the two-host gate bar; an
-AMD eGPU would also verify the KA portability claim). **NITs:** median not min for the gate (§8);
+**multi-device** confirmation note (a second GPU host → the two-host gate bar; an
+AMD GPU would also verify the KA portability claim). **NITs:** median not min for the gate (§8);
 complex excluded by scope not cuSOLVER capability (§1); `§5.2` cites the etree row-subtree property
 (not §3.4 superset); workspace stored as element counts (§2.3); added M6b `GPULDLFactor` sketch +
 `W=L21·D` staging buffer term (§2.3/§6); hybrid-driver pseudocode (§5.5).
 
-Inputs to v2 (unchanged, for the record): Fable's M6 architecture review; the Phase-0 measurement
-pass on galen; two user decisions; the two v1 reviews.
+Inputs to v2 (unchanged, for the record): the M6 architecture review; the Phase-0 measurement
+pass on an RTX 4070; two user decisions; the two v1 reviews.
 
 ---
 
@@ -68,8 +68,8 @@ gemm (`C=A·Bᵀ`, the supernode trailing-update shape) beats cuBLAS by **1.07�
 KA == raw CUDA.jl (1.00× — vendor-portable for free). Root cause of v1's 0.48× number:
 Julia is IEEE-strict and does not contract `a*b+acc` into an FMA without `muladd`; both v1
 kernels issued DMUL+DADD separately (2× FP64 instructions → the identical 148 GF plateau).
-`muladd` → 349 GF = 99% of FP64 peak at galen's locked 1920 MHz. Reproduced independently.
-`benchmark/gpu/ka_gemm.jl`, `benchmark/results/gpu_kernel_ka_final_galen.json`.
+`muladd` → 349 GF = 99% of FP64 peak on an RTX 4070 locked at 1920 MHz. Reproduced independently.
+`benchmark/gpu/ka_gemm.jl`, `benchmark/results/gpu_kernel_ka_final_<host>.json`.
 **Consequence:** the pure KA kernel is the SHIPPED hot-path kernel (§3), not future R&D.
 This **dissolves** both reviewers' "milestone closes on a vendor binary, against the Pure
 ethos" objection and simplifies the whole story: dense work is *ours* on device too, exactly
@@ -84,13 +84,13 @@ as PureBLAS is on CPU.
   deleted.
 - **[both] gate dropped req 2's mandatory `GivenOrdering` same-permutation arm.** Restored
   in all relevant clauses (§8.1).
-- **[Opus] "race-free by construction" is false under concurrency.** The frontier property
-  (no GPU→CPU update edge) is real and executable-checkable (§5.2, verified by Fable against
+- **[review] "race-free by construction" is false under concurrency.** The frontier property
+  (no GPU→CPU update edge) is real and executable-checkable (§5.2, verified by review against
   the §3.4 superset invariant), but concurrent CPU/GPU execution + async uploads needs an
   **explicit stream/event dependency barrier** (§5.4). "by construction" deleted.
-- **[Fable] pivot-failure detection undesigned + is a hidden per-supernode device→host
+- **[review] pivot-failure detection undesigned + is a hidden per-supernode device→host
   sync.** Added failure-semantics §4.3 (deferred batched `devinfo`, amended `fail_col`).
-- **[Fable] gate timed unequal end states** (GPU factor not solve-ready without a D2H that
+- **[review] gate timed unequal end states** (GPU factor not solve-ready without a D2H that
   recurs per IPM refactor; the 170 vs 308 ms figures were inconsistent). Gate timed region
   redefined to **refactor + make-solve-ready** (§8.1); D2H cost reworked per-refactor with
   reconciled measured bandwidth (§7).
@@ -111,7 +111,7 @@ stream/event design (§5.4).
 
 **NITs:** `unsafe_wrap` is a CPU-compile workaround, irrelevant on device (device uses
 strided `CuArray` views) — F3 wording fixed; memory figures cite `CUDA.available_memory()`
-on galen; oracle phrasing made normwise (design.md §9.2); the CHOLMOD-GPU skip is justified
+on an RTX 4070; oracle phrasing made normwise (design.md §9.2); the CHOLMOD-GPU skip is justified
 by "not what Julia ships," not clean-room.
 
 ---
@@ -162,7 +162,7 @@ x  = F \ b                              # triggers make-solve-ready D2H (§7), C
 the existing set") **well-posed**: plain `cholesky(A)` never touches ext code, so the
 existing gate is untouched by construction; the GPU path is measured only on `GPUSymbolic`.
 The `backend` argument also carries the vendor (CUDABackend/ROCBackend/oneAPIBackend) for the
-portable kernels — only CUDA is verified in M6 (galen), others compile but are untested and
+portable kernels — only CUDA is verified in M6 (RTX 4070), others compile but are untested and
 gated off with a `@warn`.
 
 ### §2.3 Type sketches (host vs device residency)
@@ -207,13 +207,13 @@ Dense per-supernode work on device goes through a small interface —
 - **Pure KA kernels (default, shipped hot path):** the verified 4×4-register-blocked
   `muladd` kernel (§0) for the **trailing update** (gemm/syrk — the flop-dominant step, where
   the 1.14× win is), generic over `T`, portable (AMD/Intel via KA). The `alpha=-1,beta=1`
-  epilogue (`C -= A·Bᵀ`) **is** an epilogue-arg (verified, relerr 0 on galen), with the
+  epilogue (`C -= A·Bᵀ`) **is** an epilogue-arg (verified, relerr 0 on an RTX 4070), with the
   hard requirement that **β=0 OVERWRITES** (not `0*C`, which is `NaN` on an uninitialized
   `d_cbuf` — design.md §4.3 relies on this; fixed in the ext). The **syrk symmetric self-update
   is done by the full gemm kernel** (`B=A`) which harmlessly overwrites the never-read strict-
   upper of the diagonal block (legitimate — `ldlt.jl`/`llt.jl` never store/read it — at ~2× flops
   on the *small* diagonal block only); a triangular-masked syrk variant is a **real kernel change**
-  (group-index masking, *not* an epilogue arg — v3, Opus/Fable DEFECT), deferred as an
+  (group-index masking, *not* an epilogue arg — v3, review DEFECT), deferred as an
   optimization, not claimed as free.
 - **cuSOLVER `potrf`/`trsm` (interim) for the small diagonal blocks:** the diagonal
   factorization and off-diagonal solve are low-flop (the diagonal block is `nscol×nscol`,
@@ -226,7 +226,7 @@ Dense per-supernode work on device goes through a small interface —
   **benchmark baseline / context arm** (pure-vs-cuBLAS attribution, §8.2).
 
 Backend selection is a Preferences-baked const, so swapping backends is a flag, not a loop
-rewrite. **Caveat (Fable D5):** because `potrf`/`trsm` are cuSOLVER-only in M6a, the
+rewrite. **Caveat (review D5):** because `potrf`/`trsm` are cuSOLVER-only in M6a, the
 "backend flip" is really *per-op* (pure gemm/syrk + vendor potrf/trsm) until §6's device
 factorization lands; the interface reflects this (four independent op hooks, not one switch).
 
@@ -256,13 +256,13 @@ scatter kernel.
 refactor-invariant**, so they are computed **once on the host** at `GPUSymbolic` build time
 and stored (host keeps the pattern → **zero pattern H2D per refactor**, satisfying §9.A's
 "0 pattern H2D" gate). The resolved target rows `ir` + run structure `rs` (per cross-edge) are
-uploaded once as `d_irrs` (§2.3/§5.3 — budgeted). **v3 (Fable DEFECT):** `relmap` is dropped —
+uploaded once as `d_irrs` (§2.3/§5.3 — budgeted). **v3 (review DEFECT):** `relmap` is dropped —
 it's a per-supernode *transient* (`relmap[row]=k`, refilled every supernode), not a pattern
 array, so "uploaded once" was meaningless; the precomputed `ir` already *is* the resolved scatter
 targets. The scatter kernel is a simple indexed add (pure Julia — the sparse part, trivial
 *given* the precomputed run structure; the non-trivial scan is host-side and one-time).
 
-### §4.3 Failure semantics (pivot detection) — Fable BLOCKER
+### §4.3 Failure semantics (pivot detection) — review BLOCKER
 `cholesky!` sets `F.ok=false`, records `fail_col`, and returns early on a non-SPD pivot.
 cuSOLVER `potrf` reports failure via a **device** `devinfo`. To avoid a per-supernode D2H sync
 (which would serialize the async pipeline), M6 uses **deferred batched detection**: each GPU
@@ -294,8 +294,8 @@ rowind(d)`, which by the **etree row-subtree property** (a below-diagonal row in
 superset invariant) is an ancestor of `d`. So an upward-closed GPU set **never emits a
 device→host update edge**: all cross-frontier edges point CPU→GPU. This is what makes the
 traffic one-way. The single tunable is `frontier_cutoff`; its default comes from the Phase-0
-measured CPU-vs-GPU per-shape crossover on galen (§8.3), with a derivation comment.
-**Honesty (Opus):** upward closure can pull a small, low-flop supernode onto the GPU if it sits
+measured CPU-vs-GPU per-shape crossover on an RTX 4070 (§8.3), with a derivation comment.
+**Honesty (review):** upward closure can pull a small, low-flop supernode onto the GPU if it sits
 above a heavy subtree; "small stays on CPU" holds only for nodes *not* on a GPU-ancestor path.
 Near-root supernodes are typically dense so this is usually negligible. **v3: the v2 "puncture"
 escape hatch is deleted** — keeping a near-root node on CPU while its descendants are GPU would
@@ -314,7 +314,7 @@ symbolic-time-sized arena), and freed at refactor end. This makes "upload once" 
 needs no slot-reuse protocol, and cannot deadlock. The boundary set and its total bytes
 `Σ_boundary (nsrow·ncol·sizeof(T))` are **computable at symbolic time** (pattern-only).
 
-Budget against **queried** free memory (`CUDA.available_memory()` on galen ≈ 11.57 GiB after
+Budget against **queried** free memory (`CUDA.available_memory()` on an RTX 4070 ≈ 11.57 GiB after
 context) at device-buffer-allocation time, with a safety margin:
 `d_nzval` (nnzL·`sizeof(T)`) + `d_cbuf` (`max_extend_rows²`·`sizeof(T)` — verified: `ws.c` in
 `types.jl` is `(max_extend_rows,max_extend_rows)`; `max_update_size` is a diagnostic, not a
@@ -415,28 +415,28 @@ device (§7, no full-factor D2H; only `b`/`x` vectors transfer), on the CPU arm 
    miss, we do not silently lower it.)*
 2. **No regression** on the existing M1/M2 gate set: with the auto frontier, small/medium
    matrices stay on CPU (or the ext isn't even constructed, §2.2) → regression ≤ the harness's
-   established locked-clock run-to-run band (a concrete number from galen/wintermute, not
+   established locked-clock run-to-run band (a concrete number from a Ryzen 9 5900X and a Ryzen 5 7640U, not
    "noise").
 3. GPU-enabled PureSparse **still beats CHOLMOD+OpenBLAS** on the stratum, **both own-ordering
    AND under an identical `GivenOrdering(p)` permutation** (req 2's mandatory same-perm arm —
    restored; v1 dropped it).
 
-All gate numbers are **medians** (CLAUDE.md benchmarking; the `min`-based Phase-0 kernel numbers
+All gate numbers are **medians** (CONTRIBUTING.md "Benchmarking"; the `min`-based Phase-0 kernel numbers
 were fine for the wide-margin flip decision but the gate must not inherit them).
 
 ### §8.2 Context arms (reported, not gated)
 cuDSS (NVIDIA sparse, black-box, like faer for QR); pure-vs-cuBLAS kernel attribution (§3);
 the IPM-cycle cost both ways (factor + solve×k — cheap on the GPU arm now that device solves
-avoid re-transfer, §7); **multi-threaded CHOLMOD+OpenBLAS** (Opus DEFECT — the gate is
+avoid re-transfer, §7); **multi-threaded CHOLMOD+OpenBLAS** (review DEFECT — the gate is
 single-thread-CPU per req 2, which is the correct *contractual* comparison but reads as
 GPU-vs-one-core; this arm shows GPU-vs-best-CPU so the headline isn't misread).
 
 ### §8.2a Multi-device confirmation (the two-host gate bar)
-Every prior PureSparse gate verdict required **two clock-locked hosts** ([[reference_benchmark_machines]]).
-For M6 the second GPU host is a **neuromancer eGPU** (planned). Two cases: an **NVIDIA** eGPU gives
-a second CUDA data point + the two-host confirmation; an **AMD** eGPU additionally **verifies the
+Every prior PureSparse gate verdict required **two clock-locked hosts**.
+For M6 the second GPU host is an external GPU attached to a second machine (planned). Two cases: an **NVIDIA** GPU gives
+a second CUDA data point + the two-host confirmation; an **AMD** GPU additionally **verifies the
 KernelAbstractions portability claim** (the pure kernel running on ROCm — currently theoretical,
-KA==CUDA measured only on NVIDIA). Until the second host exists, galen is the sole gate host and
+KA==CUDA measured only on NVIDIA). Until the second host exists, the RTX 4070 host is the sole gate host and
 that limitation is stated in the verdict, not hidden.
 
 ### §8.3 Stratum spec (pin criteria BEFORE measuring — anti-cherry-pick)
@@ -457,7 +457,7 @@ GPU factor: **0 device-pool allocations after setup** (cuSOLVER workspace + `dev
 + boundary arena + stats arrays pre-allocated at factor construction via `bufferSize`; low-level
 cuSOLVER API, not the auto-workspace wrappers) AND **0 pattern H2D** (§4.2); host bytes per warm
 refactor **≤ `c_launch · (#GPU kernel launches)`** with `c_launch` a measured per-launch
-constant (v3, Opus/Fable DEFECT — the count scales with #GPU-supernodes, so a bound *independent
+constant (v3, review DEFECT — the count scales with #GPU-supernodes, so a bound *independent
 of nsuper* is the wrong shape; if a zero-host-alloc launch path is demonstrated first, gate that
 instead)."* The per-launch floor is measured first (remaining Phase-0), then gated as a ceiling.
 
@@ -482,7 +482,7 @@ oracle** (in-loop correctness reference + benchmark baseline) on the small diago
 `potrf`/`trsm`. **COMMITTED follow-up (user: "obviously write pure for portability"): pure device
 `potrf`/`trsm` WILL be written — REQUIRED for full AMD/Intel (ROCm/oneAPI) portability, since
 cuSOLVER is NVIDIA-only** (optional for NVIDIA-only performance, but the portability pitch is only
-partial until they exist). **Scope honesty (Opus):** M6a's gate closes with cuSOLVER on the
+partial until they exist). **Scope honesty (review):** M6a's gate closes with cuSOLVER on the
 low-flop pivoted diagonal — so "M6a closes on a pure kernel" is true only for the flop-dominant
 trailing update + solves; a fully vendor-free, fully portable factorization lands with the pure
 `potrf`/`trsm` follow-up.
@@ -523,7 +523,7 @@ downloads, by upward closure); a **synchronous v1 schedule** (streams only if th
 `d_cbuf`/`d_boundbuf` are retired. Left-looking `cholesky!` stays the CPU product path + oracle
 arm; `gpu_cholesky_sync!`/`_hybrid!` stay as in-loop reference arms until the gate closes.
 
-## §M Multifrontal engine (Path B — amendment F; Fable-advised 2026-07-17)
+## §M Multifrontal engine (Path B — amendment F)
 
 Replaces the left-looking per-descendant GPU updates (launch-bound) with front assembly: each
 front does **one** potrf + trsm + syrk + a scatter per child (≈ `4 + nchildren` launches),
@@ -537,7 +537,7 @@ region `U_s` (`(nsrow−nscol)²`) lives in a separate arena. Per front:
 1. **Extend-add** each child's `U_c` into the panel + `U_s` regions (one scatter per child).
 2. `potrf` on `panel[1:nscol,1:nscol]`; 3. `trsm` on `panel[nscol+1:nsrow,1:nscol]`;
 4. **`U_s = (extend-added trailing block) − L21·L21ᵀ`** — `gpu_syrk_nt!(U_s, L21, −1, 1)`, **β=1**
-into the already-assembled trailing block. **CRITICAL (Fable pitfall #1): `U_s` MUST include the
+into the already-assembled trailing block. **CRITICAL (pitfall #1): `U_s` MUST include the
 extend-added trailing block** (the multifrontal *relay* of generation-skipping contributions) —
 `−L21·L21ᵀ` alone silently drops them (passes toy tests, fails real matrices). Lower-triangle
 discipline throughout (`a ≥ b`).
@@ -619,15 +619,15 @@ StrictMode-checks-disabled configuration like the CPU gate.
 
 ## §12 Task list
 
-**Phase 0 (DONE):** CUDA.jl functional on galen; **pure KA FP64 gemm beats cuBLAS 1.14×,
+**Phase 0 (DONE):** CUDA.jl functional on an RTX 4070; **pure KA FP64 gemm beats cuBLAS 1.14×,
 portable, generic-`T`, relerr 0** (`benchmark/gpu/ka_gemm.jl`); launch latency 5.5 µs; PCIe
 pinned 13.4 GB/s. Remaining Phase-0: §8.3 stratum selection + CPU baselines + host-alloc floor
 (feeds §8.1's 2×, the frontier cutoff, and §9.A).
 
-**Phase 1:** this v2 → two independent adversarial reviews (Fable + Opus) → v3. Carries the
+**Phase 1:** this v2 → two independent adversarial reviews (two reviewers) → v3. Carries the
 three §9 amendments for user sign-off.
 
-**Phase 2 (each step lands with tests; GPU items run on galen, rsync+verify first):**
+**Phase 2 (each step lands with tests; GPU items run on an RTX 4070, from a clean checkout of the commit under test):**
 1. Ext scaffolding (`CUDA`/`KernelAbstractions` weakdeps; loads-with-CUDA-absent CI job).
 2. Trim gate vs the weakdep `Project.toml` — first, not last (§11).
 3. Pure device dense-kernel module: gemm/syrk (the proven kernel) + syrk-shape + α=−1/β=1
@@ -642,7 +642,7 @@ three §9 amendments for user sign-off.
    (§4.3).
 8. make-solve-ready D2H + CPU solve (§7); numeric oracle (§10.1) full-zoo + `--check-bounds`.
 9. Alloc/transfer discipline (§9.A) in checks-disabled config.
-10. Gate on galen (§8) + §8.3 stratum + context arms; frontier cutoff calibrated + documented.
+10. Gate on an RTX 4070 (§8) + §8.3 stratum + context arms; frontier cutoff calibrated + documented.
 11. **M6b:** blocked device-LDL (§6) — its own kernels, oracle, zero-alloc gate; then re-gate.
 
 **Track 2 (parallel, mostly landed):** pure gemm/syrk **done and winning**; remaining is pure

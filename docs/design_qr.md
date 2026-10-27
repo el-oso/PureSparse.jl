@@ -6,19 +6,20 @@ PureSparse.jl as **milestone M5**, scheduled before the GPU backend, which is re
 family **from published papers only** — SuiteSparseQR and CHOLMOD source are GPL and are
 never read, in any form (§11; same absolute policy as `design.md` §11).
 
-Produced by the same process that produced `design.md`: a first comprehensive design
-(v1, Fable), then **two independent adversarial reviews** — Opus (1 BLOCKER, 5 DEFECTs,
-6 NITs; `docs/design_qr_review.md`) and a second, independent Fable pass that did not see
-Opus's findings (3 BLOCKERs, 9 DEFECTs, 8 NITs; `docs/design_qr_review_fable.md`) — with
-the two highest-severity findings (the `vcount` off-by-one and the `beta=2/(vᵀv)`
-division-by-zero) independently re-derived and confirmed by the coordinator before this
-revision. §0 is the full changelog. All BLOCKERs and DEFECTs from both reviews are fixed
-below; every fix is traceable to a review finding via its ID. Not yet implemented.
+Produced by the same process as `design.md`: a first comprehensive design (v1), then **two
+independent adversarial reviews** — review 1 (1 BLOCKER, 5 DEFECTs, 6 NITs;
+`docs/reviews/design_qr_review_1.md`) and review 2, written without sight of review 1's
+findings (3 BLOCKERs, 9 DEFECTs, 8 NITs; `docs/reviews/design_qr_review_2.md`) — with the two
+highest-severity findings (the `vcount` off-by-one and the `beta=2/(vᵀv)` division by zero)
+independently re-derived and confirmed before this revision. §0 is the full changelog. All
+BLOCKERs and DEFECTs from both reviews are fixed below; every fix is traceable to a review
+finding via its ID. This design is implemented (milestone M5, see
+[`../ROADMAP.md`](../ROADMAP.md)).
 
 Companion documents: [`design.md`](design.md) (Cholesky/LDLᵀ, the canonical reference
 for conventions used here), [`../ROADMAP.md`](../ROADMAP.md) (milestone status),
-[`design_qr_review.md`](design_qr_review.md) and
-[`design_qr_review_fable.md`](design_qr_review_fable.md) (the two v1 reviews this
+[`reviews/design_qr_review_1.md`](reviews/design_qr_review_1.md) and
+[`reviews/design_qr_review_2.md`](reviews/design_qr_review_2.md) (the two v1 reviews this
 revision fixes).
 
 ---
@@ -31,22 +32,22 @@ independently and their BLOCKER/DEFECT sets overlap); each entry says which revi
 found it.
 
 **BLOCKERs (all three fixed; two were found independently by both reviewers and
-re-derived/confirmed by the coordinator before this revision — treated as certain):**
+re-derived and confirmed before this revision — treated as certain):**
 
-- **B1** (Opus BLOCKER-1 + Fable B1, coordinator-confirmed) — §3.4's `vcount`
+- **B1** (review 1 BLOCKER-1 + review 2 B1, independently confirmed) — §3.4's `vcount`
   recurrence `vcount[k] = a_k + Σ_child (vcount[c] − 1)` went **negative** whenever an
   etree child structurally evaporates (`vcount[c]==0` contributes no pivot row to
   retire, but the formula subtracted 1 for it regardless). Minimal witness:
   `A = [1 1 1]` (chain etree 1→2→3, column 1 evaporates) gives `vcount = [1,0,−1]`.
   Fixed to `vcount[k] = a_k + Σ_child max(vcount[c] − 1, 0)` (§3.4). Both reviewers
-  brute-forced the corrected formula clean: Opus 2424/2424 random trials, Fable's
+  brute-forced the corrected formula clean: review 1 2424/2424 random trials, review 2's
   "live-children form" 4000/4000 (0 failures either way) once the max-clamp is applied.
   A negative/under-sized `vcount` corrupts `nnzV`/`vptr` sizing — a memory-safety bug
-  on ordinary rank-deficient input (CLAUDE.md req 5), not a corner case (~5% of Opus's
+  on ordinary rank-deficient input (CONTRIBUTING.md req 5), not a corner case (~5% of review 1's
   random trials contained an evaporation). The §9.1 superset invariant does **not**
   catch this (it is an over-allocation guard; under-allocation is the opposite failure
-  — Opus DEFECT-4, fixed as part of B1, see §9.1 item 3). §3.4's claim that a dead
-  column's row of R is "structurally empty" was also wrong (Fable D9: `rcount[k]` can
+  — review 1 DEFECT-4, fixed as part of B1, see §9.1 item 3). §3.4's claim that a dead
+  column's row of R is "structurally empty" was also wrong (review 2 D9: `rcount[k]` can
   exceed 1 for a dead `k`, e.g. `A=[1 1 1]` again) — corrected to "numerically empty."
   **Cross-checked against `faer`'s sparse QR** (§11): its supernodal Householder
   symbolic pass propagates `min(max(s_count, panel_width) − panel_width, s_col_count)`
@@ -57,9 +58,9 @@ re-derived/confirmed by the coordinator before this revision — treated as cert
   upper bound this design's `vcount` does not currently enforce; noted as a plausible
   additional test invariant in §9.1 item (d), not required since B1's actual bug —
   negative counts — is already fixed without it.)
-- **B2** (Fable B2, judgment call — resolved by redesigning the row-numbering scheme,
+- **B2** (review 2 B2, judgment call — resolved by redesigning the row-numbering scheme,
   then independently cross-checked against `faer`'s working sparse QR at the
-  coordinator's direction) — §3.4/§1.4/§4.5's original convention ("pivot row of
+  design owner's direction) — §3.4/§1.4/§4.5's original convention ("pivot row of
   column k gets number k; non-pivot rows get numbers > n") is unrepresentable: for
   `m < n` (a declared goal, §1.1) a live column k>m has no physical row to number "k"
   (witness: `A=[0 1]`, m=1,n=2 — column 2 is live and wants row-number 2, but m=1);
@@ -78,7 +79,7 @@ re-derived/confirmed by the coordinator before this revision — treated as cert
   to the caller (factor the transpose, matching this design's own §6.3), which is a
   narrower contract than this design's stated goal (§1.1) — so the fix here remains
   necessary, not something `faer`'s stricter choice would have let us skip.
-- **B3** (Fable B3, coordinator independently re-derived and confirmed) — §4.4's
+- **B3** (review 2 B3, independently re-derived and confirmed) — §4.4's
   `beta = 2/(vᵀv)` had no zero-norm guard. Reachable and distinct from the
   `vcount[k]==0` structurally-dead case: a column can be symbolically live
   (`vcount[k]>0`, nonempty pattern) but numerically all-zero on that pattern (no value
@@ -92,7 +93,7 @@ re-derived/confirmed by the coordinator before this revision — treated as cert
 
 **DEFECTs (all fixed):**
 
-- **D1** (Opus DEFECT-2 + Fable D1, provenance) — `colamd_dense_row_mult`/
+- **D1** (review 1 DEFECT-2 + review 2 D1, provenance) — `colamd_dense_row_mult`/
   `colamd_dense_col_mult` (§1.6/§2.2 pt 5) relabeled: the `max(16, mult·√dim)` shape
   was claimed "own, no external provenance," but it is a direct reuse of the
   *existing* PureSparse AMD dense-row heuristic (`AMD_DENSE_MULT=10.0`/floor `16`,
@@ -110,38 +111,38 @@ re-derived/confirmed by the coordinator before this revision — treated as cert
   √-scaled) independently confirms the paper's own 50% default is what a real
   implementation ships — this design's choice to reuse the √n-scaled AMD shape
   instead remains a deliberate, stated divergence from both, not an unresolved gap.
-- **D2** (Opus DEFECT-1) — dropped the unsupported "Liu 1986c's row-merge tree gives
+- **D2** (review 1 DEFECT-1) — dropped the unsupported "Liu 1986c's row-merge tree gives
   the counting view" citation from §3.4/§11: the survey's Liu-1986c citations are for
   block-Row-Givens merging (§7.2) and deriving `AᵀA`'s etree without forming it
   (§11.5), never a "counting view" in the V-pattern discussion. Relabeled as own
   inference by analogy to the COLAMD paper's Liu-1991 row-merge count recurrence
   (which §2.2 pt 1 already cites correctly).
-- **D3** (Opus DEFECT-3 + Fable N6) — §9.3's gate rule was undefined against a
+- **D3** (review 1 DEFECT-3 + review 2 N6) — §9.3's gate rule was undefined against a
   possibly-TBB-parallel stdlib SPQR baseline. §9.2/§9.3 now state the rule explicitly:
   attempt to pin SPQR to one thread, document whether the pin is honored, and gate
   single-thread-vs-single-thread; if SPQR cannot be pinned, gate against its
   separately-measured single-thread wall time, not the parallel run.
-- **D4** (Opus DEFECT-4) — folded into B1: the superset invariant is now explicitly
+- **D4** (review 1 DEFECT-4) — folded into B1: the superset invariant is now explicitly
   labeled one-sided (over-allocation/stray-fill only), and §9.1 item 3 gains a
   complementary exact-count / under-allocation check.
-- **D5** (Opus DEFECT-5) — `QRSymbolic`'s field comments (§1.4) were ambiguous about
+- **D5** (review 1 DEFECT-5) — `QRSymbolic`'s field comments (§1.4) were ambiguous about
   index space (full `n` vs. non-singleton block `n−n1`) for `rcount`/`rptr`/`vptr`/
   `vrowind`. Now every symbolic-analysis array is explicitly declared block-local
   (size `n′ = n−n1`), matching `parent`, and decoupled from the full-`n`-sized
   `cperm`/`ciperm`.
-- **D6** (Fable D2) — §3.4's "pattern(V_k) = S_k" / "reflector acts on exactly the
+- **D6** (review 2 D2) — §3.4's "pattern(V_k) = S_k" / "reflector acts on exactly the
   rows S_k" overclaimed exactness: `S_k` is a symbolic **upper bound** on the true
-  numeric support (Fable measured 118/4000 random trials with at least one strictly
+  numeric support (review 2 measured 118/4000 random trials with at least one strictly
   overpredicting column — a survivor row's remaining pattern can become empty by
   structural early death with no value cancellation). Reworded throughout §3.4/§9.1;
   the §9.1 H2 test now explicitly asserts `⊇`, not `=` (getting this backwards would
   make the test flaky/wrong once real numeric data is used).
-- **D7** (Fable D3) — §3.2's fill-path proof gained the missing path-endpoint case
+- **D7** (review 2 D3) — §3.2's fill-path proof gained the missing path-endpoint case
   (the detour argument as written only covered *interior* clique-edge vertices; the
   one-clause fix: the new interior vertex `v₁` satisfies `v₁ < min(a,b)` whether the
   replaced edge's other end is itself interior or a path endpoint). Conclusion
   unchanged — brute force already covered it (3000+/3000+, both reviews).
-- **D8** (Fable D4) — §4.6/§7.2 corrected further: `_apply_reflectors_left!` computes
+- **D8** (review 2 D4) — §4.6/§7.2 corrected further: `_apply_reflectors_left!` computes
   `C := Q·C` only (forward block order, the SVD back-transform direction). M5b's
   front trailing-update needs the **transposed** application (`C := Qᵀ·C`, reversed
   block order + transposed T — dormqr's 'T' case), which does not exist in PureBLAS
@@ -149,19 +150,19 @@ re-derived/confirmed by the coordinator before this revision — treated as cert
   derive" conclusion still holds (transposing the block order and the T-triangle use
   is a small extension of the same proven algorithm, not new math) but §4.6/§11 no
   longer imply the existing kernel is usable as-is in either direction.
-- **D9** (Fable D5) — §2.2 pts 1–2 restored COLAMD paper Algorithm 2's `l_k = 0`
+- **D9** (review 2 D5) — §2.2 pts 1–2 restored COLAMD paper Algorithm 2's `l_k = 0`
   branch (`K := ∅`, no `{k}` reference added to any `C_j`) — the condensed
   `C_j = (C_j\Cₖ)∪{k}` formula silently dropped it. The paper notes this "can occur
   for k < n if the matrix is not strong Hall" — routine for the rectangular/
   rank-deficient inputs this milestone targets, not an edge case.
-- **D10** (Fable D6) — fixed SPQR citations: the (1)/(2)/(3) solve-method enumeration
+- **D10** (review 2 D6) — fixed SPQR citations: the (1)/(2)/(3) solve-method enumeration
   the design cites is in paper **§5.1** ("The methods"), not §3.3, in §6.2/§6.3/§5.2.
-- **D11** (Fable D7) — §1.2's "α heuristic documented there" claim removed: the
+- **D11** (review 2 D7) — §1.2's "α heuristic documented there" claim removed: the
   survey names the *existence* of scaled-identity conditioning improvement (§7.5) and
   says its optimal value is "only approximated through heuristics" (§11.5) but
   documents no actual heuristic. Table entry reworded to not overpromise a citation
   the source doesn't contain.
-- **D12** (Fable D8) — §6.3's transpose-factorization identity fixed: from
+- **D12** (review 2 D8) — §6.3's transpose-factorization identity fixed: from
   `Aᵀ·P = QR` follows `A = P·Rᵀ·Qᵀ` (was written `Pᵀ·Rᵀ·Qᵀ`, a display error — the
   operational solve formulas that followed were already correct and are unchanged).
 - **D13** (found during M5 gate closeout, 2026-07-16, not part of the original v1→v2
@@ -186,22 +187,22 @@ re-derived/confirmed by the coordinator before this revision — treated as cert
   users' workloads genuinely are one-shot) but is no longer the deciding inequality.
 
 **NITs folded in** (both reviews): the `sign(0):=+1` reflector convention made
-explicit (§4.4, Opus N4); §7.3's τ-boundary wording fixed (exact at τ<0, upper bound
-at τ≥0 including the boundary, Fable N5); the pivot-selection tie-break rule for
+explicit (§4.4, review 1 N4); §7.3's τ-boundary wording fixed (exact at τ<0, upper bound
+at τ≥0 including the boundary, review 2 N5); the pivot-selection tie-break rule for
 inherited rows made precise rather than referencing an undefined "current number"
-(§3.4, Fable N4 — resolved as part of B2's redesign); §2.2.6's "AMD wins most of its
-large LS set" softened to match SPQR Table VI's actual plurality, not majority (Fable
+(§3.4, review 2 N4 — resolved as part of B2's redesign); §2.2.6's "AMD wins most of its
+large LS set" softened to match SPQR Table VI's actual plurality, not majority (review 2
 N3); §2.2 pt 3's "rejected by the paper's own experiments" wording loosened for the
 two metrics the paper didn't experimentally test (exact degree: cost-rejected without
-testing; approximate deficiency: "mixed... about the same," not rejected — Fable N2);
+testing; approximate deficiency: "mixed... about the same," not rejected — review 2 N2);
 §2.2 pt 1's "identical algebra" claim now states the actual offset
-(`vcount[k] = l_k + 1`) rather than asserting bare identity (Opus N1/Fable N1 — this
+(`vcount[k] = l_k + 1`) rather than asserting bare identity (review 1 N1/review 2 N1 — this
 offset is exactly where B1's bug lived); §7.1's staircase citation corrected to SPQR
-paper §2.3 (defines it) / §3.1 (illustrates it), not §3.1 alone (Fable N7); task 3's
+paper §2.3 (defines it) / §3.1 (illustrates it), not §3.1 alone (review 2 N7); task 3's
 checklist (§10) now names the specific Larimore-thesis precision points a bare
-journal-paper reading would miss (Opus N6).
+journal-paper reading would miss (review 1 N6).
 
-**New permitted-source category added** (coordinator-directed, post-review): `faer`
+**New permitted-source category added** (added after the reviews): `faer`
 (the Rust linear algebra crate, MIT-licensed) is added to §11 as a legitimate,
 citable third-party reference — distinct from and unrelated to the CHOLMOD/SuiteSparse
 GPL prohibition, which is unchanged and absolute — the same standing PureBLAS.jl
@@ -211,7 +212,7 @@ cross-check B1, B2, and D1 against a real, working sparse-QR/ordering implementa
 architecture (star-matrix reuse, left-looking Householder, COLAMD-from-the-paper all
 stand unchanged).
 
-**Provenance correction in the design's favor** (Fable, "Verified clean" §4): the
+**Provenance correction in the design's favor** (review 2, "Verified clean" §4): the
 §3.4 "one row of S_k retires as pivot, the remainder pass to parent(k)" convention,
 previously labeled "our own derivation" as part of hotspot H2, is already published —
 Oliveira 2001, quoted verbatim in the survey (p.57): "One row is selected as a pivot,
@@ -221,8 +222,8 @@ the physical-slot indexing (now specified precisely by B2's fix) remain our own.
 and §11's provenance line are updated accordingly.
 
 **Unchanged (verified sound by both independent reviews):** the H1 star-matrix
-fill-equivalence derivation (confirmed by independent brute force: Opus 252+2424/2424,
-Fable 3000/3000, 0 failures either way, modulo D7's proof-wording fix); H3's rank
+fill-equivalence derivation (confirmed by independent brute force: review 1 252+2424/2424,
+review 2 3000/3000, 0 failures either way, modulo D7's proof-wording fix); H3's rank
 policy honesty (the Foster–Davis framing, the `dropped_norm` certificate, the `\`
 basic-solution semantics); H6's COLAMD specification against the primary paper (all
 checked claims faithful except D1/D9); the overall M5a-vs-M5b architecture decision
@@ -236,14 +237,12 @@ every name/constant traced to a permitted source, D1/D2 were mislabeling, not le
 
 ### 1.0 Milestone placement and numbering
 
-**M5 = sparse QR** (this document). **M6 = GPU** (identical content to the old M3, see
-`design.md` §8 — deliberately deferred last because the dev box has no NVIDIA GPU;
-ROADMAP 2026-07-13 note). Completed milestones keep their numbers (M1 LLᵀ, M2 LDLᵀ, M4
-drop-in; M3 was never started under that number). All references to "M3 (GPU)" in older
-ROADMAP text should be read as M6 from now on; `ROADMAP.md` carries the renumber note.
+**M5 = sparse QR** (this document). **M6 = GPU** (see `design.md` §8). Completed milestones
+keep their numbers (M1 LLᵀ, M2 LDLᵀ, M4 drop-in); M3, the original GPU plan, was folded into
+M6. Milestone status and open work are in `ROADMAP.md`.
 
-Why QR now, before GPU: (a) GPU work is unverifiable on this machine and is already
-parked pending `galen` (ROADMAP); (b) QR completes the CPU factorization triad —
+Why QR before GPU: (a) GPU verification needs an NVIDIA device, which was not available when this was
+written; (b) QR completes the CPU factorization triad —
 PureSparse already has both classical *alternatives* to QR (normal equations via
 `cholesky`, augmented-system via `ldlt`; survey §7.5) but not QR itself, which is the
 method of choice for ill-conditioned and rank-deficient least squares (survey §7 intro);
@@ -260,7 +259,7 @@ m ≥ n), basic solution (m < n or rank-deficient), minimum-norm solve via the d
 factor-Aᵀ pattern (§6.3; George–Heath–Ng 1984 via survey §7.2). Rank detection with a
 magnitude threshold τ (§5). Column-singleton pre-elimination (§2.3; SPQR paper §2.1).
 Same hard requirements as the rest of the package: analyze-once/factorize-many
-(`qr!(F, A2)` zero-alloc, CLAUDE.md reqs 5/7), generic over `T<:Real` with Float64 the
+(`qr!(F, A2)` zero-alloc, CONTRIBUTING.md reqs 5/7), generic over `T<:Real` with Float64 the
 tuned path (req 3), trim-compatible (req 4), wall-time gate (req 2, §9.3).
 
 **Non-goals (M5).**
@@ -506,11 +505,11 @@ Sources, both in the archive:
 - **Primary (this section is written from it, read in full):** Davis, Gilbert,
   Larimore, Ng, *A Column Approximate Minimum Degree Ordering Algorithm*, ACM TOMS
   30(3):353–376, 2004
-  (`refs/linear_algebra/QR/davis_gilbert_larimore_ng_2004_colamd.pdf` — the companion
+  (local copy: `refs/linear_algebra/QR/davis_gilbert_larimore_ng_2004_colamd.pdf` — the companion
   "Algorithm 836" software paper is not needed; the algorithm content is here).
 - **Implementation-depth companion (for task 3):** Larimore, *An Approximate Minimum
   Degree Column Ordering Algorithm*, MS thesis, University of Florida, 1998
-  (`refs/linear_algebra/QR/larimore_1998_colamd_thesis.pdf`, 171 pp.) — the full
+  (171 pp.; local copy: `refs/linear_algebra/QR/larimore_1998_colamd_thesis.pdf`) — the full
   derivation the journal paper was condensed from, and the reference the paper itself
   defers to twice ("Details … are given in Larimore's [1998] thesis"). Its Chapter 4
   specifies the working data structures and routine decomposition at implementation
@@ -703,7 +702,7 @@ magnitudes:
    `solve_minnorm!` already rejects any `n_dead > 0` factor). For the motivating
    LP-slack class (slack columns are scaled unit vectors, always well-conditioned) the
    guard never fires, and the fast path pays one compare per singleton — the whole warm
-   call remains `@allocated == 0` (CLAUDE.md req 5), all buffers pre-allocated at
+   call remains `@allocated == 0` (CONTRIBUTING.md req 5), all buffers pre-allocated at
    compose time (`a22buf`/`a22map`/`r1srcpos` fields on `QRFactor`).
 
 This is what makes the M5 D13 warm gate reachable on stratum (i): the warm `qr!` path
@@ -775,7 +774,7 @@ Consequences, all for free:
 - `etree(S)` via the existing `etree.jl` = the column elimination tree of A.
 - `column_counts(S)` via the existing `counts.jl` = `rcount` (row sizes of R). That
   implementation was built from the Gilbert–Ng–Peyton algorithm
-  (`refs/linear_algebra/QR/gilbert_ng_peyton_1992_ornl_tm12195.pdf` is the primary
+  (Gilbert, Ng, Peyton, *An Efficient Algorithm to Compute Row and Column Counts for Sparse Cholesky Factorization*, ORNL/TM-12195, Oak Ridge National Laboratory, 1992, is the primary
   source with full pseudocode and Lemmas 1–4; verified: `counts.jl`'s
   first-descendant/maxfirst/prevleaf/path-halving structure is that algorithm) — and
   GNP92 itself states the QR application in its introduction ("Our algorithms can be
@@ -816,7 +815,7 @@ own bookkeeping on top of the George–Ng/George–Liu–Ng pattern results, by 
 the COLAMD paper's Liu-1991 row-merge count recurrence — §2.2 pt 1 — not a second,
 distinct Liu-1986c source.)
 
-**Provenance correction (in this design's favor — Fable review):** the "one row of
+**Provenance correction (in this design's favor — review 2 review):** the "one row of
 S_k retires as pivot, the rest pass to parent(k)" convention below, previously
 presented as this document's own invention (hotspot H2), is already published:
 Oliveira 2001, quoted verbatim in the survey (p.57): *"One row is selected as a
@@ -844,7 +843,7 @@ design's own.
   pattern, an upper bound on the true numeric support, not a claim that every row of
   `S_k` is nonzero in every instance (a survivor row's remaining column pattern can
   become empty by structural early death with no value cancellation — measured:
-  ~3% of columns in Fable's 4,000-trial random check strictly overpredicted). The
+  ~3% of columns in review 2's 4,000-trial random check strictly overpredicted). The
   numeric loop (§4.1) always operates over the full symbolic `S_k`; this is safe
   (confirmed 4,000/4,000 trials: no numeric nonzero ever lands outside `S_k`) and
   costs only wasted flops on the zero entries, never a correctness or under-allocation
@@ -876,7 +875,7 @@ design's own.
   1, 0) = 0 + max(−1, 0) = 0` (dead). Final: `vcount = [1, 0, 0]`, matching the true
   `|S_k| = [1, 0, 0]` exactly — the unclamped formula would instead give
   `vcount[3] = 0 + (0 − 1) = −1`, a negative allocation. Both reviews' brute force
-  confirms the clamped formula matches `|S_k|` in every trial (Opus: 2424/2424; Fable:
+  confirms the clamped formula matches `|S_k|` in every trial (review 1: 2424/2424; review 2:
   4000/4000, 0 failures either way).
 - **Structurally dead columns.** `vcount[k] == 0` ⟺ `S_k = ∅` (Oliveira's evaporation):
   `beta[k] = 0` permanently, `pivotslot[k] = 0` (sentinel, no physical row), and row k
@@ -1019,7 +1018,7 @@ configuration only, design.md §9.1 layer-2 discipline) and as the §9.1 superse
 
 `qr(A; ordering, tol)` = singletons (§2.3) + `symbolic_qr` + numeric. `qr!(F, A2)` for
 pattern-identical A2: reset cursors/stats, replay §4.1 — **zero allocations**
-(CLAUDE.md req 5; gated in the StrictMode-checks-disabled configuration, same as
+(CONTRIBUTING.md req 5; gated in the StrictMode-checks-disabled configuration, same as
 `cholesky!`). No assembly map is needed (unlike design.md §4.2): the scatter is a direct
 CSC walk through `riperm`, already O(nnz) with no searches. An `n1 > 0` (singleton-
 composed) factor refactors the same way — A22-buffer value refresh + this same replay
@@ -1031,7 +1030,7 @@ warm-refactor update), still zero-alloc.
 Textbook reflector (Golub–Van Loan-style; also the survey's `gallery('house')`):
 `H = I − beta·v·vᵀ`, `v[pivot] = 1` implicit? — **No: v is stored in full with its pivot
 entry**, `beta = 2/(vᵀv)`, and the sign choice `v[pivot] = x[pivot] + sign(x[pivot])·‖x‖`
-avoids cancellation, with the convention **`sign(0) := +1`** (Opus N4 — needed when
+avoids cancellation, with the convention **`sign(0) := +1`** (review 1 N4 — needed when
 `x[pivot] == 0` but `‖x‖ > 0`; matches PureBLAS's own `qr.jl` reflector, `head ≥ 0 ?
 nrm : −nrm`, so the two codebases agree on this edge case even though V/`vval` never
 cross the PureBLAS ABI). `R[k,k] = −sign(x[pivot])·‖x‖`. Rationale for storing v
@@ -1044,7 +1043,7 @@ free; the packed copy is then reused as the source for `vval`). This convention 
 self-contained here and tested against `H·x = (R_kk, 0…)ᵀ` directly; it deliberately
 does not need to match LAPACK/faer/anything else since V never crosses an ABI.
 
-**B3 fix — zero-norm guard (BLOCKER, Fable, coordinator-confirmed).** `beta = 2/(vᵀv)`
+**B3 fix — zero-norm guard (BLOCKER, review 2, independently confirmed).** `beta = 2/(vᵀv)`
 divides by zero whenever `x` is exactly zero on the whole pattern `S_k`: then `v = 0`
 identically and `vᵀv = 0`. This is **reachable** and distinct from the `vcount[k]==0`
 structurally-dead case (§3.4): `S_k` can be symbolically nonempty (`vcount[k] > 0`,
@@ -1080,13 +1079,13 @@ scratch operates on the caller's original-shaped RHS, §6).
 corrected 2026-07-14 after an independent re-check caught a coverage gap in the first
 pass — see the note at the end of this section)
 
-Verified by reading `/home/el_oso/Documents/claude/PureBLAS.jl/src/qr.jl`,
+Verified by reading PureBLAS.jl's `src/qr.jl`,
 `cabi_lapack.jl`, **and `svd.jl`** directly:
 
 - PureBLAS **has** dense QR: `geqrf!(A, tau)` — blocked compact-WY (dlarft/dlarfb-style
   T-matrix construction + `gemm!`/`trmm!` trailing update) over a tuned unblocked panel
   (`qr_unblocked!`, faer-port, fused rank-2 apply), for **Float64** and **BlasComplex**.
-  This is the proven-fast path (BlazingPorts-derived, gated on galen).
+  This is the proven-fast path (BlazingPorts-derived, gated on a Ryzen 9 5900X).
 - PureBLAS **also has** the apply-stored-reflectors-to-an-external-matrix algorithm (the
   LAPACK dlarf/dlarfb/dormqr role): `svd.jl`'s `_apply_reflectors_left!` (line ~641),
   used internally for SVD's bidiagonalization back-transform. Read in full — it is the
@@ -1121,14 +1120,14 @@ Verified by reading `/home/el_oso/Documents/claude/PureBLAS.jl/src/qr.jl`,
 - **M5a needs neither.** The left-looking method has no dense panels: its per-column
   work is sparse-indexed level-1 on scattered/packed vectors, which is sparse-domain
   code and belongs in `src/` by the same boundary that puts `updown.jl`'s column loops
-  there (the CLAUDE.md "dense kernels via PureBLAS" rule governs dense block work; the
+  there (CONTRIBUTING.md req 9 (dense kernels via PureBLAS) governs dense block work; the
   only dense-contiguous operation here, the packed-segment norm, goes through PureBLAS
   `nrm2`, which is generic). M5a is therefore **not blocked on PureBLAS at all**.
 - **M5b needs both (a) and (b).** They are scheduled as explicit PureBLAS prerequisite
   tasks in §10 (M5b tasks P1/P2), not assumed. (a) is the front factorization's partial
   QR: factor the pivotal column block, then apply its reflectors to the non-pivotal
   columns — precisely the DLARFG/DLARF/DLARFT/DLARFB decomposition the SPQR paper
-  §3.2 names as its LAPACK usage. (b) is CLAUDE.md req 3 (generic hot paths) applied to
+  §3.2 names as its LAPACK usage. (b) is CONTRIBUTING.md req 3 (generic hot paths) applied to
   the front kernel, mirroring how `potrf!` already has a generic path.
 
 One further PureBLAS observation for M5b planning: `geqrf!` uses module-global grow-on-
@@ -1330,10 +1329,10 @@ discipline, minus the parallelism).
   fallback below.
 - **P2 generic `geqrf!`:** a `T<:Real` generic unblocked path (potrf! precedent in the
   same file family), so PureSparse's front loop stays one generic implementation
-  (CLAUDE.md req 3). This gap is real and unchanged by the P1 correction — no existing
+  (CONTRIBUTING.md req 3). This gap is real and unchanged by the P1 correction — no existing
   PureBLAS code covers it (§4.6).
 
-Both land in PureBLAS with its own gates (OpenBLAS-parity per its CLAUDE.md), before
+Both land in PureBLAS with its own gates (OpenBLAS parity, per PureBLAS's own requirements), before
 M5b's numeric work starts.
 
 ### 7.3 What M5b changes and what it keeps
@@ -1419,7 +1418,7 @@ both directions**: (→) run stdlib `qr` with `ordering=SPQR.ORDERING_FIXED` on
 column-pre-permuted A to impose our permutation; (←) feed stdlib's chosen `F.pcol` into
 PureSparse via `GivenOrdering`.
 
-**D3 fix (Opus DEFECT-3 / Fable N6) — the TBB-parallelism contingency, resolved, not
+**D3 fix (review 1 DEFECT-3 / review 2 N6) — the TBB-parallelism contingency, resolved, not
 just flagged.** An earlier draft only said a possibly-parallel SPQR baseline would be
 "recorded and reported," without stating what that means for the gate *decision* —
 "report" is not a rule. The rule, stated now: (1) the harness attempts to pin
@@ -1450,7 +1449,7 @@ results→JSON, plots from JSON; PkgBenchmark self-regression). Configurations:
 | 2 | SuiteSparseQR via `SparseArrays.qr` (stock) | baseline (the gate, see below) |
 | 3 | 1 vs 2 under identical column permutation (both directions, §9.2) | part of the gate, not supplementary (design.md D2 discipline) |
 | 4 | PureSparse `cholesky(AᵀA)` normal equations | context arm (not a gate): quantifies the §1.2 guidance |
-| 5 | `faer`'s sparse QR (Rust, MIT-licensed, §11) | context arm (not a gate, coordinator-directed addition): a second, independently-engineered reference point beyond CHOLMOD's lineage. Mirrors `BlazingPorts.jl`'s existing dense-kernel probe harness (`bench/rust_compare`: a small `#[no_mangle]` Rust cdylib shim + `ccall` from the Julia benchmark process, single-threaded, same-process interleaved timing) — extend that shim with a `faer_sparse_qr` entry point rather than building new FFI plumbing from scratch. Reported alongside configs 1/2/4 on every gate matrix; not part of the pass/fail inequality below (faer is not the CHOLMOD-equivalent this milestone targets, and its ordering/threshold choices differ enough that a head-to-head gate would conflate ordering quality with kernel throughput exactly as design.md D2 warns against) — but a loss against it is a signal worth investigating, not ignoring. |
+| 5 | `faer`'s sparse QR (Rust, MIT-licensed, §11) | context arm (not a gate, added after the reviews): a second, independently-engineered reference point beyond CHOLMOD's lineage. Mirrors `BlazingPorts.jl`'s existing dense-kernel probe harness (`bench/rust_compare`: a small `#[no_mangle]` Rust cdylib shim + `ccall` from the Julia benchmark process, single-threaded, same-process interleaved timing) — extend that shim with a `faer_sparse_qr` entry point rather than building new FFI plumbing from scratch. Reported alongside configs 1/2/4 on every gate matrix; not part of the pass/fail inequality below (faer is not the CHOLMOD-equivalent this milestone targets, and its ordering/threshold choices differ enough that a head-to-head gate would conflate ordering quality with kernel throughput exactly as design.md D2 warns against) — but a loss against it is a signal worth investigating, not ignoring. |
 
 **Gate (M5 closeout, non-negotiable, wall-time; corrected by D13):** on each gate matrix,
 `median_seconds(PureSparse qr!(F,A) warm refactor + solve) < median_seconds(SparseArrays.
@@ -1503,7 +1502,7 @@ docs page (least-squares guide incl. §1.2 guidance + §5 honesty), drop-in forw
 
 **M5a gate:** §9.1 layers all green (BigFloat oracle, SPQR black-box agreement,
 invariants H1/H2 executable checks, zero-alloc, trim); §9.3 measured on the full gate
-set with the stratified verdict recorded in ROADMAP.
+set with the stratified verdict recorded in the benchmark results.
 
 **M5 closeout gate (unconditional):** §9.3 wall-time inequality on every stratum, both
 permutation arms + §2.2 ordering-quality bound. If M5a's measurement already satisfies
@@ -1551,7 +1550,7 @@ it, M5b is not built (recorded as such); otherwise M5b is mandatory scope.
     roots (§8).
 11. Zoo extension + benchmark arms + **gate measurement and stratified verdict**,
     incl. the COLAMD-vs-AMD-on-AᵀA default decision (§2.2.6) and dense-threshold
-    calibration (ROADMAP entry; this task decides M5b).
+    calibration (this task decides M5b).
 12. Drop-in forwarding + stdlib-parity property checks (observed surface, §6.4/§9.2).
 13. Docs (least-squares guide, API reference, benchmark page from saved JSON).
 
@@ -1571,7 +1570,7 @@ it, M5b is not built (recorded as such); otherwise M5b is mandatory scope.
   Heath handling (§7.3), amalgamation recalibration for QR fronts.
 - 17. Re-run §9.3; M5 closes on the unconditional gate.
 
-### M6 — GPU (renumbered from M3, content unchanged — design.md §8, ROADMAP "M3" section)
+### M6 — GPU (renumbered from M3, content unchanged — design.md §8)
 
 ---
 
@@ -1591,7 +1590,7 @@ of `SparseArrays.qr`'s API surface, outputs, and performance (§9.2's probes wer
 reflection on a running session — kwargs, property names, constants' *names* — never
 wrapper or library source).
 
-**New permitted-source category, v2 (coordinator-directed addition): `faer` (Rust
+**New permitted-source category, v2 (added after the reviews): `faer` (Rust
 linear algebra crate).** `faer` is **MIT-licensed** (verified: license file at
 `https://raw.githubusercontent.com/sarah-quinones/faer-rs/main/LICENSE`, "Copyright (c)
 2026 sarah quiñones el kazdadi") — a completely different provenance category from the
@@ -1650,7 +1649,7 @@ Davis–Gilbert–Larimore–Ng paper all stand as designed):
   (§2.2 pt 5/D1) therefore remains a **deliberate divergence** from both the paper's
   own default and `faer`'s implementation of it — recorded honestly as such, not
   changed, since the reason for the divergence (one dense-threshold convention across
-  the whole ordering layer, §2.2 pt 5) still holds and the coordinator's ask was to
+  the whole ordering layer, §2.2 pt 5) still holds and the goal was to
   resolve the *provenance labeling*, not necessarily match the paper's number.
 
 **Provenance table** (every component, its allowed source):
@@ -1676,13 +1675,23 @@ Davis–Gilbert–Larimore–Ng paper all stand as designed):
 | `faer` (MIT) cross-checks, v2 | `faer-rs` (`sarah-quinones/faer-rs`, MIT), read directly: `qr.rs` (row-numbering B2, `vcount` clamp B1), `amd.rs`/`colamd.rs` (dense-threshold D1) — see the discussion above; distinct permitted-source category from the CHOLMOD/SuiteSparse GPL prohibition, same standing PureBLAS already gives `faer` for dense kernels |
 | Dense QR kernels (M5b) | PureBLAS `geqrf!` (verified present, §4.6); block-reflector apply: `svd.jl`'s `_apply_reflectors_left!` computes `C:=Q·C` only, forward block order (verified present but **direction-limited**, §4.6/§7.2 **D8**) — P1 generalizes/extends it (both `Q·C` and the transposed `Qᵀ·C` M5b's front update actually needs), not a from-scratch derivation of either; generic-`T` `geqrf!` fallback: verified absent, P2 is new work (§7.2) |
 
-Local reference archive (gitignored): `refs/linear_algebra/QR/` holds the five primary
-PDFs cited throughout: `davis2011_spqr_toms.pdf`,
-`davis_rajamanickam_sidlakhdar_survey_2016.pdf` (§7 + §11.5),
-`gilbert_ng_peyton_1992_ornl_tm12195.pdf`, and
-`davis_gilbert_larimore_ng_2004_colamd.pdf` — all read in full for the sections cited —
-plus `larimore_1998_colamd_thesis.pdf` (spot-checked; full ch. 3–4 read is scheduled
-work, §2.2 status note).
+Primary sources cited throughout, all read in full for the sections cited (the PDFs are
+kept in a local, gitignored `refs/linear_algebra/QR/` archive that is not distributed):
+
+- T. A. Davis, *Algorithm 915: SuiteSparseQR: Multifrontal Multithreaded Rank-Revealing
+  Sparse QR Factorization*, ACM TOMS 38(1), 2011 (`davis2011_spqr_toms.pdf`).
+- T. A. Davis, S. Rajamanickam, W. M. Sid-Lakhdar, *A Survey of Direct Methods for Sparse
+  Linear Systems*, Texas A&M University, 2016 (§7 and §11.5;
+  `davis_rajamanickam_sidlakhdar_survey_2016.pdf`).
+- J. R. Gilbert, E. G. Ng, B. W. Peyton, *An Efficient Algorithm to Compute Row and Column
+  Counts for Sparse Cholesky Factorization*, ORNL/TM-12195, Oak Ridge National Laboratory,
+  1992 (`gilbert_ng_peyton_1992_ornl_tm12195.pdf`).
+- T. A. Davis, J. R. Gilbert, S. I. Larimore, E. G. Ng, *A Column Approximate Minimum
+  Degree Ordering Algorithm*, ACM TOMS 30(3):353–376, 2004
+  (`davis_gilbert_larimore_ng_2004_colamd.pdf`).
+- S. I. Larimore, *An Approximate Minimum Degree Column Ordering Algorithm*, MS thesis,
+  University of Florida, 1998 (`larimore_1998_colamd_thesis.pdf`; Chapter 3–4 content was
+  spot-checked rather than read in full, §2.2 status note).
 The one remaining source gap is Gilbert–Li–Ng–Peyton 2001 (BIT 41(4), the QR/LU
 row-count extension) — mitigated by the §3.2 own derivation plus its brute-force
 equivalence test, and by GNP92 (its stated basis) being in the archive.

@@ -1,6 +1,6 @@
 # Adversarial review of `design_qr.md` (v1 draft) — findings
 
-Reviewer: Opus, hostile pass, mirroring the `design.md` v1→v2 review process (that pass
+Reviewer: hostile pass, mirroring the `design.md` v1→v2 review process (that pass
 found "2 BLOCKERs, 7 DEFECTs, algorithmic core verified sound"). Review-only: no code
 written, `design_qr.md` not edited. Clean-room policy honored — only the five archived
 papers, the existing PureSparse/PureBLAS source, and black-box `SparseArrays` output were
@@ -96,7 +96,7 @@ design formula gives `vcount[2] = 0 + (0−1) = −1`. A negative allocation.
 3. `nnzV = Σ vcount` under-counts (or is negative) ⇒ `vptr`/`vval` under-sized ⇒ the numeric
    loop writes `V_k` past its allocation into the next column's slots. That is a
    memory-safety bug and a direct violation of the zero-alloc / exact-sizing contract
-   (CLAUDE.md req 5), precisely on the inputs §5 exists to serve.
+   (CONTRIBUTING.md req 5), precisely on the inputs §5 exists to serve.
 4. **The stated safety net does not catch it.** §3.4/§9.1 name the "superset invariant" as
    H2's protection, but that invariant checks *pattern(V_k) ⊇ produced nonzeros* — an
    OVER-allocation guard. Under-allocation from this bug is the opposite failure and slips

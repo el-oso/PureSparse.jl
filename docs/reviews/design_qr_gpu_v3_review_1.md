@@ -1,6 +1,6 @@
-# M7 GPU-QR design v3 (Fable) — adversarial review (Opus)
+# M7 GPU-QR design v3 — adversarial review
 
-> Review of `design_qr_gpu_v3_fable.md`. Independent, adversarial. All arithmetic recomputed from
+> Review of `design_qr_gpu_v3.md`. Independent, adversarial. All arithmetic recomputed from
 > `benchmark/results/qr_panel_phase0.json` / `qr_front_project.json` directly (not the doc's
 > numbers). Kept as permanent audit trail. Findings to fold into v4.
 

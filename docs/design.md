@@ -4,19 +4,18 @@ Pure-Julia supernodal sparse Cholesky/LDLᵀ solver. Clean-room reimplementation
 CHOLMOD algorithm family (from published papers only) on top of PureBLAS.jl. This is the
 canonical implementation document.
 
-Produced by a dedicated design process: **Fable** (model `claude-fable-5`) wrote the first
-comprehensive design (v1); **Opus** adversarially reviewed it against the actual AMD paper
-(fetched and read), against PureBLAS's real source (signatures/semantics verified
-line-by-line), and by hand-tracing the trickiest part of the algorithm (the left-looking
-update schedule) — finding 2 BLOCKERs (clean-room provenance issues) and 7 DEFECTs, while
-verifying the algorithmic core sound; **Fable** then produced this corrected, final
-revision (v2), fixing every BLOCKER/DEFECT. See `§0` below for the full changelog.
+This is the second revision (v2) of the design. The first draft (v1) was adversarially
+reviewed against the AMD paper, against PureBLAS's real source (signatures and semantics
+verified line by line), and by hand-tracing the trickiest part of the algorithm (the
+left-looking update schedule). The review found 2 BLOCKERs (clean-room provenance issues)
+and 7 DEFECTs and verified the algorithmic core sound; v2 fixes every BLOCKER and DEFECT.
+See `§0` below for the changelog.
 
-For milestone status and the current task list, see [`../ROADMAP.md`](../ROADMAP.md).
+For milestone status, see [`../ROADMAP.md`](../ROADMAP.md).
 
 ---
 
-## §0 Changelog from Fable review v1
+## §0 Changelog from the review of v1
 
 - **B1** Renamed `Symbolic.maxcsize`/`maxesize` → `max_update_size`/`max_extend_rows`
   (§1.2, §3.6); quantities now derived by independent reasoning from the §4.3 schedule,
@@ -285,7 +284,9 @@ in CSC (equivalently lower in CSR). One allocation pass; done once per `Symbolic
 
 ### 3.2 Elimination tree
 
-Liu's algorithm (Liu 1986, *The role of elimination trees in sparse factorization*):
+Liu's algorithm (Liu 1986, *A compact row storage scheme for Cholesky factors using
+elimination trees*; survey in Liu 1990, *The role of elimination trees in sparse
+factorization*):
 single pass over the upper-triangular pattern with a path-compressed `ancestor[]` array.
 Then compute a postorder (children-first DFS via first-child/next-sibling arrays built
 from `parent`) and relabel `perm`, `parent`, and A's pattern by it. Postordering is
@@ -336,8 +337,8 @@ even when patterns don't nest, padding with explicit zeros, to fatten dense bloc
 BLAS-3). **Those papers motivate the transformation but prescribe no thresholds; the
 thresholds below are our own free tunables (see §1.4 provenance note).**
 
-Bottom-up FIXPOINT pass over the supernodal etree (design §3.5 revision, ROADMAP task
-7b'; see the `relaxed_amalgamation` docstring in `src/symbolic/supernodes.jl` for the
+Bottom-up FIXPOINT pass over the supernodal etree (design §3.5 revision, amalgamation fixpoint;
+see the `relaxed_amalgamation` docstring in `src/symbolic/supernodes.jl` for the
 full algorithm and the exact union-height row estimate that replaced the original
 single-pass proxy): merge child c into parent s if the zero-fraction of the merged
 block,
@@ -353,7 +354,7 @@ is at or below the tier limit for the merged width `nc`:
 | ≤ `amalg_cols[3] = 128` | `amalg_zmax[3] = 0.08` | Wide panels already run near peak; padding is increasingly pure loss, and panel growth starts pressuring the update-buffer's cache residency, so only near-nesting qualifies. |
 | > 128 | no merge | — |
 
-**Empirically recalibrated 2026-07-13 (ROADMAP task 7b')** from the original
+**Empirically recalibrated** from the original
 starting-point numbers (`(8,32,128)`/`(0.9,0.15,0.03)`, picked from flop-inflation/L2
 arithmetic alone before any real measurement was possible) against the M1 wall-time gate
 (§9.3) once the row-count estimate feeding the z-test became exact instead of a proxy —
@@ -699,13 +700,27 @@ performance via SparseArrays; benchmarking against binaries.
 | GPU hybrid | Rennich et al. 2016 (concept) |
 | Workspace bounds (§3.6) | own derivation from §4.3 schedule |
 
-Local reference archive (`refs/linear_algebra/`, gitignored — papers only, never
-distributed) contains, among general linear-algebra/FEM/Krylov material:
-`cholmod_toms.pdf` (Chen–Davis–Hager–Rajamanickam 2008), `Supernodal/liu1986.pdf`,
-`liu1990.pdf`, `liu1993.pdf`, `rothberg1991.pdf`, `ng1993.pdf`, `gilbert1994.pdf`,
-`chapter-direct.pdf` (Davis's book), and `modify_sparse_cholesky.pdf` (Davis–Hager).
-`biksm.pdf` is unidentified — implementer may check its title/abstract; nothing in this
-design depends on it. The AMD paper is not in the local archive but was located at
-https://people.engr.tamu.edu/davis/publications_files/An_Approximate_Minimum_Degree_Ordering_Algorithm.pdf
-and the CHOLMOD TOMS paper is also mirrored at
-https://people.clas.ufl.edu/hager/files/cholmod_alg.pdf.
+Full citations for the sources named above (papers only; the PDFs are kept in a local,
+gitignored `refs/linear_algebra/` archive that is not distributed):
+
+- P. R. Amestoy, T. A. Davis, I. S. Duff, *An Approximate Minimum Degree Ordering
+  Algorithm*, SIAM J. Matrix Anal. Appl. 17(4):886–905, 1996.
+- Y. Chen, T. A. Davis, W. W. Hager, S. Rajamanickam, *Algorithm 887: CHOLMOD, Supernodal
+  Sparse Cholesky Factorization and Update/Downdate*, ACM TOMS 35(3), 2008
+  (`cholmod_toms.pdf`; used as a paper, never its source).
+- T. A. Davis, W. W. Hager, *Modifying a Sparse Cholesky Factorization*, SIAM J. Matrix
+  Anal. Appl. 20(3):606–627, 1999 (`modify_sparse_cholesky.pdf`).
+- T. A. Davis, *Direct Methods for Sparse Linear Systems*, SIAM, 2006.
+- J. R. Gilbert, E. G. Ng, B. W. Peyton, *An Efficient Algorithm to Compute Row and
+  Column Counts for Sparse Cholesky Factorization*, ORNL/TM-12195, Oak Ridge National
+  Laboratory, 1992; SIAM J. Matrix Anal. Appl. 15(4):1075–1091, 1994.
+- J. W. H. Liu, *A Compact Row Storage Scheme for Cholesky Factors Using Elimination
+  Trees*, ACM Trans. Math. Softw., June 1986, p. 127 ff. (`Supernodal/liu1986.pdf`).
+- J. W. H. Liu, *The Role of Elimination Trees in Sparse Factorization*, SIAM J. Matrix
+  Anal. Appl. 11(1):134–172, 1990 (`Supernodal/liu1990.pdf`).
+- J. W. H. Liu, E. G. Ng, B. W. Peyton, *On Finding Supernodes for Sparse Matrix
+  Computations*, SIAM J. Matrix Anal. Appl. 14(1):242–252, 1993.
+
+The remaining sources named in the provenance table (Ashcraft–Grimes 1989, Ng–Peyton 1993,
+Rothberg–Gupta 1993, Vanderbei 1995, Stellato et al., the Clarabel paper, Rennich et al.
+2016) are cited by author and year only; the archive holds local copies of several of them.

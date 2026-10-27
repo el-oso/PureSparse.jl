@@ -1,6 +1,6 @@
-# M7 GPU-QR design — independent adversarial review (Fable)
+# M7 GPU-QR design — independent adversarial review
 
-> Review of `design_qr_gpu.md` v1. Independent of the parallel Opus review
+> Review of `design_qr_gpu.md` v1. Independent of the parallel review
 > (`design_qr_gpu_review.md`), blind to its findings. Kept as permanent audit trail. Findings
 > folded into `design_qr_gpu.md` v2. (Verified against the shipped M6 code: `ext/gpu_dense.jl`
 > `_front_fused64_v3!`, `ext/gpu_solve.jl` `batched_solve!`, `ext/PureSparseCUDAExt.jl` kernel

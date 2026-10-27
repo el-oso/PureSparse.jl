@@ -1,8 +1,8 @@
-# M7 GPU-QR design — independent adversarial review (Opus)
+# M7 GPU-QR design — independent adversarial review
 
-> Review of `design_qr_gpu.md` v1. Independent of the parallel Fable review
-> (`design_qr_gpu_review_fable.md`). Kept as permanent audit trail (same convention as
-> `design_qr_review.md`). Findings folded into `design_qr_gpu.md` v2.
+> Review of `design_qr_gpu.md` v1. Independent of the parallel review
+> (`design_qr_gpu_review_2.md`). Kept as permanent audit trail (same convention as
+> `design_qr_review_1.md`). Findings folded into `design_qr_gpu.md` v2.
 
 ## BLOCKER 1 — "we already win the trailing update" does not imply ≥1.0× vs `geqrf` (§Q2.1–Q2.3, §Q6.3)
 

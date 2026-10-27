@@ -1,6 +1,6 @@
-# M8 multi-backend GPU design — adversarial review (Fable)
+# M8 multi-backend GPU design — adversarial review
 
-> Review of `design_gpu_multibackend.md` v1. Independent of the parallel Opus review. Permanent
+> Review of `design_gpu_multibackend.md` v1. Independent of the parallel review (`design_gpu_multibackend_review_2.md`). Permanent
 > audit trail. Findings to fold into v2.
 
 ## BLOCKER 1 — Clause 2 on CDNA is a hardware instruction-class fight (FP64 matrix cores), not a tuning problem (§B3/§B5/§B9.1)
@@ -21,7 +21,7 @@ pure-KA measurement at a crown shape BEFORE funding a tuning campaign (~$5 of re
 
 ## BLOCKER 2 — The gate cannot be authoritative under the project's own benchmarking law (§B5/§B6)
 Project law: perf verdicts need **clock-locked** hosts + **two-host** confirmation (M6 flagged
-galen-only as a limitation). M8 runs on **short cloud rentals**: shared/virtualized instances where
+single-GPU-host as a limitation). M8 runs on **short cloud rentals**: shared/virtualized instances where
 clock pinning needs root/bare-metal (unavailable in containers), the CPU differs per rental (clause-3
 baseline drifts), and it's one host/session (two-host bar silently dropped). §B5 says "clock-locked
 host" as if given. **Fix:** amend the protocol (user sign-off): require bare-metal + record
@@ -47,7 +47,7 @@ construction. **Fix:** vendor arm = full vendor dense stack per front (rocSOLVER
 ## DEFECT 5 — Register-residency of the fused kernels is a fresh per-compiler bet with no verify step
 `_front_fused64_v3!` holds two 4×4 FP64 `@private` tiles with `@nexprs` literal indexing; the file
 records a runtime-index demote-to-local = measured **3×** slowdown on NVIDIA. Whether AMD LLVM / Intel
-IGC keep those in registers is exactly the M7 register-residency bet. `FUSE_M_MAX=6000` etc. are galen
+IGC keep those in registers is exactly the M7 register-residency bet. `FUSE_M_MAX=6000` etc. are RTX 4070
 constants baked into `:auto` dispatch → on a backend where v3 spills, `:auto` silently picks a 3×-slow
 kernel. **Fix:** per-backend register/spill audit (AMDGPU `@device_code` VGPR+scratch; Level-Zero
 stats) BEFORE the sweep; re-measured crossovers per backend; budget "v3 doesn't hold → fall back to
@@ -89,7 +89,7 @@ LAPACK (`potrf`) coverage is unverified. If absent → new ccall wrapper work, u
 verify before committing the Intel sub-milestone; else declare Intel clause-2 gemm-only.
 
 ## NITs
-- **11 (§B3):** per-backend Preferences keys (`fuse_m_max_cuda/_amdgpu/_oneapi`) — single key clobbers CUDA tuning for a dual-GPU user + galen re-verify.
+- **11 (§B3):** per-backend Preferences keys (`fuse_m_max_cuda/_amdgpu/_oneapi`) — single key clobbers CUDA tuning for a dual-GPU user + CUDA re-verification.
 - **12 (§B5):** "relerr < 1e-10 (bit-identical)" is self-contradictory + the solve's atomic scatter isn't even run-to-run bit-stable. Normwise per §10.1; drop "bit-identical" except the §B1 CUDA A/B.
 - **13 (§B5 clause 3):** HIP launch latency > CUDA's 5.5µs; multifrontal ≈ 4+nchildren launches/front → small-front strata compress the clause-3 margin; re-derive `frontier_cutoff` per backend.
 

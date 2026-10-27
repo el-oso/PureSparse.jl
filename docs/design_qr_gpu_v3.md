@@ -1,7 +1,7 @@
 # PureSparse.jl — M7 Design v3: the GPU-QR front kernel, post-Phase-0
 
-> **Authored by Fable** (design lead) after the Phase-0 probes killed the naive single-workgroup
-> panel. Adversarially reviewed by Opus (`design_qr_gpu_v3_review_opus.md`). Amends
+> Written after the Phase-0 probes killed the naive single-workgroup
+> panel. Adversarially reviewed in `reviews/design_qr_gpu_v3_review_1.md`. Amends
 > `design_qr_gpu.md` v2 §Q2 (panel scheme, trailing, rank, storage, build order); v2's engine
 > reuse (§Q1), solve (§Q3), and gate discipline (§Q4) stand unless amended here. Every number is
 > tagged **[MEASURED]** (from `benchmark/results/qr_panel_phase0.json`, `qr_front_project.json`,
@@ -46,7 +46,7 @@ Two separate bottlenecks, both consequences of **one workgroup = 1/46 of the GPU
 
 ### R1.2 Verification probe (cheap, run first)
 
-Per CLAUDE.md "don't guess — check": the 1-SM-bound diagnosis is inferred from scaling, not
+The 1-SM-bound diagnosis is inferred from scaling, not
 counters. **P0b-0**: launch 8 independent single-WG panels concurrently (8 streams / one grid of
 8 groups on 8 disjoint panels). Prediction: aggregate throughput ≈ 8×, wall ≈ 1×. If this fails,
 the model in §R1.1 is wrong and §R2's parallelism argument needs re-derivation before proceeding.
@@ -84,7 +84,7 @@ honestly for what it costs on the trailing side.
 | WG size | 256 | matches probe; re-sweep with the optimized kernel |
 
 `NB_gpu`/`rb`/`q` are M7 tunables in `tuning.jl` (compile-time consts, Preferences-backed —
-CLAUDE.md req 4), derived from the Phase-0b sweep, not inherited from Cholesky.
+CONTRIBUTING.md req 4), derived from the Phase-0b sweep, not inherited from Cholesky.
 
 ### R2.2 The two kernels
 
@@ -169,7 +169,7 @@ measurement (P0b-2), not a claim.
   the cost of ~one extra panel-height pass per panel *and* it re-creates the tall-K `tn` trailing
   shape that §R3 shows TSQR dissolves for free. Strictly dominated here. Cited, rejected.
 - **Recursive / multi-block "hybrid" panel** (grid-synced multi-WG single-level): needs
-  per-column grid-wide sync, which KA does not portably provide (Fable review B1). Rejected.
+  per-column grid-wide sync, which KA does not portably provide (review B1). Rejected.
 
 ### R2.6 AMD portability (gfx1151, M6 constraints)
 
@@ -298,7 +298,7 @@ on one assumption (γ on new shapes) explicitly scheduled for measurement.
 
 **Phase-0b — the next measurement, before any production code** (script
 `benchmark/gpu/qr_tsqr_phase0.jl`, same methodology as the Phase-0 probes: warm `CUDA.@elapsed`
-medians, JSON to `benchmark/results/`, run on galen):
+medians, JSON to `benchmark/results/`, run on an RTX 4070):
 
 - **P0b-0**: 8 concurrent single-WG panels — verifies §R1's occupancy-bound mechanism (cheap,
   minutes).

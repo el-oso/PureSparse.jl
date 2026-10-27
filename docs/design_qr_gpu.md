@@ -2,12 +2,12 @@
 
 > **⛔ STATUS: SHELVED BY MEASUREMENT (2026-07-18). A pure-Julia GPU-QR front cannot beat
 > cuSOLVER `geqrf`; the "pure beats vendor" milestone is not achievable for QR.** The full
-> design process ran (v1 → 2 reviews → v2 → Fable v3 TSQR redesign → Opus review), then three
-> Phase-0 probes on galen (RTX 4070) settled it before any production kernel:
+> design process ran (v1 → 2 reviews → v2 → v3 TSQR redesign → review), then three
+> Phase-0 probes on an RTX 4070 settled it before any production kernel:
 > - **Panel** (`benchmark/gpu/qr_panel_phase0.jl`): pure single-workgroup Householder panel is
 >   **3–10× slower** than `geqrf` standalone (1 SM of 46; occupancy-bound).
 > - **Front projection** (`qr_front_project.jl`): best-NB front **1.49–2.70× slower**.
-> - **Trailing WY-apply γ** (`qr_gamma_phase0.jl`, Opus's identified crux): **γ_WY ≈ 0.77** —
+> - **Trailing WY-apply γ** (`qr_gamma_phase0.jl`, identified by the v3 review as the crux): **γ_WY ≈ 0.77** —
 >   pure *loses* the trailing 1.3×. It wins the `nn` shape (γ_nn=1.15, as M6) but loses the
 >   `tn` tall-K/tiny-output shape badly (γ_tn=0.575) — cuBLAS's most-tuned batched-split-K
 >   regime. Even if pure reached `tn` parity, the trailing caps ~1.07× and the panel is
@@ -16,12 +16,12 @@
 > Root cause: M6's Cholesky win came from `potrf`/`syrk` fitting a fused register-resident pure
 > kernel; QR's Householder tall-skinny panel + tall-K WY-apply is exactly what cuSOLVER/cuBLAS
 > are most tuned for — the win does not transfer. JSONs in `benchmark/results/qr_*phase0*.json`,
-> `qr_front_project.json`. Audit trail: `design_qr_gpu_v3_fable.md`, `design_qr_gpu_v3_review_opus.md`,
-> `design_qr_gpu_review*.md`. **CPU sparse QR (M5) remains CLOSED and gate-passing** — this shelves
+> `qr_front_project.json`. Audit trail: `design_qr_gpu_v3.md`, `reviews/design_qr_gpu_v3_review_1.md`,
+> `reviews/design_qr_gpu_review_*.md`. **CPU sparse QR (M5) remains CLOSED and gate-passing** — this shelves
 > only the *GPU* QR milestone. The v2 design below is retained as the record of what was designed.
 >
 > **Status: v2** (folds two independent adversarial reviews of v1 —
-> `design_qr_gpu_review.md` (Opus) + `design_qr_gpu_review_fable.md` (Fable), which converged
+> `reviews/design_qr_gpu_review_1.md` + `reviews/design_qr_gpu_review_2.md`, which converged
 > independently on the same three fatal flaws). Same v1→review→v2 arc as `design.md` (M1),
 > `design_qr.md`/`design_qr_m5b.md` (M5), `design_gpu.md` (M6). Builds on M5b (the CPU
 > multifrontal-WY QR, CLOSED) and M6 (§M of `design_gpu.md`, the GPU engine, CLOSED). §-numbers
@@ -246,7 +246,7 @@ fixtures for the rank claim; the `dropped_norm ≤ √(n_dead)·τ` certificate 
 
 ## §Q7 Provenance
 
-Clean-room, absolute (CLAUDE.md req 1): SPQR TOMS paper (Davis 2011) + **faer** (Rust, MIT, read this
+Clean-room, absolute (CONTRIBUTING.md req 1): SPQR TOMS paper (Davis 2011) + **faer** (Rust, MIT, read this
 review cycle — `no_pivoting/factor.rs`, `col_pivoting/factor.rs`, confirming the sequential tall-column
 reflector loop and that PureSparse deliberately does *not* use faer's global column-pivoting) + M6's
 own kernels (ours). Never CHOLMOD/SuiteSparse source; `SparseArrays.qr` (SuiteSparseQR) and

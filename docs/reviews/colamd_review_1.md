@@ -1,10 +1,10 @@
 # Adversarial review — `src/ordering/colamd.jl` (COLAMD column ordering)
 
-Reviewer: independent Opus pass, branch `colamd-impl` @ `b5fc607`. Scope: the M5a task-3
+Reviewer: independent pass, branch `colamd-impl` @ `b5fc607`. Scope: the M5a task-3
 COLAMD implementation, its tests, and provenance. Sources cross-checked directly:
 Davis–Gilbert–Larimore–Ng 2004 (TOMS, "[P]") and Larimore 1998 MS thesis ("[T]"),
 both read via rendered PDF pages (the thesis text layer is garbled). CHOLMOD/COLAMD C
-source was **not** read, per CLAUDE.md requirement 1.
+source was **not** read, per CONTRIBUTING.md requirement 1.
 
 **Verdict: BLOCKER 0 · DEFECT 1 · NIT 4.** The core algorithm is a faithful, carefully
 reasoned transcription of thesis Algorithm 1 (pp. 25–26) with the paper's `l_k = 0`
@@ -108,7 +108,7 @@ minimal trigger `A = [1 1]` (1×2, two single-entry columns): the discard fires 
 `rlen[r]=0` after col 2 is correctly further-mass-eliminated → `perm = [1,2]`. Correct.
 
 **Why it is still a DEFECT:** design_qr.md §2.2 pt 2 states "implement from Algorithm 2/3
-verbatim … treat the bullet as a summary, not the spec," and CLAUDE.md req 1 demands every
+verbatim … treat the bullet as a summary, not the spec," and CONTRIBUTING.md req 1 demands every
 line survive "where did this come from?". Line 370 does not, and the eager-discard timing
 is a behavioral choice, not a transcription. I could not *construct* a witness where the
 final permutation differs from a paper-faithful `l_k` (the not-strong-Hall cases I built
@@ -170,7 +170,7 @@ actually ordered and scored.
 
 `COLAMD_DENSE_FLOOR = 16`, `mult = 10.0`, threshold `max(16, 10·√dim)`
 (colamd.jl:140–141). This is *numerically identical* to COLAMD's actual C-library default
-(`knob = 10`, `max(16, 10·√n)`) — exactly the "just happens to match" pattern CLAUDE.md
+(`knob = 10`, `max(16, 10·√n)`) — exactly the "just happens to match" pattern CONTRIBUTING.md
 req 1 flags. **Checked: provenance is salvaged.** design_qr.md D1 traces the
 `max(16, mult·√dim)` shape and `mult=10` to the **AMD** package User Guide (`AMD_DENSE=10`,
 design.md §2.2 pt 6), a permitted source, and the code deliberately rejects [P]'s own

@@ -1,6 +1,6 @@
 # Adversarial review — commit 9140195 "M8 wiring: end-to-end Cholesky + LDLᵀ on AMD ROCm"
 
-Reviewer: Fable-model agent, 2026-07-19. Method: full diff read (`9140195^` vs `9140195`),
+Reviewer: independent review, 2026-07-19. Method: full diff read (`9140195^` vs `9140195`),
 line-by-line audit of every shim substitution and every file the AMD ext includes, plus
 **empirical probes run on this box's gfx1152 iGPU in a fresh throwaway env** (scratchpad
 `amd_review_probe.jl`, offline `Pkg.develop` of PureSparse + dev PureBLAS + `Pkg.add(AMDGPU)`).
@@ -48,7 +48,7 @@ demonstrably precompiles and loads (**[verified by run]** — fresh-env build pr
 `~/.julia/compiled/v1.12/PureSparseAMDGPUExt/*.so` and the `:auto` hybrid ran green).
 Likewise the CUDA ext's include order (`gpu_numeric.jl` referencing `trsm!` before
 `gpu_leftlooking_reference.jl` imports it) is safe: the import executes at module load,
-before any call can resolve the binding; galen oracles re-ran green.
+before any call can resolve the binding; CUDA oracles re-ran green.
 
 **But the header claims are now false:** `gpu_shared.jl:5` ("everything here … compiles +
 runs on any KA backend"), `gpu_numeric.jl:2-4` ("No CUDA-API calls here"), and
@@ -73,7 +73,7 @@ PureSparse, only `PureSparseCUDAExt`/`PureSparseForwardDiffExt` recorded — and
 `PureSparseAMDGPUExt` will **never load** there, no matter what is `using`'d.
 
 **[verified by run]** on this box:
-- `/home/el_oso/Documents/claude/amd_probe` (the env the AMD probe scripts were built
+- `<path-to>/amd_probe` (the env the AMD probe scripts were built
   around; Manifest mtime 2026-07-17, pre-commit): `Base.get_extension(PureSparse,
   :PureSparseAMDGPUExt) === nothing` both without and **with** an explicit
   `using KernelAbstractions`.
@@ -132,7 +132,7 @@ Kwarg defaults evaluate at call time in the defining module's scope; both exts d
 (`PureSparseCUDAExt.jl:13/15`, `PureSparseAMDGPUExt.jl:16/18`). **[verified by run]** —
 the AMD probe called `gpu_symbolic` without `backend` and factored on ROCm.
 
-### N3. Zero-alloc requirement (CLAUDE.md req 5) — no regression, but the GPU drivers were never under that gate
+### N3. Zero-alloc requirement (CONTRIBUTING.md req 5) — no regression, but the GPU drivers were never under that gate
 
 Req 5 gates `cholesky!`/`ldlt!`/`solve!` — the CPU entry points. The GPU drivers are
 module-local ext functions reached via `Base.get_extension` (core `src/` has zero GPU
@@ -192,7 +192,7 @@ workspace — pre-existing, not this commit.
 
 ---
 
-## Resolution (Opus, applied — commit follows this file)
+## Resolution (applied)
 
 Both reviews converged: no BLOCKER; the shipped `:auto` path is a faithful, semantically-equivalent
 port on both backends; CUDA no-regression holds. Applied:
@@ -209,7 +209,7 @@ port on both backends; CUDA no-regression holds. Applied:
   `gpu_shared.jl` and overriding it in the CUDA-only file = *method overwriting during precompilation*,
   which **Julia 1.12 rejects** (the CUDA ext only loaded via non-precompiled fallback). Fixed by
   defining `_vendor_available()` **exactly once per ext** (CUDA→true, AMD→false); `gpu_shared.jl` does
-  not define it. Re-verified on galen: CUDA ext precompiles clean, `:auto` oracle PASSES, `:vendor` arm
+  not define it. Re-verified on an RTX 4070: CUDA ext precompiles clean, `:auto` oracle PASSES, `:vendor` arm
   WORKS (ok=true, relerr=7.9e-17).
 - **NOT changed (accepted as noted):** Float32 inertia-stats precision (NIT — realistic sizes fine);
   AMD test-env reproducibility (manual hardware-gated scripts, same status as the CUDA gpu tests).

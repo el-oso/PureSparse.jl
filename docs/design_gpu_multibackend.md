@@ -1,7 +1,7 @@
 # PureSparse.jl — M8 Design: Multi-backend GPU (AMD + Intel oneAPI), FP64
 
 > **Status: v1 REVIEWED → PROBE-GATED (measurement-first, 2026-07-19).** Two independent adversarial
-> reviews (`design_gpu_multibackend_review_fable.md`, `_opus.md`) **converged on the same
+> reviews (`reviews/design_gpu_multibackend_review_1.md`, `_2.md`) **converged on the same
 > BLOCKER**: the M6 "pure ≥ vendor" win is very likely **not portable** to AMD/Intel — and for a
 > *structural* reason, not a tuning gap. M6's pure kernels beat cuBLAS only because **Ada has no
 > FP64 matrix path** (cuBLAS DGEMM on Ada is itself vector-FMA-bound, so the pure `muladd` kernel
@@ -55,7 +55,7 @@ Four decisions were made with the user before this draft (they are premises, not
    on CPU. The vendor libraries are **diagnostic comparison arms only**; the shipped path is pure KA.
 3. **Architecture: shared engine files in `ext/`, included by each per-backend ext; KA stays a weak
    dependency.** No new hard dep on the CPU core (preserves the lean/trim philosophy).
-4. **Rollout: shared de-CUDA refactor first (re-verified bit-identical on CUDA/galen), then AMD,
+4. **Rollout: shared de-CUDA refactor first (re-verified bit-identical on an RTX 4070), then AMD,
    then Intel.**
 
 Non-goals (carried from M6 + the above): Metal / any FP32-only backend; consumer-GPU FP64 perf;
@@ -83,7 +83,7 @@ input device array, or a `KA.Backend` the entry point holds) into every `KA.zero
 `_extend_add_cpu!` / `_cpu_ldl_front!` CPU-front helpers are already backend-neutral (they run on
 host arrays for CPU fronts).
 
-**No-regression bar for §B1:** the CUDA path must stay **bit-identical** on galen after the refactor
+**No-regression bar for §B1:** the CUDA path must stay **bit-identical** on an RTX 4070 after the refactor
 (the M6 oracle + a gate-timing A/B) before any new backend is added — the de-CUDA-ing is a pure
 refactor, verified by the existing `gpu_mf_hybrid_test.jl` / `gpu_ldlt_e2e_test.jl` oracles.
 
@@ -156,7 +156,7 @@ bound — the M6 §8.3 discipline, anti-cherry-pick):
 2. **Clause 2 — pure ≥ vendor (headline bet):** pure factor+solve ≥ rocSOLVER/rocBLAS (AMD) /
    oneMKL (Intel) at every size. Measurement-first (§B3) — may land at parity/loss and be recorded.
 3. **Clause 3 — beats CPU (must-win):** median(pure-KA on the GPU) < median(CHOLMOD+OpenBLAS on
-   CPU), both own-ordering and same-permutation (CLAUDE.md req 2).
+   CPU), both own-ordering and same-permutation (CONTRIBUTING.md req 2).
 
 Chairmarks medians, clock-locked host, results→JSON, **violin** plots (project convention).
 
@@ -168,10 +168,9 @@ cloud rentals**:
   Cloud (~$2–5/hr; a 2–3 h gate session ≈ $10–40).
 - **Intel Max:** Intel **Tiber Developer Cloud** (Max 1100/1550 access), or a cloud MI-equivalent.
 
-Driven with the **ephemeral-remote workflow already proven on galen**: rsync the repo → run the
+Driven with an **ephemeral-remote workflow**: copy a clean checkout of the commit under test → run the
 backend-parameterized oracle (correctness) + perf (vendor A/B) → pull JSON → tear down. The remote
-is stateless (rsync tree, not a git checkout), so the "remote-sync-before-benchmarking" rule applies
-(verify the synced tree before each gate run).
+is stateless, so verify the checked-out commit before each gate run.
 
 ## §B7 Testing
 
@@ -184,7 +183,7 @@ AMD/Intel are the same).
 
 ## §B8 Build order
 
-0. **Shared de-CUDA refactor** (§B1) → galen bit-identical re-verify (no-regression gate). Ships CUDA
+0. **Shared de-CUDA refactor** (§B1) → bit-identical re-verification on CUDA (no-regression gate). Ships CUDA
    unchanged; unblocks all backends.
 1. **`PureSparseAMDGPUExt`** (§B2) + CDNA atomics re-probe (§B4) → correctness oracle on rented MI210
    → rocSOLVER/rocBLAS vendor arm → per-backend tuning (§B3) → the §B5 gate → record verdict.
@@ -208,7 +207,7 @@ Each backend is its own sub-milestone with its own gate; M8 "closes" when the sh
 
 ## §B10 Provenance & clean-room
 
-Clean-room (CLAUDE.md req 1) unchanged: engine + kernels are ours (KA); rocSOLVER/rocBLAS, oneMKL,
+Clean-room (CONTRIBUTING.md req 1) unchanged: engine + kernels are ours (KA); rocSOLVER/rocBLAS, oneMKL,
 cuSOLVER/cuBLAS are **black-box comparison baselines only** — never their source. KernelAbstractions,
 AMDGPU.jl, oneAPI.jl are the portability layer (MIT/permissive, standard deps). No CHOLMOD/SuiteSparse
 source, in any form.

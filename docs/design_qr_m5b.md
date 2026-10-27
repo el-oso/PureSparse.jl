@@ -19,7 +19,7 @@ SuiteSparseQR source remains prohibited in every form; only published papers, pe
 implementations, and in-document derivations appear below):**
 
 - **SPQR paper** (Davis, *Multifrontal multithreaded rank-revealing sparse QR
-  factorization*, ACM TOMS 2011; `refs/linear_algebra/QR/davis2011_spqr_toms.pdf`) —
+  factorization*, ACM TOMS 38(1), Algorithm 915, 2011) —
   §2.3 (supernodes→fronts, the two-condition supernode test, relaxed amalgamation from
   counts alone, the leftmost-nonzero row sort, the assembly simulation and staircase,
   exact-if-τ<0 / upper-bound-otherwise), §3.1 (front assembly, Figures 2–3, pivotal /
@@ -40,7 +40,7 @@ implementations, and in-document derivations appear below):**
   clamp, numeric-time per-front min-col sorting, the staircase-group panel split rule,
   post-factorization min-col rewrite, survivor pass-up via per-front cursors, and
   stored per-panel T blocks. Every reuse is cited inline as "faer `qr.rs`."
-- **BlazingPorts.jl** (`/home/el_oso/Documents/claude/BlazingPorts.jl/src/Factorizations.jl`,
+- **BlazingPorts.jl** (`<path-to>/BlazingPorts.jl/src/Factorizations.jl`,
   sibling repo, own code) — prior art for the P1 kernel *implementation approach* only
   (§A7.4): its dense blocked QR beat faer's dense QR at all benchmarked sizes
   512–2048 after finding that the decisive lever was gemm orchestration (reading the
@@ -50,7 +50,7 @@ implementations, and in-document derivations appear below):**
 - **Explicitly rejected source:** PureKLU.jl was suggested as possible prior art and
   was **not read** — its own README declares it "a direct, line-by-line port of …
   SuiteSparse C sources" (LGPL-derived), which is precisely the "third-party port
-  derived from that source" CLAUDE.md requirement 1 prohibits. (It is also
+  derived from that source" CONTRIBUTING.md requirement 1 prohibits. (It is also
   architecturally irrelevant: simplicial left-looking LU, no fronts, no stack.)
 
 Everything below marked **own derivation** has no external source and must be judged
@@ -103,7 +103,7 @@ front).
 
 **M5b adopts faer's layout.** Rationale:
 
-- Zero-alloc-after-symbolic (CLAUDE.md req 5) falls out immediately: every offset is a
+- Zero-alloc-after-symbolic (CONTRIBUTING.md req 5) falls out immediately: every offset is a
   symbolic prefix sum; there is no in-place compression step and no stack whose
   high-water mark must be simulated. (The SPQR-style simulation is still performed —
   §A3.4 — but only for row-count/size bounds, not for a stack arena.)
@@ -605,7 +605,7 @@ e_f = k − 1   # eliminations performed
 
 τ<0-and-full-rank fast path: step (a) degenerates to exactly `qr_unblocked!`'s job on
 the panel view; the implementation may call it directly there (proven-fast path,
-CLAUDE.md "anchor on the proven-fastest path") and keep the column-by-column loop for
+the fastest existing path is the baseline to extend) and keep the column-by-column loop for
 the τ≥0 / generic-`T` cases. The in-panel dead-pivot test is on the **transformed**
 column — the same quantity M5a tests (design_qr.md §5.1) and the same one SPQR tests
 per front (§3.2 p. 11: "suppose the 2-norm of column 6 drops below the threshold τ"
@@ -731,7 +731,7 @@ Multi-RHS: loop columns (allocating multi-RHS staging is permitted exactly as
 design.md's `Workspace.rhs` note permits it; single-vector solves are zero-alloc).
 
 Deliberately **not** adopted: SPQR's apply-b-during-factorization option (§3.3 p. 12,
-factor `[A b]` and discard Q) — it conflicts with analyze-once/solve-many (CLAUDE.md
+factor `[A b]` and discard Q) — it conflicts with analyze-once/solve-many (CONTRIBUTING.md
 req 7) and V is kept regardless; listed as a possible later memory-mode extension,
 same status as Q-less mode (design_qr.md §6.3).
 
@@ -740,7 +740,7 @@ same status as Q-less mode (design_qr.md §6.3).
 ## §A7 PureBLAS kernel contracts (P1a / P1b / P2)
 
 Specified here so PureBLAS work proceeds independently; each lands in PureBLAS with
-its own OpenBLAS-parity gate (PureBLAS CLAUDE.md req 1) before M5b numeric work
+its own OpenBLAS-parity gate (PureBLAS CONTRIBUTING.md req 1) before M5b numeric work
 begins. Verified current state (PureBLAS source read 2026-07-14, this addendum's own
 pass — confirming design_qr.md §4.6's D8-corrected findings):
 
@@ -844,7 +844,7 @@ still route to `:column`, which stays the generic fallback.
 
 The staircase panel loop, Heath testing, and dead-pivot skipping stay in PureSparse
 (`qr/frontal.jl`): rank policy is sparse-QR-coupled, and PureBLAS kernels remain
-rank-agnostic (boundary per CLAUDE.md's "dense per-supernode work through PureBLAS"
+rank-agnostic (boundary per CONTRIBUTING.md req 9, dense per-supernode work through PureBLAS
 rule — orchestration is the sparse library's own domain, as in `llt.jl`).
 
 ---
@@ -876,7 +876,7 @@ solely on the nonzero counts of L"), so `relaxed_amalgamation` runs verbatim on
   new memory-side cost Cholesky's calibration never priced.
 
 **What must be measured, not assumed (M5b task 16e):** the tier values. Protocol =
-the ROADMAP task-7b' sweep, re-run for QR: Chairmarks medians on the §9.4 gate set
+the Cholesky amalgamation-threshold sweep, re-run for QR: Chairmarks medians on the §9.4 gate set
 over a grid around the current Cholesky-calibrated `AMALG_COLS = (16,64,128)` /
 `AMALG_ZMAX = (0.97,0.35,0.08)`, plus the 2-vs-3-condition supernode flag as a swept
 axis, scored on the §9.3 wall-time arms with `nnzRF/nnzR` recorded. If QR wants
@@ -945,10 +945,10 @@ number with the sweep recorded, never a remembered default from any implementati
   (§A9.6).
 - **16d.** Method selection (`:auto` heuristic measured on the gate set, §A5.6) +
   generic-`T` routing; drop-in/dropin parity re-checks.
-- **16e.** Amalgamation + NB calibration sweep (§A8); `nnzRF/nnzR` recorded; ROADMAP
-  entry with the swept grid and verdict.
+- **16e.** Amalgamation + NB calibration sweep (§A8); `nnzRF/nnzR` recorded;
+  a record of the swept grid and the verdict.
 - **17.** Re-run §9.3 in full (all strata, both permutation arms, faer context arm)
-  on clock-locked machines (rsync-verify the remote checkout first — standing rule);
+  on clock-locked machines (run from a clean checkout of the commit under test);
   M5 closes only on the unconditional gate.
 
 ---
@@ -963,7 +963,7 @@ number with the sweep recorded, never a remembered default from any implementati
 | Permanent-front storage (no C stack); row-count recurrence w/ trapezoid clamp; numeric per-front min-col sort + post-factorization rewrite; cursor pass-up; stored per-panel T; staircase-group split rule `max(1, NB÷2)`; Aᵀ numeric input | `faer` 0.24.1 `src/sparse/linalg/qr.rs` (MIT — permitted category per design_qr.md §0/§11), read directly for this addendum |
 | Rank-aware capacity bounds (`mmax`/`crmax`, §A3.2); frozen-residual dropped-mass ≤ τ bound (§A5.4); in-place solve-replay correctness (§A6); padded-R storage + implicit colind (§A5.5); counting-sort staircase assembly (§A5.2); 2-condition amalgamation-height re-check (§A2.2) | **own derivations**, arguments in-document — review targets |
 | P1 unpacked-C orchestration requirement; pure-SIMD ≥ faer feasibility | BlazingPorts.jl `src/Factorizations.jl` (own sibling code; faer `pack_rhs=false` read from faer's MIT source during that campaign) — prior art/feasibility, nothing imported |
-| Deliberately not read | CHOLMOD/SuiteSparseQR source (prohibited, absolute); PureKLU.jl (offered as prior art, rejected: self-declared line-by-line SuiteSparse port ⇒ CLAUDE.md req 1's "third-party port" clause) |
+| Deliberately not read | CHOLMOD/SuiteSparseQR source (prohibited, absolute); PureKLU.jl (offered as prior art, rejected: self-declared line-by-line SuiteSparse port ⇒ CONTRIBUTING.md req 1's "third-party port" clause) |
 
 Tunables introduced: none with literal values. `NB` is PureBLAS-derived (§A7.1);
 the staircase split rule is faer's cited heuristic; QR-specific amalgamation
