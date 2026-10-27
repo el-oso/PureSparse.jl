@@ -20,7 +20,7 @@
 # Inputs (saved measurement snapshots from a fixed-frequency host):
 #   benchmark/results/qr_gate_<host>.json                           — the 16-matrix-arm D13 gate (16/16 PASS)
 #   benchmark/results/faer_vs_puresparse_7000x4000_<host>.json      — the flagship dense-panel case
-# The D13 gate passes 16/16 on both a Zen 5 desktop and a Ryzen 9 5900X (Zen 3).
+# The D13 gate passes 16/16 on both a Ryzen AI 7 350 (Zen 5) and a Ryzen 9 5900X (Zen 3).
 # Outputs:
 #   docs/src/assets/qr_gate_strata.png
 #   docs/src/assets/qr_faer_comparison.png

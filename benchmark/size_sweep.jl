@@ -11,6 +11,7 @@
 #   julia --project=benchmark benchmark/size_sweep.jl report
 
 using PureSparse, SparseArrays, LinearAlgebra, Random, Statistics, JSON
+import PureBLAS
 using Chairmarks: @be
 
 include(joinpath(@__DIR__, "matrices.jl"))
@@ -38,15 +39,18 @@ function bench_size(n::Int; rng::AbstractRNG)
     F1 = PureSparse.cholesky(sym, A)
     b1 = @be _ps_warm!($F1, $A) seconds = SECONDS samples = SAMPLES evals = 1
     result["ps_pureblas_warm"] = _median_time(b1)
+    result["ps_pureblas_samples"] = _times(b1)
     result["nnzL"] = sym.nnzL
 
     F2 = PureSparseOB.cholesky(sym, A)
     b2 = @be _psob_warm!($F2, $A) seconds = SECONDS samples = SAMPLES evals = 1
     result["ps_openblas_warm"] = _median_time(b2)
+    result["ps_openblas_samples"] = _times(b2)
 
     Fc = LinearAlgebra.cholesky(Symmetric(A, :L))
     b3 = @be _cholmod_warm!($Fc, $A) seconds = SECONDS samples = SAMPLES evals = 1
     result["cholmod_openblas_warm"] = _median_time(b3)
+    result["cholmod_openblas_samples"] = _times(b3)
     result["nnzL_cholmod"] = nnz(sparse(Fc.L))
 
     return result
@@ -57,7 +61,8 @@ function run_sweep()
     results = [(@info "benchmarking" n; bench_size(n; rng)) for n in SIZES]
     host = gethostname()
     payload = Dict(
-        "host" => host, "julia_version" => string(VERSION),
+        "host" => host, "cpu" => Sys.cpu_info()[1].model, "julia_version" => string(VERSION),
+        "pureblas_version" => string(pkgversion(PureBLAS)),
         "density" => DENSITY, "results" => results
     )
     mkpath(joinpath(@__DIR__, "results"))

@@ -86,7 +86,7 @@ with kernel throughput).
 ### Current result
 
 As of 2026-07-16, the M5 closeout gate **PASSES 16/16** — every stratum, both arms —
-confirmed on **both** clock-locked hosts (a Zen 5 desktop and a Ryzen 9 5900X, `performance`
+confirmed on **both** clock-locked hosts (a Ryzen AI 7 350 (Zen 5) and a Ryzen 9 5900X, `performance`
 governor). Two-host clock-locked agreement is this project's bar for a gate verdict.
 Per stratum:
 
@@ -108,7 +108,7 @@ Where the multifrontal path's BLAS-3 architecture is actually exercised — a
 7000×4000 random matrix at 1% and 10% density
 (`benchmark/faer_vs_puresparse_7000x4000.jl`) — PureSparse's `:frontal` path is
 **tied with [faer](@cite)** and **~30% faster than SuiteSparseQR**, at identical
-COLAMD fill (Zen 5 desktop, clock-locked, cold factorize-only medians of 10 samples):
+COLAMD fill (Ryzen AI 7 350 (Zen 5), clock-locked, cold factorize-only medians of 10 samples):
 
 | density | PureSparse `:frontal` | faer | SuiteSparseQR | vs faer | vs SPQR |
 |---|---|---|---|---|---|
