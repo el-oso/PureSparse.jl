@@ -194,6 +194,10 @@ hardware.
   need fixing there; PureSparse's own sites are in `_panelview` and `_solve_Lt_generic!`.
   Once clean, `test/strictmode_guarantees_tests.jl` adds `@test_noalloc` for these entry
   points.
+- **Re-measure on Julia 1.13:** the size sweep has been rerun on Julia 1.13.3 and PureBLAS
+  0.1.2 (Zen 3, fixed clock; faster than CHOLMOD at every size). The named-matrix gates
+  (`gate.jl`, `gate_ldlt.jl`, `qr_gate.jl`, `gpu_gate.jl`) and the Zen 4 size sweep still
+  report results from earlier toolchains.
 - **Registration:** registration in the General registry depends on PureBLAS being
   registered first.
 - **LU:** unsymmetric sparse LU through a collaboration with PureKLU.jl. Not started.

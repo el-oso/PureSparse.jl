@@ -36,15 +36,24 @@ factorization throughput from ordering quality and is part of the gate, not supp
 
 The M1 gate is met: on the 14-combination KKT/FEM named-matrix set, PureSparse+PureBLAS beats
 CHOLMOD+OpenBLAS on warm numeric refactor in 11 of 14 matrix-arm combinations (the gate requires
-at least half), and the size-sweep gate passes at every size from 2 to 2048 on both a Ryzen 9
-5900X (Zen 3) and a Ryzen 5 7640U (Zen 4), CPU frequency locked. Per-run numbers are written to the
-JSON files described below; see `ROADMAP.md` for milestone status.
+at least half). Per-run numbers are written to the JSON files described below; see `ROADMAP.md`
+for milestone status.
+
+The size sweep (`benchmark/size_sweep.jl`: random sparse SPD matrices at 5% density,
+n = 2 to 2048) shows how per-call overhead and dense-kernel time trade off with size. On a
+Ryzen 9 5900X (Zen 3) at a fixed 3.70 GHz, with Julia 1.13.3 and PureBLAS 0.1.2,
+PureSparse+PureBLAS is faster than CHOLMOD+OpenBLAS at every size: about 21× at n = 2, 3× at
+n = 32, 1.1–1.7× from n = 64 to 1024, and 1.03× at n = 2048. The closest point is n = 64, where
+PureSparse with OpenBLAS kernels is slower than CHOLMOD (0.91×), so the margin there comes from
+PureBLAS.
 
 ## Reproducing
 
 ```bash
 julia --project=benchmark benchmark/gate.jl            # measure + save + print gate verdict
 julia --project=benchmark benchmark/gate.jl report      # print verdict from the last saved JSON only
+julia --project=benchmark benchmark/size_sweep.jl       # size sweep; saves every sample
+julia --project=benchmark benchmark/size_sweep.jl report
 ```
 
 Results are written to `benchmark/results/gate_<hostname>.json` (gitignored — per-host
