@@ -1,7 +1,7 @@
 # M4 drop-in (design.md §10). `DROPIN_ACTIVE` is a compile-time Preference-backed
 # const (tuning.jl) — it can't be flipped inside the already-running test process the
 # way a runtime flag could (that's the whole point: the override genuinely doesn't
-# exist until opted in, no `eval`, CLAUDE.md requirement 4). So this test item spawns
+# exist until opted in, no `eval`, CONTRIBUTING.md requirement 4). So this test item spawns
 # an ISOLATED subprocess with its own temp `--project` (own `LocalPreferences.toml`
 # setting `dropin_active = true`, entirely separate from `test/`'s own environment —
 # writing to `test/LocalPreferences.toml` directly would contaminate every OTHER test

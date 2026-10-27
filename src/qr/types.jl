@@ -94,7 +94,7 @@ QRStats() = QRStats(0, 0, 0.0, 0, 0, 0.0)
 
 Preallocated scratch buffers reused across every `qr!`/`solve!` call on a factor
 sharing one `QRSymbolic`, sized once from `QRSymbolic`'s workspace-sizing scalars so the
-numeric phase never allocates (CLAUDE.md requirement 5; design_qr.md §4.5).
+numeric phase never allocates (CONTRIBUTING.md requirement 5; design_qr.md §4.5).
 """
 struct QRWorkspace{T, Ti <: Integer}
     x::Vector{T}                   # length mb (physical/block row space, §3.4),
@@ -181,7 +181,7 @@ mutable struct QRFactor{T <: Real, Ti <: Integer} <: AbstractSparseFactor{T}
     r1val::Vector{T}
     # --- warm singleton-refactor state (design_qr.md §2.3, warm-refactor update):
     # everything `qr!` on an n1>0 factor needs, pre-allocated at compose time so the
-    # warm call stays zero-alloc (CLAUDE.md req 5). The structural peel set is
+    # warm call stays zero-alloc (CONTRIBUTING.md req 5). The structural peel set is
     # refactor-invariant (peeling's "exactly one live nonzero" test is a function of
     # the PATTERN + cascade only, and a refactor shares the pattern by contract), so
     # all three maps below are fixed for the factor's lifetime. n1==0 factors carry

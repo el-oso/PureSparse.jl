@@ -12,7 +12,7 @@ from the NEXT Julia session onward, loading `PureSparse` also extends
 `LinearAlgebra.cholesky`/`ldlt` for `SparseMatrixCSC`/`Symmetric`/`Hermitian` inputs to
 run PureSparse's own factorizations instead of CHOLMOD. Requires a restart — Julia's
 method table has no runtime "activate this override" primitive without `eval`
-(forbidden, CLAUDE.md requirement 4); see `src/tuning.jl`'s `DROPIN_ACTIVE` comment.
+(forbidden, CONTRIBUTING.md requirement 4); see `src/tuning.jl`'s `DROPIN_ACTIVE` comment.
 """
 function activate!()
     Preferences.set_preferences!(@__MODULE__, "dropin_active" => true; force = true)

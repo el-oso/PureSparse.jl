@@ -242,7 +242,7 @@ end
     @test isapprox(R' * R, A2d' * A2d, atol = 1.0e-8)
 end
 
-@testitem "qr!: refactorize is genuinely zero-allocation (M5a task 10, CLAUDE.md req 5)" begin
+@testitem "qr!: refactorize is genuinely zero-allocation (M5a task 10, CONTRIBUTING.md req 5)" begin
     using Random, SparseArrays
     rng = MersenneTwister(303)
     A = sprand(rng, 20, 12, 0.3)

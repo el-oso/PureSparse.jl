@@ -69,7 +69,7 @@ restarted** (design.md §10 M4). Same kwarg surface and `perm=`/allocation cavea
 [`cholesky`](@ref)'s drop-in above (read that docstring first). Unlike CHOLMOD's own
 `ldlt`, which does dynamic pivoting for general symmetric indefinite matrices,
 PureSparse's `ldlt` is fixed-pivot with signed regularization (design.md §5.1,
-CLAUDE.md requirement 8 — deliberate scope, not a missing feature). This entry point
+CONTRIBUTING.md requirement 8 — deliberate scope, not a missing feature). This entry point
 has no way to receive expected pivot signs (stdlib's `ldlt` doesn't take a `signs`/
 `n_pos`/`n_neg` kwarg — verified directly against its actual method signature), so it
 always factors with `signs = nothing` — free signs, magnitude-floor-only

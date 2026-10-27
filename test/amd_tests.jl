@@ -255,7 +255,7 @@ end
     # to the test environment (its Pkg resolve is blocked by an unrelated pre-existing
     # TypeContracts compat pin), so the reference ordering is CHOLMOD's own permutation
     # observed black-box through SparseArrays' public API (output only — clean-room
-    # safe per CLAUDE.md req 1). Both orderings are scored with the SAME fill
+    # safe per CONTRIBUTING.md req 1). Both orderings are scored with the SAME fill
     # simulator, so the comparison is apples-to-apples; the wide 1.5x slack is a
     # badly-broken-implementation gate, not a tuning target.
     using Random, SparseArrays, LinearAlgebra

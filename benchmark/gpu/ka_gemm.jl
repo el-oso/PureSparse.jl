@@ -173,7 +173,7 @@ function main()
         "grid" => rows, "f32_spotcheck" => Dict(pairs(f32)),
         "gpu" => CUDA.name(CUDA.device()), "clock_locked_mhz" => 1920
     )
-    open(joinpath(homedir(), "Documents/claude/gpu_probe/kernel_tuning_ka_final.json"), "w") do io
+    open(joinpath(mkpath(joinpath(@__DIR__, "..", "results")), "gpu_kernel_ka_final_$(gethostname()).json"), "w") do io
         JSON.print(io, out, 2)
     end
     return println("wrote kernel_tuning_ka_final.json")

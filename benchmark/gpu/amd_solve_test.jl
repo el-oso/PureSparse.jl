@@ -5,7 +5,7 @@
 # backend-generic file under ROCBackend; the factor itself comes from the CPU path
 # (PureSparse.cholesky/ldlt) and is uploaded — only the SOLVE runs on device.
 #
-#   julia --project=/home/el_oso/Documents/claude/amd_probe benchmark/gpu/amd_solve_test.jl
+#   julia --project=<path-to>/amd_probe benchmark/gpu/amd_solve_test.jl
 
 using AMDGPU, KernelAbstractions, LinearAlgebra, SparseArrays, Random, Printf
 using KernelAbstractions: @kernel, @index, @synchronize, get_backend, @atomic

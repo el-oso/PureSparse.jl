@@ -1,6 +1,6 @@
-# Phase 2.1 galen validation: the PureSparseCUDAExt weak-dep extension loads when CUDA +
+# Phase 2.1 validation (RTX 4070): the PureSparseCUDAExt weak-dep extension loads when CUDA +
 # KernelAbstractions are present, and its pure device dense kernels are correct + beat cuBLAS.
-# Run on galen:  julia --project=. benchmark/gpu/ext_loadtest.jl
+# Run on a CUDA host: julia --project=. benchmark/gpu/ext_loadtest.jl
 using PureSparse, CUDA, KernelAbstractions, LinearAlgebra
 using CUDA.CUBLAS: gemm!
 

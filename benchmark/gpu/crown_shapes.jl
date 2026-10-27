@@ -1,5 +1,5 @@
 # Characterize the GPU-front shapes (nscol, below_s) the multifrontal actually factors at the
-# best cutoff — the real optimization target for the pure potrf/trsm (vs Fable's isolated panels).
+# best cutoff — the real optimization target for the pure potrf/trsm (vs the isolated panels).
 using PureSparse, CUDA, KernelAbstractions, SparseArrays, LinearAlgebra, Printf, Random
 ext = Base.get_extension(PureSparse, :PureSparseCUDAExt)
 rng = MersenneTwister(5)

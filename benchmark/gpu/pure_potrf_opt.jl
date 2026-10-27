@@ -33,7 +33,7 @@
 # Zero device-pool allocation per call: drivers take a caller-provided `FrontWS` (info vec,
 # arrival counter, 64×64×nblk invD scratch) + views + @localmem/@private only.
 #
-# Run (galen): julia --project=$HOME/Documents/claude/gpu_probe benchmark/gpu/pure_potrf_opt.jl
+# Run (CUDA host): julia --project=<path-to>/gpu_probe benchmark/gpu/pure_potrf_opt.jl
 
 using CUDA
 using KernelAbstractions
@@ -49,7 +49,7 @@ using CUDA.CUBLAS: trsm!
 # Kernels shared with / copied from pure_potrf_dev.jl (proven)
 # =======================================================================================
 
-# Pure device GEMM C = α·A·Bᵀ + β·C (beats cuBLAS FP64 1.14× on galen).
+# Pure device GEMM C = α·A·Bᵀ + β·C (beats cuBLAS FP64 1.14× on an RTX 4070).
 @kernel unsafe_indices = true function _gemm_nt_4x4!(C, @Const(A), @Const(B), alpha, beta, M, N, K)
     T = eltype(C)
     li = @index(Local, NTuple)
@@ -701,7 +701,7 @@ end
 FrontWS(::Type{T}, maxblk::Int) where {T} =
     FrontWS(CUDA.zeros(Int32, 1), CUDA.zeros(Int64, 1), CUDA.zeros(T, 64, 64, maxblk), 0)
 
-# Panel-rows threshold for :auto — MEASURED (galen sweep over the real shape mix): v2
+# Panel-rows threshold for :auto — MEASURED (RTX 4070 sweep over the real shape mix): v2
 # (invert + register-tiled multiply, cld(m,64) groups) wins for m ≲ 2500; above that its
 # per-group redundant factor+invert (~131k FMA) rivals the per-group solve work and the
 # v1 row-solve (cld(m,256) groups, factor-only redundancy) is faster.

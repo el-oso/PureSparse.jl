@@ -21,11 +21,11 @@
 # Frontier cutoff: a small deterministic sweep over top-flop quantiles, best kept (the
 # auto-frontier policy targets this near-optimal cutoff; recorded per matrix as `q`).
 #
-# Methodology (CLAUDE.md req 2): Chairmarks medians for the CPU arms, median of CUDA.@elapsed
+# Methodology (CONTRIBUTING.md req 2): Chairmarks medians for the CPU arms, median of CUDA.@elapsed
 # for the GPU arm; single-thread pinned; results→JSON; run on a clock-locked host.
 #
 # Usage:
-#   julia --project=gpu_probe benchmark/gpu_gate.jl          # measure + save + verdict  (needs CUDA/galen)
+#   julia --project=gpu_probe benchmark/gpu_gate.jl          # measure + save + verdict  (needs a CUDA GPU)
 #   julia --project=gpu_probe benchmark/gpu_gate.jl report   # verdict from the saved JSON only (no GPU)
 
 using PureSparse, SparseArrays, LinearAlgebra, Random, Statistics, JSON, Printf

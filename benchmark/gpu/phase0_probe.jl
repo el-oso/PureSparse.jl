@@ -1,4 +1,4 @@
-# M6 Phase-0 GPU probe (design: Fable M6 review, 2026-07-16). Measurement ONLY — no
+# M6 Phase-0 GPU probe. Measurement ONLY — no
 # product code, commits to no architecture. Answers the milestone's biggest open question
 # (decision D1): can a pure-Julia FP64 gemm/syrk kernel reach ~0.8x cuBLAS on the RTX 4070
 # (Ada, FP64 1:64, no FP64 tensor cores)? If yes -> ship pure kernels (keeps generic-T,
@@ -6,7 +6,7 @@
 # user with numbers. Also records CUBLAS FP64 rates, kernel-launch latency, and PCIe
 # bandwidth (the crossover inputs that replace the underived gpu_flop_threshold=2e9).
 #
-# Run on galen:  julia --project=~/Documents/claude/gpu_probe phase0_probe.jl
+# Run on a CUDA host: julia --project=<path-to>/gpu_probe phase0_probe.jl
 # Results -> benchmark/results/gpu_phase0_<host>.json  (regenerate plots from JSON, never re-run).
 
 using CUDA

@@ -1,4 +1,4 @@
-# Phase 2.2 galen validation: gpu_symbolic builds a device-resident symbolic — pattern arrays
+# Phase 2.2 validation (RTX 4070): gpu_symbolic builds a device-resident symbolic — pattern arrays
 # uploaded once and matching the CPU Symbolic, frontier upward-closed, sizing consistent.
 using PureSparse, CUDA, KernelAbstractions, SparseArrays, LinearAlgebra, Random
 

@@ -26,7 +26,7 @@ function one(nscol, below)
     )
     return ven / pure
 end
-println("== Cholesky front pure gpu_front!(:auto) vs cuSOLVER+cuBLAS, galen ==")
+println("== Cholesky front pure gpu_front!(:auto) vs cuSOLVER+cuBLAS ==")
 println("-- below=186 (potrf-dominated, the hard case) --")
 for nc in (64, 128, 256, 384, 512, 768, 1024, 1280, 1536)
     one(nc, 186)

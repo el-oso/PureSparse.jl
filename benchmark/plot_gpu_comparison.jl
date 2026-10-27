@@ -1,20 +1,22 @@
 # Regenerates the M6 GPU multifrontal figures for docs/src/benchmarking.md from ALREADY-SAVED
-# JSON (CLAUDE.md "Benchmarking": results→JSON first, plots regenerate from saved JSON only —
+# JSON (CONTRIBUTING.md "Benchmarking": results→JSON first, plots regenerate from saved JSON only —
 # never re-runs a benchmark).
 #
 # The GPU warm refactor+solve is device-resident and near-deterministic, so these are MEDIAN
 # line/bar figures (a violin would be a flat line — the same reasoning the QR gate figure records).
 #
-# Inputs:  benchmark/results/gpu_gate_galen.json        (§8 gate: pure/vendor/CHOLMOD factor+solve)
-#          benchmark/results/gpu_chol_sweep_galen.json  (Cholesky front pure-vs-cuSOLVER by shape)
-#          benchmark/results/gpu_multifrontal_galen.json (bounded-arena sizes)
+# Inputs:  benchmark/results/gpu_gate_<host>.json        (§8 gate: pure/vendor/CHOLMOD factor+solve)
+#          benchmark/results/gpu_chol_sweep_<host>.json  (Cholesky front pure-vs-cuSOLVER by shape)
+#          benchmark/results/gpu_multifrontal_<host>.json (bounded-arena sizes)
 # Outputs: docs/src/assets/gpu_gate_ratios.png, gpu_chol_allsizes.png, gpu_arena.png
-#   julia --project=benchmark benchmark/plot_gpu_comparison.jl
+#   julia --project=benchmark benchmark/plot_gpu_comparison.jl [host]
+# `host` selects the result files and defaults to this machine's `gethostname()`.
 using JSON, Statistics
 using StatsPlots
 gr()
 
 const RES = joinpath(@__DIR__, "results")
+const HOST = get(ARGS, 1, gethostname())
 const OUT = joinpath(@__DIR__, "..", "docs", "src", "assets")
 isdir(OUT) || mkpath(OUT)
 
@@ -24,7 +26,7 @@ const C_PURE = "#2a78d6"    # pure Julia (the shipped path)
 const C_TGT = "#8a8a8a"
 
 # ---- Figure 1: §8 gate — pure-GPU speedup over the vendor-GPU and CHOLMOD, per matrix ----
-let G = JSON.parsefile(joinpath(RES, "gpu_gate_galen.json"))["results"]
+let G = JSON.parsefile(joinpath(RES, "gpu_gate_$(HOST).json"))["results"]
     R = [r for r in G if haskey(r, "gpu_ps")]
     labs = [replace(r["matrix"], "spd_grid_" => "SPD ", "sqd_kkt_" => "SQD ") * "³" for r in R]
     x = 1:length(R)
@@ -34,7 +36,7 @@ let G = JSON.parsefile(joinpath(RES, "gpu_gate_galen.json"))["results"]
         size = (820, 470), framestyle = :box, yscale = :log10, legend = :topleft,
         ylabel = "pure-GPU speedup  (×, log)", xrotation = 35,
         xticks = (x, labs), ylim = (0.8, 80),
-        title = "GPU multifrontal factor+solve: pure Julia vs the CUDA vendor + CHOLMOD (galen)",
+        title = "GPU multifrontal factor+solve: pure Julia vs the CUDA vendor + CHOLMOD",
         titlefontsize = 10
     )
     hline!(p, [1.0]; color = C_TGT, ls = :dash, lw = 1.2, label = "parity (1.0×)")
@@ -53,7 +55,7 @@ let G = JSON.parsefile(joinpath(RES, "gpu_gate_galen.json"))["results"]
 end
 
 # ---- Figure 2: Cholesky front ≥ 1.0× cuSOLVER at EVERY size (the user's hard requirement) ----
-let S = JSON.parsefile(joinpath(RES, "gpu_chol_sweep_galen.json"))
+let S = JSON.parsefile(joinpath(RES, "gpu_chol_sweep_$(HOST).json"))
     p = plot(
         size = (760, 450), framestyle = :box, legend = :topright,
         xlabel = "front width  nscol  (diagonal block dimension)",
@@ -76,7 +78,7 @@ let S = JSON.parsefile(joinpath(RES, "gpu_chol_sweep_galen.json"))
 end
 
 # ---- Figure 3: bounded arena vs monotonic (kept) ----
-let a = JSON.parsefile(joinpath(RES, "gpu_multifrontal_galen.json"))["arena"]
+let a = JSON.parsefile(joinpath(RES, "gpu_multifrontal_$(HOST).json"))["arena"]
     x = Float64.(a["H_dim"])
     mono = Float64.(a["monotonic_words"]) .* 8 ./ 1.0e9; bnd = Float64.(a["bounded_words"]) .* 8 ./ 1.0e9
     p = plot(

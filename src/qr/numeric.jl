@@ -87,7 +87,7 @@ end
 # a separate conjugate-Householder pass — a filed follow-up, not P2). Everything else —
 # the numeric loop and PureBLAS's `wy_t!`/`wy_apply!`/`gemm!` (which already dispatch a
 # generic AD-traceable triple-loop for non-BLAS `T`) — is fully generic. So `Float32`,
-# `Float16`, and `ForwardDiff.Dual` (AD, the CLAUDE.md req-3 target) all route here;
+# `Float16`, and `ForwardDiff.Dual` (AD, the CONTRIBUTING.md req-3 target) all route here;
 # `ComplexF64`/`BigFloat` fall through to the `:column` path (generic by construction).
 _frontal_capable(::Type{T}) where {T} = isbitstype(T) && T <: Real
 
@@ -96,7 +96,7 @@ _frontal_capable(::Type{T}) where {T} = isbitstype(T) && T <: Real
 # Plain reals convert directly; AD number types (`ForwardDiff.Dual`, whose `Float64(::Dual)`
 # is deliberately undefined so a derivative can't be silently dropped) get a MORE-SPECIFIC
 # method from the weak-dep extension (`ext/PureSparseForwardDiffExt.jl`) that returns the
-# primal — keeping `src` free of any ForwardDiff dependency (P2, CLAUDE.md req 3 / req 4).
+# primal — keeping `src` free of any ForwardDiff dependency (P2, CONTRIBUTING.md req 3 / req 4).
 _stat_f64(x::Real) = Float64(x)
 
 """
@@ -113,7 +113,7 @@ peeling** — it only relaxes the magnitude test to "any nonzero value passes" (
 threshold itself becomes `qr_singleton_mult × 0 = 0`); a genuinely structural
 singleton (a column with exactly one nonzero entry, which is extremely common —
 diagonal-shaped, LP-shaped, and many hand-built test matrices all have them) is still
-peeled. `singletons=false` is the actual peeling on/off switch (a coordinator-directed
+peeled. `singletons=false` is the actual peeling on/off switch (an
 addition beyond the original design text, added once this interaction surprised
 several tests written before this task assumed `sym.n1 == 0` unconditionally — genuinely
 useful independent of testing too, e.g. to isolate the core pipeline's own behavior or
@@ -209,7 +209,7 @@ cold peel used) is no longer a valid pivot and is dropped into the existing
 dropped mass; `solve!` returns the basic solution with that `x` entry 0, exactly like
 any other dead column) — and (3) runs the standard block numeric loop on the refreshed
 `A22` buffer, writing into the factor's own (shared, block-sized) arrays. All three
-steps are zero-allocation (CLAUDE.md req 5).
+steps are zero-allocation (CONTRIBUTING.md req 5).
 """
 function qr!(F::QRFactor{T, Ti}, A::SparseMatrixCSC{T, Ti}; tol::Union{Nothing, Real} = nothing) where {T, Ti <: Integer}
     sym = F.sym
@@ -324,7 +324,7 @@ function _qr_block_numeric!(F::QRFactor{T, Ti}, A::SparseMatrixCSC{T, Ti}, tau::
             end
         end
         # `alg=InsertionSort` pins a zero-alloc algorithm (design's zero-alloc gate,
-        # CLAUDE.md req 5): Base's default `sort!` picks RadixSort for `Int` arrays
+        # CONTRIBUTING.md req 5): Base's default `sort!` picks RadixSort for `Int` arrays
         # above a size heuristic, and RadixSort allocates scratch buffers
         # (`Base.Sort.make_scratch`) — since `len` here is a per-column row-subtree
         # size (small, bounded by tree depth, not array length), it crosses that
@@ -386,7 +386,7 @@ function _qr_block_numeric!(F::QRFactor{T, Ti}, A::SparseMatrixCSC{T, Ti}, tau::
                 end
             else
                 xpiv = pack[1]                     # x[pivotslot[k]], vrowind's first entry
-                s = xpiv >= zero(T) ? one(T) : -one(T)   # sign(0) := +1 (Opus N4)
+                s = xpiv >= zero(T) ? one(T) : -one(T)   # sign(0) := +1
                 Rkk = -s * xnorm
                 v1 = xpiv + s * xnorm
                 denom = v1 * v1

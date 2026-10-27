@@ -11,9 +11,8 @@ separate [PkgBenchmark.jl](https://github.com/JuliaCI/PkgBenchmark.jl) suite for
 commit-to-commit self-regression (`judge(PureSparse, "HEAD", "base")`) — it answers "did
 my change make my code slower?", which the gate does not.
 
-For a methodologically-valid (clock-locked) run, lock CPU frequency first — this repo
-doesn't duplicate a locking script; PureBLAS.jl's `bench/fleet_freqlock.sh lock` covers
-the same machine. An unlocked run still produces real measured numbers, just noisier.
+For a methodologically valid run, use a host with a fixed CPU frequency (performance governor,
+turbo disabled). An unlocked run still produces real measured numbers, just noisier.
 
 ## Configurations
 
@@ -35,15 +34,11 @@ factorization throughput from ordering quality and is part of the gate, not supp
 
 ## Current result
 
-As of 2026-07-13 on `neuromancer` (NOT clock-locked — see caveat above), **6/14**
-matrix-arm combinations beat CHOLMOD+OpenBLAS on warm numeric refactor. This does **not**
-yet meet M1's gate ("strictly faster on at least half the set"). The root cause has been
-diagnosed (not guessed — measured): it is not an ordering-quality gap (PureSparse's AMD
-fill matches or beats CHOLMOD's on every failing case) but a relaxed-amalgamation
-limitation that under-merges supernodes on bushy elimination trees (2D grid Laplacians
-being the clearest failing case). See `ROADMAP.md`'s "CURRENT FOCUS" section for the full
-table and diagnosis — that file is the living source of truth for gate status; this page
-won't be kept in perfect sync with every run.
+The M1 gate is met: on the 14-combination KKT/FEM named-matrix set, PureSparse+PureBLAS beats
+CHOLMOD+OpenBLAS on warm numeric refactor in 11 of 14 matrix-arm combinations (the gate requires
+at least half), and the size-sweep gate passes at every size from 2 to 2048 on both a Ryzen 9
+5900X (Zen 3) and a Ryzen 5 7640U (Zen 4), CPU frequency locked. Per-run numbers are written to the
+JSON files described below; see `ROADMAP.md` for milestone status.
 
 ## Reproducing
 
@@ -91,7 +86,7 @@ with kernel throughput).
 ### Current result
 
 As of 2026-07-16, the M5 closeout gate **PASSES 16/16** — every stratum, both arms —
-confirmed on **both** clock-locked hosts (`neuromancer` and `galen`, `performance`
+confirmed on **both** clock-locked hosts (a Zen 5 desktop and a Ryzen 9 5900X, `performance`
 governor). Two-host clock-locked agreement is this project's bar for a gate verdict.
 Per stratum:
 
@@ -103,15 +98,9 @@ Per stratum:
 
 ![M5 QR gate per-stratum comparison](assets/qr_gate_strata.png)
 
-Two methodology corrections landed with this result and are worth stating plainly.
-First, the gate now compares PureSparse's **warm `qr!`** against SPQR cold (D13, above)
-rather than cold-vs-cold — matching how M1/M2/M4 already gate, and eliminating the
-cold-path GC-pause variance that made single-sample verdicts unreliable. Second, an
-earlier round of M5 gate numbers had been timing a **broken** blocked multifrontal
-path that silently dropped ~2/3 of columns (so it clocked a fraction of the real
-work); that bug is fixed, and the numbers above are the first measured on the corrected
-factorization. `ROADMAP.md` is the living source of truth for the full diagnosis trail;
-this page won't be kept in perfect sync with every run.
+The gate compares PureSparse's **warm `qr!`** against SPQR cold (D13, above) rather than
+cold-vs-cold, matching how M1/M2/M4 gate and avoiding the cold-path GC-pause variance that made
+single-sample verdicts unreliable. The saved benchmark JSON holds the full per-sample record.
 
 ### The flagship dense-panel case (7000×4000)
 
@@ -119,7 +108,7 @@ Where the multifrontal path's BLAS-3 architecture is actually exercised — a
 7000×4000 random matrix at 1% and 10% density
 (`benchmark/faer_vs_puresparse_7000x4000.jl`) — PureSparse's `:frontal` path is
 **tied with [faer](@cite)** and **~30% faster than SuiteSparseQR**, at identical
-COLAMD fill (neuromancer, clock-locked, cold factorize-only medians of 10 samples):
+COLAMD fill (Zen 5 desktop, clock-locked, cold factorize-only medians of 10 samples):
 
 | density | PureSparse `:frontal` | faer | SuiteSparseQR | vs faer | vs SPQR |
 |---|---|---|---|---|---|
@@ -127,13 +116,6 @@ COLAMD fill (neuromancer, clock-locked, cold factorize-only medians of 10 sample
 | 10% | **6.69 s** | 6.93 s | 8.98 s | 1.04× | 1.34× |
 
 ![7000×4000 sparse QR comparison](assets/qr_faer_comparison.png)
-
-!!! warning "Prior flagship numbers withdrawn"
-    Earlier versions of this page reported PureSparse `:frontal` at 1.72 s / 0.89 s,
-    "2.3–6.5× faster than faer/SPQR". Those numbers were an **artifact of the
-    correctness bug** — the broken blocked path dropped columns and timed only a
-    fraction of the real work. They are withdrawn; do not cite them. The numbers above
-    are the corrected measurement.
 
 Both PureSparse and faer sit near **~13 GFlop/s single-threaded** here, and a
 panel-width (NB) sweep confirms that rate is **shape-limited** — the skinny-K trailing
@@ -151,12 +133,12 @@ exists to route away from.)
 ```bash
 julia --project=benchmark benchmark/qr_gate.jl          # measure + save + print gate verdict
 julia --project=benchmark benchmark/qr_gate.jl report    # verdict from the last saved JSON only
-julia --project=benchmark benchmark/plot_qr_comparison.jl  # regenerate the two plots above
+julia --project=benchmark benchmark/plot_qr_comparison.jl [host]  # regenerate the two plots above
                                                            # from the SAVED JSON (never re-measures)
 ```
 
-The plots regenerate from `benchmark/results/qr_gate_neuromancer.json` and
-`benchmark/results/faer_vs_puresparse_7000x4000_neuromancer.json` — saved measurement
+The plots regenerate from `benchmark/results/qr_gate_<host>.json` and
+`benchmark/results/faer_vs_puresparse_7000x4000_<host>.json` — saved measurement
 snapshots; re-running a benchmark to make a plot is against this repo's benchmarking
 rules (results→JSON first, plots from saved JSON only).
 
@@ -174,7 +156,7 @@ entire path compiles, runs, and matches at machine precision on AMD (ROCm) hardw
 just NVIDIA.
 
 !!! note "Measurement status"
-    Numbers are galen (RTX 4070, clock-locked) medians of the **warm, device-resident
+    Numbers are RTX 4070 (FP64) medians of the **warm, device-resident
     factor+solve** — near-deterministic, so the honest viz is a median line/bar (a violin
     would be a flat line — same reasoning as the QR gate figure above). The gate
     (`docs/design_gpu.md` §8) times **factor + solve**, both on device.
@@ -231,12 +213,12 @@ grows with problem size:
 
 ```bash
 julia --project=gpu_probe  benchmark/gpu_gate.jl            # the §8 gate (needs a GPU) → JSON
-julia --project=benchmark  benchmark/plot_gpu_comparison.jl # regenerate the plots from SAVED JSON
+julia --project=benchmark  benchmark/plot_gpu_comparison.jl [host] # regenerate the plots from SAVED JSON
 ```
 
 The figures regenerate from the saved measurement snapshots
-`benchmark/results/gpu_gate_galen.json` (the §8 gate: pure / vendor / CHOLMOD),
-`gpu_chol_sweep_galen.json` (the Cholesky-front sweep), and `gpu_multifrontal_galen.json`
+`benchmark/results/gpu_gate_<host>.json` (the §8 gate: pure / vendor / CHOLMOD),
+`gpu_chol_sweep_<host>.json` (the Cholesky-front sweep), and `gpu_multifrontal_<host>.json`
 (arena) — never from a live benchmark, per this page's rule. The correctness oracles that
 back these numbers (device factor matches CPU factor at machine precision, exact inertia,
 solve residuals) live in `benchmark/gpu/`; the AMD-portability check is

@@ -1,5 +1,5 @@
 # Regenerates the M5 sparse-QR comparison plots for docs/src/benchmarking.md from the
-# ALREADY-SAVED benchmark JSON (CLAUDE.md "Benchmarking": results→JSON first, plots
+# ALREADY-SAVED benchmark JSON (CONTRIBUTING.md "Benchmarking": results→JSON first, plots
 # regenerate from saved JSON only — this script never re-runs a benchmark).
 #
 # The gate figure is the D13 gate: PureSparse's WARM `qr!` refactor (zero-allocation,
@@ -17,22 +17,23 @@
 # The flagship 7000×4000 figure is a bar chart (median) — too few affordable samples at
 # that scale for a meaningful distribution (faer/SPQR cost ~6-9 s/sample).
 #
-# Inputs (saved measurement snapshots, neuromancer, clock-locked):
-#   benchmark/results/qr_gate_neuromancer.json                      — the 16-matrix-arm D13 gate (16/16 PASS)
-#   benchmark/results/faer_vs_puresparse_7000x4000_neuromancer.json — the flagship dense-panel case
-# The D13 gate 16/16 verdict is confirmed on BOTH clock-locked hosts (neuromancer AND
-# galen — benchmark/results/qr_gate_galen.json); the neuromancer JSON is plotted here.
+# Inputs (saved measurement snapshots from a fixed-frequency host):
+#   benchmark/results/qr_gate_<host>.json                           — the 16-matrix-arm D13 gate (16/16 PASS)
+#   benchmark/results/faer_vs_puresparse_7000x4000_<host>.json      — the flagship dense-panel case
+# The D13 gate passes 16/16 on both a Zen 5 desktop and a Ryzen 9 5900X (Zen 3).
 # Outputs:
 #   docs/src/assets/qr_gate_strata.png
 #   docs/src/assets/qr_faer_comparison.png
 #
 # Run as a script (plain generator, no run-guard):
-#   julia --project=benchmark benchmark/plot_qr_comparison.jl
+#   julia --project=benchmark benchmark/plot_qr_comparison.jl [host]
+# `host` selects the result files and defaults to this machine's `gethostname()`.
 using JSON, Statistics
 using StatsPlots  # re-exports Plots
 gr()
 
 const RESULTS = joinpath(@__DIR__, "results")
+const HOST = get(ARGS, 1, gethostname())
 const OUT = joinpath(@__DIR__, "..", "docs", "src", "assets")
 isdir(OUT) || mkpath(OUT)
 
@@ -64,7 +65,7 @@ ps_best_warm_arm(r) = Float64(r["ps_warm"]) <= Float64(r["ps_frontal_warm"]) ? "
 spqr_cold_ms(r) = 1.0e3 * median(Float64.(r["spqr_cold_samples"]))
 
 # ── 1) D13 gate: PureSparse best-of warm qr! vs SuiteSparseQR cold, faceted by stratum ──
-gate = JSON.parsefile(joinpath(RESULTS, "qr_gate_neuromancer.json"))
+gate = JSON.parsefile(joinpath(RESULTS, "qr_gate_$(HOST).json"))
 rows = gate["results"]
 
 strata = ["i_singleton", "ii_sparse_R", "iii_flop_rich"]
@@ -116,14 +117,14 @@ end
 plot(
     panels...; layout = (3, 1), size = (950, 1150),
     plot_title = "M5 QR gate — warm qr! vs SPQR cold (D13), medians — $total_pass/$total_k PASS " *
-        "(neuromancer + galen, clock-locked)",
+        "(fixed-frequency host)",
     plot_titlefontsize = 10, left_margin = 8Plots.mm, bottom_margin = 4Plots.mm
 )
 savefig(joinpath(OUT, "qr_gate_strata.png"))
 println("wrote ", joinpath(OUT, "qr_gate_strata.png"), "  ($total_pass/$total_k PASS)")
 
 # ── 2) Flagship 7000×4000: PureSparse :frontal vs faer vs SuiteSparseQR, per density ──
-flag = JSON.parsefile(joinpath(RESULTS, "faer_vs_puresparse_7000x4000_neuromancer.json"))
+flag = JSON.parsefile(joinpath(RESULTS, "faer_vs_puresparse_7000x4000_$(HOST).json"))
 frows = sort(flag["results"], by = r -> r["density"])
 k = length(frows)
 labels = [
@@ -149,7 +150,7 @@ p2 = plot(;
     xticks = ((1:k) .* 3 .- 1, labels), xlims = (0.3, 3k + 0.7), legend = :topright,
     ylabel = "cold factorize, median of $nsamp samples [s]", grid = :y, gridalpha = 0.15,
     framestyle = :box, tickfontsize = 9,
-    title = "sparse QR, 7000×4000, neuromancer (clock-locked) — log scale",
+    title = "sparse QR, 7000×4000, fixed-frequency host — log scale",
     titlefontsize = 11
 )
 for (i, r) in enumerate(frows)

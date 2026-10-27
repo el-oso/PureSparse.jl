@@ -111,7 +111,7 @@ from its ORIGINAL column index to its LOCAL index within `A22` (its position in
 `surv_cols`). This is the natural generalization of "same permutation": the peeled
 columns are a PureSparse-specific optimization layer the external ordering has no
 opinion on (SPQR applies its own equivalent structural-singleton trick internally
-regardless of arm — ROADMAP.md's own account), so honoring the GIVEN ordering's
+regardless of arm), so honoring the GIVEN ordering's
 relative column order among the columns it actually still has a say over is what
 "same ordering, modulo our own preprocessing" means here.
 """

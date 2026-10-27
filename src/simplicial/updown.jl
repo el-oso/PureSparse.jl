@@ -1,8 +1,8 @@
 # Simplicial LDLᵀ conversion, Davis–Hager rank-1 update/downdate, and simplicial split
 # solves (design.md §7, §6/§0 N7). Sole algorithmic source: Davis & Hager, *Modifying a
-# Sparse Cholesky Factorization*, SIAM J. Matrix Anal. Appl. 20(3), pp. 606–627, 1999
-# (`refs/linear_algebra/modify_sparse_cholesky.pdf`), read directly — never CHOLMOD
-# source (CLAUDE.md req 1 / design.md §11). Section/equation references below are to
+# Sparse Cholesky Factorization*, SIAM J. Matrix Anal. Appl. 20(3), pp. 606–627, 1999,
+# read directly — never CHOLMOD
+# source (CONTRIBUTING.md req 1 / design.md §11). Section/equation references below are to
 # that paper. Multiple-rank is sequenced single-rank per design.md §7's explicit v1
 # scope (the 2001 batched follow-up is a listed extension, not implemented here).
 

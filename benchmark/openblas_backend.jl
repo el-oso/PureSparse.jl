@@ -1,8 +1,8 @@
 # OpenBLAS-backed drop-in replacements for PureBLAS's 6 supernodal/LDLT kernels
 # (potrf!/trsm!/syrk!/syr2k!/gemm!/ger!), signature-for-signature identical to PureBLAS's
 # (verified against PureBLAS's src/lapack.jl:900, src/level3.jl:1614/2657/3100,
-# src/gemm.jl:1950, src/native.jl's ger!). Lives ONLY under benchmark/ — CLAUDE.md
-# requirement 2 forbids calling OpenBLAS/LAPACK from src/; this module exists purely so
+# src/gemm.jl:1950, src/native.jl's ger!). Lives ONLY under benchmark/ — CONTRIBUTING.md
+# requirement 9 forbids calling OpenBLAS/LAPACK from src/; this module exists purely so
 # `benchmark/gate.jl`/`gate_ldlt.jl` can build the "PureSparse+OpenBLAS" kernel-attribution
 # arm (design.md §9.3 config 2) by re-`include`ing the unmodified `src/numeric/llt.jl`/
 # `ldlt.jl` under a different kernel binding — no algorithmic duplication, just a different

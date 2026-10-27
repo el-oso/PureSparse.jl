@@ -7,7 +7,7 @@
 # ext/PureSparseCUDAExt.jl (it is already backend-generic; copied only to avoid pulling in the
 # CUDA-gated extension module).
 #
-#   julia --project=/home/el_oso/Documents/claude/amd_probe benchmark/gpu/amd_kernel_test.jl
+#   julia --project=<path-to>/amd_probe benchmark/gpu/amd_kernel_test.jl
 
 using AMDGPU, KernelAbstractions, LinearAlgebra, Random, Statistics, Printf
 using KernelAbstractions: @kernel, @index, @localmem, @private, @synchronize, get_backend, @atomic

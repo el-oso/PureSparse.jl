@@ -1,6 +1,6 @@
 # M2 SQD/LDLT wall-time gate (design.md §9.3/§9.4, M2 task 8 — mirrors gate.jl's M1
 # LLᵀ gate exactly, same 3-arm structure, own-ordering + same-permutation arms, same
-# CLAUDE.md requirement 2 methodology). CHOLMOD's sparse `ldlt` (via `SparseArrays`)
+# CONTRIBUTING.md requirement 2 methodology). CHOLMOD's sparse `ldlt` (via `SparseArrays`)
 # is the baseline — verified directly (not assumed) to handle SQD/indefinite input
 # without complaint and to share the same `perm=`/`.p` interface as its `cholesky`.
 #

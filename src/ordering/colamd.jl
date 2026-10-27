@@ -1,7 +1,7 @@
 # Column Approximate Minimum Degree ordering (design_qr.md §2.2) — the `order_columns`
 # method for the `COLAMDOrdering` struct declared in `ordering/interface.jl`.
 #
-# Grounded EXCLUSIVELY in the two published sources (CLAUDE.md requirement 1 /
+# Grounded EXCLUSIVELY in the two published sources (CONTRIBUTING.md requirement 1 /
 # design_qr.md §11 — the COLAMD C library, CHOLMOD and SuiteSparse source never read,
 # in any form):
 #

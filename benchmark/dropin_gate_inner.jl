@@ -74,7 +74,7 @@ else
         # warm refactor of the dropin-produced factor (the drop-in exposes no stdlib
         # warm-refactor name — CHOLMOD's cholesky! takes its own Factor type — so warm
         # goes through PureSparse.cholesky! on the factor the dropin returned; honest
-        # scope, documented in the ROADMAP)
+        # scope, see design.md §9.3)
         _ps_warm!(F, Afull)
         @assert PureSparse.issuccess(F) "warm refactor failed ($label)"
         x = F \ b
@@ -94,7 +94,7 @@ else
     end
 
     # zero-alloc re-check WITH the dropin (getproperty overrides etc.) compiled in —
-    # CLAUDE.md requirement 5 must not regress from the parity additions. Same
+    # CONTRIBUTING.md requirement 5 must not regress from the parity additions. Same
     # full-pattern rule as the warm arms above, and issuccess asserts so a failing
     # early-exit can't masquerade as a 0-byte success.
     A0 = gate_matrices()[1][2]

@@ -1,4 +1,4 @@
-# StrictMode zero-alloc guarantee for every warm-refactor entry point CLAUDE.md req 5
+# StrictMode zero-alloc guarantee for every warm-refactor entry point CONTRIBUTING.md req 5
 # already gates at runtime: cholesky!/ldlt! (M1/M2, both via the shared
 # solve!(::_PanelFactor,...)), and qr!/solve! on BOTH sparse-QR factor types — QRFactor
 # (M5a :column) and QRFrontFactor (M5b :frontal). `@assert_noalloc` (StrictMode) is

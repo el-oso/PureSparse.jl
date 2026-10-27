@@ -8,7 +8,7 @@
 # streaming column-by-column: reduction for ||x|| -> reflector -> in-panel WY-apply. This is the
 # direct analogue of geqrf's own (serial-over-columns) panel kernel — the "fair fight" of §Q2.2.
 #
-# Run on galen:  ~/.juliaup/bin/julia --project=. qr_panel_phase0.jl
+# Run on a CUDA host:  julia --project=. qr_panel_phase0.jl
 using CUDA, KernelAbstractions, LinearAlgebra, Statistics, JSON
 const KA = KernelAbstractions
 

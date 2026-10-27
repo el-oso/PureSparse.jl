@@ -131,7 +131,7 @@ end
     @test xt[3] == 0.0
 end
 
-@testitem "solve!: genuinely zero-allocation, n1==0 (M5a task 10, CLAUDE.md req 5)" begin
+@testitem "solve!: genuinely zero-allocation, n1==0 (M5a task 10, CONTRIBUTING.md req 5)" begin
     using Random, SparseArrays
     rng = MersenneTwister(404)
     A = sprand(rng, 10, 6, 0.5)
@@ -143,7 +143,7 @@ end
     @test allocs == 0
 end
 
-@testitem "solve!: genuinely zero-allocation, n1>0 (M5a task 10, CLAUDE.md req 5)" begin
+@testitem "solve!: genuinely zero-allocation, n1>0 (M5a task 10, CONTRIBUTING.md req 5)" begin
     using SparseArrays
     # design_qr.md §2.3 shape: exactly one singleton (column 1), nb=2 remaining.
     A = sparse([1.0 0.5 0.7; 0.0 0.9 0.3; 0.0 0.2 0.5])
@@ -156,7 +156,7 @@ end
     @test allocs == 0
 end
 
-@testitem "solve_minnorm!: genuinely zero-allocation (M5a task 10, CLAUDE.md req 5)" begin
+@testitem "solve_minnorm!: genuinely zero-allocation (M5a task 10, CONTRIBUTING.md req 5)" begin
     using Random, SparseArrays
     rng = MersenneTwister(505)
     A = sprand(rng, 4, 9, 0.4)

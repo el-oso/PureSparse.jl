@@ -1,6 +1,6 @@
 # Core types, design.md §1.2. `Symbolic` is the pattern-only analysis, shared by
 # reference across many numeric factorizations of the same sparsity pattern (the
-# "analyze once, factorize many times" split — CLAUDE.md requirement 7).
+# "analyze once, factorize many times" split — CONTRIBUTING.md requirement 7).
 
 """
     Symbolic{Ti<:Integer}
@@ -64,7 +64,7 @@ FactorStats() = FactorStats(0, 0.0, 0, 0, 0, 0, 0.0, Inf, 0)
 
 Preallocated scratch buffers reused across every `cholesky!`/`ldlt!`/`solve!` call on a
 factor sharing one `Symbolic` — sized once from `Symbolic.max_extend_rows` (the numeric
-buffers `c`/`cd`/`ir`/`rs`) so the numeric phase never allocates (CLAUDE.md requirement
+buffers `c`/`cd`/`ir`/`rs`) so the numeric phase never allocates (CONTRIBUTING.md requirement
 5; `Symbolic.max_update_size` remains a sizing diagnostic, no longer a buffer bound).
 """
 struct Workspace{T, Ti <: Integer}
@@ -113,7 +113,7 @@ struct Workspace{T, Ti <: Integer}
     # block, so it is resolved once per (descendant, ancestor)
     # pair into this buffer (filled during the contiguity check,
     # which already walks those same lookups) instead of being
-    # recomputed k1 times. Measured on galen (5900X) at n=2048:
+    # recomputed k1 times. Measured on a Ryzen 9 5900X at n=2048:
     # the recomputation was ~1.5 ns/element over 7.9e6 scattered
     # elements per factorization. ctot ≤ max_extend_rows by the
     # same containment argument as `c` above.
@@ -123,7 +123,7 @@ struct Workspace{T, Ti <: Integer}
     # ctot+1 sentinel. Built inside the same contiguity-check
     # walk (contig ⟺ nr == 1); the scatter then adds run-by-run
     # with contiguous SIMD inner loops instead of element-by-
-    # element indexed stores. Measured (galen, n=2048): 66% of
+    # element indexed stores. Measured (Ryzen 9 5900X, n=2048): 66% of
     # scattered elements live in runs ≥ 9 rows, 38% in runs > 32.
     head::Vector{Ti}              # length nsuper+1, intrusive linked-list heads (0 = empty)
     next::Vector{Ti}              # length nsuper, intrusive linked-list next pointers

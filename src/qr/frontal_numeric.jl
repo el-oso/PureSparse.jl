@@ -40,9 +40,9 @@
 #              also silently shrank the split-trigger threshold back to a flat
 #              constant (the workspace's storage-capacity NB, unrelated to front
 #              size) — regressing wall-time ~2x on a 7000×4000 @ 1% density case
-#              specifically (galen, measured: 4.6s pre-regression → 8.7-9.4s), traced
+#              specifically (Ryzen 9 5900X, measured: 4.6s pre-regression → 8.7-9.4s), traced
 #              to 83% of panels collapsing to width 1 (measured via `F.pbs`
-#              histograms across three git revisions, `ROADMAP.md`'s own account).
+#              histograms across three git revisions).
 #              Re-reading faer's actual source (qr.rs:609-613 AND :1260-1265 together,
 #              not just the inner-loop site) confirms `max_block_size`/NBf legitimately
 #              feeds the split trigger and only the group-local `bs` re-derivation (2)

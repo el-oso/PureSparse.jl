@@ -146,7 +146,7 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
     # they carry no correctness weight anyway: they are only a sibling-ordering
     # heuristic, and the final `colcount` below is recomputed on the final pattern.
     #
-    # MEASURED (2026-07-13, ROADMAP "CURRENT FOCUS"): on the gate matrices this changes
+    # MEASURED: on the gate matrices this changes
     # WHICH sibling merges but not HOW MANY merge — the zero-fraction test rejects almost
     # no contiguity-eligible pair (2 of 1777 on laplacian2d 80×80), so nsuper is
     # unchanged; the binding constraint is one-contiguous-child-per-parent per

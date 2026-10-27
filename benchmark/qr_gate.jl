@@ -1,4 +1,4 @@
-# M5 sparse QR wall-time gate (design_qr.md §9.3, CLAUDE.md requirement 2 —
+# M5 sparse QR wall-time gate (design_qr.md §9.3, CONTRIBUTING.md requirement 2 —
 # non-negotiable). Chairmarks medians, single-thread pinned. Configs (design_qr.md §9.3
 # table; QR needs no OpenBLAS kernel-attribution arm the way Cholesky's gate does — M5a's
 # left-looking Householder loop calls no BLAS-3 kernel at all, only PureBLAS's `nrm2`
@@ -48,9 +48,8 @@
 #   julia --project=benchmark benchmark/qr_gate.jl            # measure + save + print verdict
 #   julia --project=benchmark benchmark/qr_gate.jl report      # print verdict from saved JSON only
 #
-# For a methodologically-valid (locked-clock) run: `sudo ../PureBLAS.jl/bench/fleet_freqlock.sh
-# lock` first (see benchmark/gate.jl's own header for the same note) — this repo does not
-# duplicate that script.
+# For a methodologically valid run, use a host with a fixed CPU frequency (performance governor,
+# turbo disabled; see CONTRIBUTING.md "Benchmarking" and benchmark/gate.jl's header).
 
 using PureSparse, SparseArrays, LinearAlgebra, Random, Statistics, JSON, Dates
 using Chairmarks: @be
@@ -188,8 +187,8 @@ function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::Stri
 
     # SuiteSparseQR's `\` on an underdetermined (m<n) system under ORDERING_FIXED can
     # throw SingularException — its rank-revealing minimum-norm path apparently needs
-    # its own reordering freedom (confirmed by testing: lp_slack's same-perm arm on
-    # galen hit this on the very first run). PureSparse's own `\` never does (§6.2's
+    # its own reordering freedom (observed: lp_slack's same-perm arm raises it on
+    # the first run). PureSparse's own `\` never does (§6.2's
     # basic-solution path handles this by construction) — only SPQR's solve needs the
     # guard here.
     try

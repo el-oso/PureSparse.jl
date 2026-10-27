@@ -4,7 +4,7 @@ This page is for people working **on** PureSparse (contributors), not people usi
 the repository layout, how to build and test, and the non-negotiable disciplines — clean-room
 provenance, the wall-time performance gate, trim compatibility, and the StrictMode guarantee
 gates — that every change must respect. The authoritative, always-current version of these rules
-lives in the repository's `CLAUDE.md`; the full architecture is in `docs/design.md` (and
+lives in the repository's `CONTRIBUTING.md`; the full architecture is in `docs/design.md` (and
 `docs/design_qr*.md`, `docs/design_gpu.md` for the QR and GPU milestones).
 
 ## Repository layout

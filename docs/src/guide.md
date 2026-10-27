@@ -10,7 +10,7 @@ ignored, not an error, so a fully-stored symmetric matrix works too (just redund
 
 The core API is split into a symbolic analysis (`Symbolic`, pattern-only — permutation,
 elimination tree, supernode partition) and a numeric factor (`SupernodalFactor`, values).
-This split is the primary organizing principle (see `CLAUDE.md` requirement 7): an
+This split is the primary organizing principle (see `CONTRIBUTING.md` requirement 7): an
 interior-point optimizer factors the same sparsity pattern hundreds of times per solve,
 and only the *numeric* factorization needs to repeat.
 

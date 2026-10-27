@@ -7,7 +7,7 @@ export random_rect, dense_ata_pattern, elimination_fill_adj, adj_of_pattern,
 random_rect(rng, m::Int, n::Int, density::Float64) = sprand(rng, m, n, density)
 
 # Brute-force pattern(AᵀA) via SparseArrays' own multiply — the oracle ata_pattern is
-# checked against (black-box stdlib output only, clean-room safe per CLAUDE.md req 1;
+# checked against (black-box stdlib output only, clean-room safe per CONTRIBUTING.md req 1;
 # forming AᵀA explicitly here in the TEST is fine, it's exactly what ata_pattern exists
 # to avoid doing in the actual symbolic pipeline).
 function dense_ata_pattern(A::SparseMatrixCSC)
@@ -44,7 +44,7 @@ function elimination_fill_adj(n::Int, adj, perm)
     return nnzL
 end
 
-# stdlib SuiteSparseQR's own nnz(R) for a given A — black-box output oracle (CLAUDE.md
+# stdlib SuiteSparseQR's own nnz(R) for a given A — black-box output oracle (CONTRIBUTING.md
 # req 1: output observation via SparseArrays is clean-room safe, source is never read).
 stdlib_spqr_nnzR(A::SparseMatrixCSC) = nnz(qr(A).R)
 

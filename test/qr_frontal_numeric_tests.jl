@@ -188,7 +188,7 @@ end
     Rw = dense_R_frontal(F)
     @test maximum(abs.(Rw' * Rw .- Ad' * Ad)) < 1.0e-6 * max(1, norm(Ad)^2)
 
-    # front_block_size override (block-size calibration knob, ROADMAP 2026-07-16):
+    # front_block_size override (block-size calibration knob, design_qr_m5b.md §A8):
     # forcing a NON-default panel width must stay correct AND size ws.Tm / the ftau
     # slab consistently (the single-source-of-truth invariant the OOB fix established,
     # now driven by the override instead of qr_block_size). Pick a value != default.
@@ -226,7 +226,7 @@ end
         @test maximum(abs.(R' * R .- Ad' * Ad)) < atol * max(1, norm(Ad)^2)
     end
 
-    # AD (the CLAUDE.md req-3 target): a least-squares solve differentiated THROUGH the
+    # AD (the CONTRIBUTING.md req-3 target): a least-squares solve differentiated THROUGH the
     # frontal QR must match a finite difference — i.e. the whole factorize+solve is
     # ForwardDiff-traceable, the point of "generic over T". Full-rank (added diagonal) so
     # the solution is smooth in θ (no rank-drop discontinuity).

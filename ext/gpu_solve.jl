@@ -21,7 +21,7 @@
 
 # Workgroup width. Wide on purpose: near-root levels have 1–4 supernodes with MB-sized
 # below-panels, and a level gets ONE workgroup per supernode — width is the only latency
-# hiding there (galen sweep on SQD 40³: 64→99 ms, 128→56, 256→36, 512→27, 1024→26).
+# hiding there (RTX 4070 sweep on SQD 40³: 64→99 ms, 128→56, 256→36, 512→27, 1024→26).
 # Leaf levels (thousands of tiny supernodes) measured insensitive to the width.
 const SOLVE_GROUP = 1024
 

@@ -2,7 +2,7 @@
 # PRECOMPILE-TIME assertions (method surface + inferred return types), eliminated by the
 # trimmer, with NO runtime cost and NO runtime failure mode. A violation is a precompile
 # error, never a thrown exception. Runtime pre/postconditions are a separate StrictMode
-# layer (`strict.jl`) — do not conflate the two (design.md §9.1 D6 / CLAUDE.md req 6).
+# layer (`strict.jl`) — do not conflate the two (design.md §9.1 D6 / CONTRIBUTING.md req 6).
 #
 # TypeContracts requires its target to be an abstract type (`@contract` docs: "Abstract
 # types only"), so contracts here are declared on `AbstractOrdering` and

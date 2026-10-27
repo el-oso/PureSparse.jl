@@ -1,7 +1,7 @@
-# M7 Phase-0c probe (design_qr_gpu v3 §R3.2 / Opus review BLOCKER-1): measure γ, the batched
+# M7 Phase-0c probe (design_qr_gpu v3 §R3.2 / review BLOCKER-1): measure γ, the batched
 # WY-apply gemm ratio = cublasDgemmStridedBatched / pure-KA-batched, on the ACTUAL trailing shapes.
 #
-# Opus's verdict: the whole GPU-QR win (pure TSQR *and* the vendor-hybrid floor) hinges on γ, NOT
+# The review's conclusion: the whole GPU-QR win (pure TSQR *and* the vendor-hybrid floor) hinges on γ, NOT
 # the panel. M6 measured 1.14x only on SINGLE nt gemms; the WY-apply needs BATCHED tn (W=VᵀC, K=rb,
 # tiny nb×n_trail output — cuBLAS's strong split-K regime) + BATCHED nn (C-=V·M, K=nb). If γ≈1.0 the
 # front budget inverts and neither pure nor hybrid beats geqrf. This settles it before any TSQR code.
@@ -10,7 +10,7 @@
 # adapted to (a) 3D batch index and (b) the tn/nn transpose-load access patterns. A NAIVE pure kernel
 # would give a falsely low γ — this must be the optimized structure for the ratio to be honest.
 #
-# Run on galen:  ~/.juliaup/bin/julia --project=. qr_gamma_phase0.jl
+# Run on a CUDA host:  julia --project=. qr_gamma_phase0.jl
 using CUDA, KernelAbstractions, LinearAlgebra, Statistics, JSON
 using Base.Cartesian: @nexprs
 const KA = KernelAbstractions
@@ -171,7 +171,7 @@ println(
     "γ_nn (small-K):                          min ", round(minimum(gnn), digits = 3),
     "  median ", round(median(gnn), digits = 3), "  max ", round(maximum(gnn), digits = 3)
 )
-println("\nInterpretation (Opus BLOCKER-1): γ_WY ≥ ~1.1 → TSQR pure win plausible; γ_WY ≈ 1.0 → budget")
+println("\nInterpretation (docs/reviews/design_qr_gpu_v3_review_1.md, BLOCKER-1): γ_WY ≥ ~1.1 → TSQR pure win plausible; γ_WY ≈ 1.0 → budget")
 println("inverts, neither pure nor vendor-hybrid beats geqrf per-front; M7 → beat-SPQR-end-to-end only.")
 open("qr_gamma_phase0.json", "w") do io
     JSON.print(

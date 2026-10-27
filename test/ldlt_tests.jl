@@ -264,7 +264,7 @@ end
     @test relerr(L2, L1) < 1.0e-12
 end
 
-@testitem "ldlt!: refactorize is genuinely zero-allocation (M2 gate, CLAUDE.md req 5)" setup = [LDLTHelpers] begin
+@testitem "ldlt!: refactorize is genuinely zero-allocation (M2 gate, CONTRIBUTING.md req 5)" setup = [LDLTHelpers] begin
     using Random, LinearAlgebra, SparseArrays
     rng = MersenneTwister(77)
     # Two shapes: a generic SQD KKT, and a lopsided one (few coupled variables, wide

@@ -3,7 +3,7 @@
 # counts for sparse Cholesky factorization*), implemented from the full presentation in
 # Davis, *Direct Methods for Sparse Linear Systems* (SIAM, 2006), ch. 4, per the design's
 # N6 directive (the §3.3 sketch is not self-contained) — never CHOLMOD source
-# (CLAUDE.md req 1).
+# (CONTRIBUTING.md req 1).
 #
 # Theory in brief: for i > j, L[i,j] ≠ 0 iff j lies in the "row subtree" T^i — the
 # etree-connected union of paths from {d : A[i,d] ≠ 0, d < i} up to i. So
@@ -96,7 +96,7 @@ function column_counts(
             pl = prevleaf[i]
             if pl != 0
                 # q = lca(pl, j) by path halving (design §3.3 N6). Iterative, bounded —
-                # no recursion (CLAUDE.md req 4).
+                # no recursion (CONTRIBUTING.md req 4).
                 q = pl
                 while ancestor[q] != q
                     ancestor[q] = ancestor[ancestor[q]]

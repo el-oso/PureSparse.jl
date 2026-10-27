@@ -13,7 +13,7 @@
 #   3. Signed regularization, QDLDL/Clarabel-style (Vanderbei 1995 for SQD strong
 #      factorizability; Stellato et al. OSQP/QDLDL and the Clarabel solver for the
 #      forced-sign fixed-pivot-order scheme — deliberately NOT MA57's Bunch–Kaufman
-#      pivoting, CLAUDE.md requirement 8 / design.md §0 D3). Inertia is accounted on the
+#      pivoting, CONTRIBUTING.md requirement 8 / design.md §0 D3). Inertia is accounted on the
 #      pre-perturbation pivots, for free, inside the column loop.
 #
 # Efficiency note (documented opportunity, not a defect): the descendant update computes
@@ -32,7 +32,7 @@ permutation internally, so the caller never needs to know the factor ordering.
 `signs = nothing` means all-free: only the magnitude floor `|d_j| ≥ ldlt_delta·max|A|`
 is enforced, never a sign flip. For repeated factorization of matrices sharing `sym`'s
 pattern, prefer [`ldlt!`](@ref) on a factor obtained once from this — it never
-recomputes the symbolic analysis (CLAUDE.md requirement 7).
+recomputes the symbolic analysis (CONTRIBUTING.md requirement 7).
 """
 function ldlt(
         sym::Symbolic{Ti}, A::SparseMatrixCSC{T};

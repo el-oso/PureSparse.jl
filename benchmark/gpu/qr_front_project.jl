@@ -14,7 +14,7 @@
 # then only divides by 1.14 (real owned gemm may do better/worse — measured later), (b) it ignores
 # that a smaller NB shrinks the panel penalty (NB is a free tunable, swept here).
 #
-# Run on galen:  ~/.juliaup/bin/julia --project=. qr_front_project.jl
+# Run on a CUDA host:  julia --project=. qr_front_project.jl
 using CUDA, KernelAbstractions, LinearAlgebra, Statistics, JSON
 include("qr_panel_phase0.jl")   # brings _panel_qr!, panel_qr!, gpu_ms  (its main block also runs;
 #   harmless — reuses the same GPU. If you want to skip it, guard it.)

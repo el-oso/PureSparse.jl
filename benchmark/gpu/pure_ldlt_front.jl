@@ -28,7 +28,7 @@
 # Zero device-pool alloc per driver call: caller-provided LDLFrontWS (arrival counter +
 # 6-slot stats buffer), views + @localmem/@private only.
 #
-# Run (galen): julia --project=$HOME/Documents/claude/gpu_probe benchmark/gpu/pure_ldlt_front.jl
+# Run (CUDA host): julia --project=<path-to>/gpu_probe benchmark/gpu/pure_ldlt_front.jl
 
 using CUDA
 using KernelAbstractions
@@ -432,7 +432,7 @@ end
 
 LDLFrontWS(::Type{T}) where {T} = LDLFrontWS(CUDA.zeros(Int64, 1), CUDA.zeros(T, 6), 0)
 
-# v1/v2 crossover — MEASURED (galen, this file's bench, post Wc-hoist): same window as
+# v1/v2 crossover — MEASURED (RTX 4070, this file's bench, post Wc-hoist): same window as
 # the Cholesky front's FUSE_M_MAX. v2 (invert + register-tiled multiply) wins for panel
 # rows ≲ 2500; above that its per-group redundant factor+invert rivals the per-group
 # solve work and the v1 row-solve (cld(m,256) groups) is faster: (615,4231)/(859,3587)

@@ -4,7 +4,7 @@
 # Every default here carries a derivation comment (design.md §3.5) rather than being a
 # bare literal — required even though these aren't hardware-cache-derived like PureBLAS's
 # `cpuinfo.jl` consts, because "where did this number come from" must always have an
-# answer that isn't "I remembered CHOLMOD's default" (CLAUDE.md requirement 1).
+# answer that isn't "I remembered CHOLMOD's default" (CONTRIBUTING.md requirement 1).
 
 using Preferences: @load_preference
 
@@ -16,7 +16,7 @@ using Preferences: @load_preference
 # wide panels already run near peak; padding is pure loss, and panel growth starts
 # pressuring the update-buffer's cache residency, so only near-nesting qualifies.
 #
-# **Empirically recalibrated (2026-07-13, ROADMAP task 7b') against the exact
+# **Empirically recalibrated against the exact
 # union-height row estimate**, superseding the original starting-point numbers above —
 # the previous defaults (`(8,32,128)`/`(0.9,0.15,0.03)`) were picked before
 # `relaxed_amalgamation` could iterate to a fixpoint (design §3.5's old single-pass
@@ -94,10 +94,10 @@ const QR_SINGLETON_MULT = @load_preference("qr_singleton_mult", 1.0)::Float64
 # Provenance: the PREDICTOR (not this number) is faer 0.24.1's own choice for its
 # simplicial-vs-supernodal QR dispatch (`flops/nnz`, sparse/linalg/qr.rs — faer is
 # MIT-licensed, freely readable, unlike the CHOLMOD/SuiteSparse GPL prohibition,
-# CLAUDE.md req 1); faer's own threshold constant is `40.0`
+# CONTRIBUTING.md req 1); faer's own threshold constant is `40.0`
 # (`QR_SUPERNODAL_RATIO_FACTOR`, sparse/linalg/mod.rs). Independently verified here,
 # not blindly copied: measuring this ratio against measured :column-vs-:frontal cold
-# times on the M5 gate set (task 16e, galen, 2026-07-15) showed a clean, wide
+# times on the M5 gate set on a Ryzen 9 5900X showed a clean, wide
 # separation — every :column-winning matrix sat at ratio ≤ 7.0, every :frontal-winning
 # matrix at ratio ≥ 863 — so any threshold in that gap works on this data; faer's own
 # 40.0 is kept rather than picking an arbitrary round number in the gap, since it's
@@ -137,12 +137,12 @@ const COLAMD_DENSE_FLOOR = 16
 # `Ref{Bool}` toggle checked inside an unconditionally-defined method): Julia's method
 # table has no "temporarily shadow a method" primitive, and defining the override
 # unconditionally then branching on a runtime flag INSIDE it would still constitute
-# "silently extending stdlib the moment PureSparse loads" (CLAUDE.md's explicit
+# "silently extending stdlib the moment PureSparse loads" (an explicit
 # concern, `PureSparse.jl`'s `import LinearAlgebra` comment) even when the flag is off
 # — the override would already exist, just be a no-op. Making the `include` itself
 # conditional on a compile-time const is the only way the override genuinely doesn't
 # exist until opted in, and it is what keeps this trim-compatible (no runtime
-# `eval`/`invokelatest`, CLAUDE.md requirement 4) — the tradeoff, unlike PureBLAS's
+# `eval`/`invokelatest`, CONTRIBUTING.md requirement 4) — the tradeoff, unlike PureBLAS's
 # `activate()`/`deactivate()` (which forwards through `libblastrampoline`, a C-ABI
 # indirection layer BLAS calls already go through and that supports true runtime
 # hot-swapping), is that PureSparse's `activate!()`/`deactivate!()` (`dropin_toggle.jl`)

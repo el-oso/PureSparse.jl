@@ -1,5 +1,5 @@
 # ext/gpu_ldlt_dense.jl — pure device FUSED SIGNED-LDL front (amendment C portability + the
-# LDLᵀ analogue of gpu_front!). Fable-authored + galen-validated: matches cpu_multifrontal_ldlt!
+# LDLᵀ analogue of gpu_front!). Validated on an RTX 4070: matches cpu_multifrontal_ldlt!
 # at relL/relD ≤ 1e-15 with EXACT inertia across the real KKT crown shapes + sign patterns;
 # flop-weighted 4.42× vs the CPU-diag+cuBLAS-trsm vendor front (removes the nscol³ host round-
 # trip). Full harness: benchmark/gpu/pure_ldlt_front.jl. Reuses gpu_gemm_nt! + _col_scale! from
@@ -367,7 +367,7 @@ end
 LDLFrontWS(backend, ::Type{T}) where {T} =
     LDLFrontWS(KernelAbstractions.zeros(backend, T, 6), KernelAbstractions.zeros(backend, T, 64, 64))
 
-# v1/v2 crossover — MEASURED (galen, this file's bench, post Wc-hoist): same window as
+# v1/v2 crossover — MEASURED (RTX 4070, this file's bench, post Wc-hoist): same window as
 # the Cholesky front's FUSE_M_MAX. v2 (invert + register-tiled multiply) wins for panel
 # rows ≲ 2500; above that its per-group redundant factor+invert rivals the per-group
 # solve work and the v1 row-solve (cld(m,256) groups) is faster: (615,4231)/(859,3587)

@@ -109,7 +109,7 @@ end
     @test relerr(L1, L2) > 1.0e-6   # sanity: actually refactored (different values)
 end
 
-@testitem "cholesky!: refactorize is genuinely zero-allocation (M1 task 7, CLAUDE.md req 5)" setup = [LLTHelpers] begin
+@testitem "cholesky!: refactorize is genuinely zero-allocation (M1 task 7, CONTRIBUTING.md req 5)" setup = [LLTHelpers] begin
     using Random
     rng = MersenneTwister(63)
     n = 50
@@ -153,7 +153,7 @@ end
     using Random, LinearAlgebra, SparseArrays
 
     # (a) exact n=64 sweep matrix: 16 supernodes, 9 of them width 1-3 (6 structurally
-    # isolated columns with zero fill, per ROADMAP's root-cause writeup).
+    # isolated columns with zero fill).
     A64 = let rng64 = MersenneTwister(2026), A = nothing
         for n in (2, 4, 8, 16, 32, 64)
             A = random_spd_matrix(rng64, n, 0.05)

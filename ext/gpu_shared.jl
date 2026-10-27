@@ -91,7 +91,7 @@ end
 
 `C = α·A·Bᵀ + β·C` on device (A: M×K, B: N×K, C: M×N; column-major KA-backed arrays).
 The supernode trailing update (`C -= A·Bᵀ` is `α,β = -1,1`). Generic over the element type;
-portable across KA backends. Beats cuBLAS FP64 1.14× on galen (design_gpu.md §0/§3).
+portable across KA backends. Beats cuBLAS FP64 1.14× on an RTX 4070 (design_gpu.md §0/§3).
 """
 function gpu_gemm_nt!(C, A, B, alpha, beta)
     M, K = size(A); N = size(B, 1)

@@ -1,5 +1,5 @@
 # Supernodal LLᵀ numeric factorization (design.md §4). Left-looking scheme (Ng–Peyton
-# 1993; Rothberg–Gupta 1993 — never CHOLMOD source, CLAUDE.md req 1). The update-loop
+# 1993; Rothberg–Gupta 1993 — never CHOLMOD source, CONTRIBUTING.md req 1). The update-loop
 # scheduling (relmap, linked-list descendant tracking) was hand-traced and verified sound
 # by an adversarial review before implementation (design.md §0 "N1"); every PureBLAS
 # kernel call below matches that review's verified mapping exactly.
@@ -43,17 +43,17 @@ end
 # order was measured at ~28% of total cholesky! wall time before the swap. Target rows
 # come from the ir hoist (one sequential load per element) rather than a per-element
 # relmap[_row(...)] double indirection — that recomputation was measured at ~1.5
-# ns/element (≈12 of 65 ms at n=2048 on galen/5900X) across k1 identical re-resolutions.
+# ns/element (≈12 of 65 ms at n=2048 on a Ryzen 9 5900X) across k1 identical re-resolutions.
 #
 # Two strategies, picked per update: run-based contiguous SIMD adds when runs are long
 # on average (66% of scattered elements at n=2048 live in runs ≥ 9 rows, 38% in runs
 # > 32 — measured), element-based otherwise. Run-based scattering pays a per-run visit
 # cost of O(nr) PER COLUMN (r0 only skips runs wholly above the triangle start), so
 # applying it unconditionally was a measured net LOSS (57.98 → 59.81 ms at n=2048 on
-# galen) — below a mean run length of 8, an ≤8-wide SIMD add plus loop setup does not
+# Ryzen 9 5900X) — below a mean run length of 8, an ≤8-wide SIMD add plus loop setup does not
 # beat 8 plain indexed adds. Shared by cholesky! and ldlt! (identical scatter). Kept
 # @noinline: inlining this 3-branch body into the factorization loop was a measured
-# 30–95% regression at n=16..64 on wintermute (7640U/Zen4) — the call is once per
+# 30–95% regression at n=16..64 on a Ryzen 5 7640U (Zen 4) — the call is once per
 # staged update, so call cost is noise while the outer loop stays compact.
 @noinline function _scatter_update!(
         panel::Matrix{T}, cbuf::Matrix{T}, ir::Vector{Ti}, rs::Vector{Ti},
@@ -117,7 +117,7 @@ end
     cholesky!(F::SupernodalFactor, A::SparseMatrixCSC) -> F
 
 Refactor `A` (same sparsity pattern as `F.sym`, new numeric values) into `F` in place.
-Zero allocations after warmup (CLAUDE.md req 5). Sets `F.ok = false` and records the
+Zero allocations after warmup (CONTRIBUTING.md req 5). Sets `F.ok = false` and records the
 failing column in `F.stats` on a non-SPD pivot rather than throwing — callers that want
 `PosDefException` semantics should check `issuccess(F)` or use `\\`/`ldiv!`.
 """
@@ -202,7 +202,7 @@ function cholesky!(F::SupernodalFactor{T, Ti}, A::SparseMatrixCSC{T}) where {T, 
                     # relmap[_row(...)] target row it visits is stored into ws.ir (the
                     # lookup result is IDENTICAL for every column b of the update block, so
                     # resolving it once removes a per-element double indirection that was
-                    # measured at ~1.5 ns/element — ≈12 of 65 ms at n=2048 on galen/5900X),
+                    # measured at ~1.5 ns/element — ≈12 of 65 ms at n=2048 on a Ryzen 9 5900X),
                     # and simultaneously records the maximal-consecutive-run structure of
                     # those targets in ws.rs (contig ⟺ a single run). rowind is sorted, so
                     # ir ascends and runs are well defined.
@@ -264,7 +264,7 @@ function cholesky!(F::SupernodalFactor{T, Ti}, A::SparseMatrixCSC{T}) where {T, 
             # FIXED per-call kernel overhead (dispatch, LAPACK marshaling on the OpenBLAS
             # diagnostic arm, PureBLAS's own dispatch) dominates the ~1 flop of real work:
             # the n=64 sweep matrix has nine width-1..3 supernodes, and in-context timing
-            # of every real kernel call (ROADMAP "n=64" addendum) showed potrf!+trsm! call
+            # of every real kernel call showed potrf!+trsm! call
             # overhead — not arithmetic — as the bulk of the OB-arm gap there. Lives in the
             # shared scheduling code, so BOTH kernel backends benefit. Semantics match
             # potrf!'s 1×1 case exactly: pivot check `real(A₁₁) > 0` (NaN fails → not

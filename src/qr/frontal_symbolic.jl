@@ -217,8 +217,8 @@ function symbolic_qr_frontal(
     # `nb_override` (default nothing) forces the panel block size, for block-size
     # calibration sweeps on large fronts (the qr_block_size default is a general
     # PureBLAS heuristic; wider panels raise the trailing-update gemm's K-dimension /
-    # arithmetic intensity, which the 7000×4000 profile showed to be the ceiling — see
-    # ROADMAP). Clamped ≥ 1; nothing → the qr_block_size default, bit-identical to prior.
+    # arithmetic intensity, which the 7000×4000 profile showed to be the ceiling).
+    # Clamped ≥ 1; nothing → the qr_block_size default, bit-identical to prior.
     nb_global = isnothing(nb_override) ?
         (max_front_cols == 0 ? 1 : qr_block_size(max_front_rows, max_front_cols)) :
         max(nb_override, 1)

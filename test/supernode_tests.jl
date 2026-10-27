@@ -298,7 +298,7 @@ end
     # case where the fixpoint amalgamation absorbs several siblings into one parent
     # across passes. The random-pattern items above barely exercise that; this pins the
     # §3.4 superset invariant and the per-block zero-fraction bound on exactly the
-    # partition shape the multi-pass merge produces (ROADMAP task 7b').
+    # partition shape the multi-pass merge produces.
     using SparseArrays
     nx = ny = 24
     n = nx * ny

@@ -1,7 +1,7 @@
 # Approximate Minimum Degree ordering (design.md §2.2) — the `order` method for the
 # `AMDOrdering` struct declared in `ordering/interface.jl`.
 #
-# Grounded EXCLUSIVELY in the published paper (CLAUDE.md requirement 1 — CHOLMOD /
+# Grounded EXCLUSIVELY in the published paper (CONTRIBUTING.md requirement 1 — CHOLMOD /
 # SuiteSparse / reference-AMD source never read, in any form):
 #
 #   Amestoy, Davis, Duff, "An Approximate Minimum Degree Ordering Algorithm",

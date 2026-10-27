@@ -22,7 +22,7 @@
 # continues with NaNs — host checks after sync, like the (ok, fail_col) contract in
 # gpu_numeric.jl).
 #
-# Run (galen): julia --project=$HOME/Documents/claude/gpu_probe benchmark/gpu/pure_potrf_dev.jl
+# Run (CUDA host): julia --project=<path-to>/gpu_probe benchmark/gpu/pure_potrf_dev.jl
 
 using CUDA
 using KernelAbstractions
@@ -39,7 +39,7 @@ using CUDA.CUBLAS: trsm!
 # =======================================================================================
 
 # Pure device GEMM C = α·A·Bᵀ + β·C — verbatim copy of ext/PureSparseCUDAExt.jl's proven
-# _gemm_nt_4x4! (beats cuBLAS FP64 1.14× on galen). Used for the trsm left-looking update.
+# _gemm_nt_4x4! (beats cuBLAS FP64 1.14× on an RTX 4070). Used for the trsm left-looking update.
 @kernel unsafe_indices = true function _gemm_nt_4x4!(C, @Const(A), @Const(B), alpha, beta, M, N, K)
     T = eltype(C)
     li = @index(Local, NTuple)
@@ -271,7 +271,7 @@ Pure-KA in-place lower Cholesky (`CUSOLVER.potrf!('L',A)` semantics): only the l
 triangle of the n×n device matrix (strided view OK) is read/written. Two-level blocked
 right-looking: outer panel width `nb` (diag block factored by an inner 32-wide loop of
 base-kernel + base-trsm + small syrk; panel solve via the blocked gpu_trsm_rlt!) then ONE
-K=`nb` lower-syrk trailing update per outer panel. MEASURED (galen sweep 32/64/128): nb=32
+K=`nb` lower-syrk trailing update per outer panel. MEASURED (RTX 4070 sweep 32/64/128): nb=32
 is fastest at every n — the base-trsm panel-solve flops scale with nb and run latency-bound,
 which beats the saved trailing-syrk passes; widening nb is a net loss. Keep nb=32.
 `d_info` is a caller-provided, caller-ZEROED 1-element Int32 device vector; after

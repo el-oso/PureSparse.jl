@@ -1,7 +1,7 @@
 # Pattern setup (design.md §3.1) and elimination tree + postorder (design.md §3.2).
-# Grounded in Liu 1986 (`refs/linear_algebra/Supernodal/liu1986.pdf`) and the
-# presentation in Davis, *Direct Methods for Sparse Linear Systems* (SIAM, 2006), ch. 4
-# (`refs/linear_algebra/chapter-direct.pdf`) — never CHOLMOD source (CLAUDE.md req 1).
+# Grounded in Liu 1986 (the elimination-tree paper cited in design.md §3.2) and the
+# presentation in Davis, *Direct Methods for Sparse Linear Systems* (SIAM, 2006), ch. 4 —
+# never CHOLMOD source (CONTRIBUTING.md req 1).
 
 """
     symmetrized_upper(n, colptr, rowval, perm, iperm) -> (colptr2, rowval2)
@@ -112,7 +112,7 @@ end
 
 Postorder of the forest given by `parent`. `post[k]` is the k-th node visited;
 `postinv[j]` is node `j`'s position in the postorder. Iterative (stack-based) — no
-recursion whose depth depends on runtime data (CLAUDE.md req 4).
+recursion whose depth depends on runtime data (CONTRIBUTING.md req 4).
 
 Without `priority`, each node's children are visited in ascending column order (for
 determinism — design.md §3.2). With `priority` (length `n`), children are visited in
@@ -125,7 +125,7 @@ which sibling ends up parent-contiguous.
 
 Why colcount is the priority `symbolic()` passes (own derivation, no external recipe):
 for an etree child `s` of `t`, `pattern(L[:,s]) \\ {s,t} ⊆ pattern(L[:,t])` (Liu 1986,
-`refs/linear_algebra/Supernodal/liu1986.pdf`), hence `colcount[s] ≤ colcount[t] + 1`
+as cited in design.md §3.2), hence `colcount[s] ≤ colcount[t] + 1`
 with equality exactly when the patterns nest — the fundamental-supernode condition
 (Liu–Ng–Peyton 1993, design §3.4). So the max-colcount child is the closest to exact
 nesting, i.e. the one whose merge pads the fewest explicit zeros into the block that

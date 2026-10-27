@@ -129,7 +129,7 @@ computes for the final partition, so panel sizes agree with the merge-time estim
 The previous single-pass proxy `colcount[start[s]]` equals this only while patterns nest
 exactly; under cascaded sibling absorption it underestimates the union height and lets
 the zero-fraction gate silently accept over-fat merges (measured on laplacian2d 80×80:
-naive fixpoint with the proxy inflated padded cells to ~7× nnzL — see ROADMAP task 7b').
+naive fixpoint with the proxy inflated padded cells to ~7× nnzL).
 
 `true_nnz` over a merged block is a contiguous colcount sum, taken O(1) from a prefix
 sum. The zero-fraction convention (`z = 1 − true_nnz / (height·width)`, rectangle cells

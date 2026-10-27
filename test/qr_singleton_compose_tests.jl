@@ -102,7 +102,7 @@ end
     @test ntested_with_singletons > 60   # sanity: the n1>0 warm path is genuinely exercised
 end
 
-@testitem "warm singleton refactor: zero-allocation on an LP-slack-shaped matrix (CLAUDE.md req 5)" begin
+@testitem "warm singleton refactor: zero-allocation on an LP-slack-shaped matrix (CONTRIBUTING.md req 5)" begin
     # The motivating class for the whole capability (design_qr.md §2.3 / M5 stratum i):
     # structural block + scaled-identity slack columns, every slack column a singleton
     # (plus whatever the cascade peels). Warm qr! on the composed n1>0 factor must be

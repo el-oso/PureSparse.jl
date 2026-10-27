@@ -1,5 +1,5 @@
 # ext/gpu_dense.jl — pure device dense kernels for the multifrontal GPU fronts (amendment C:
-# portable, no cuSOLVER/cuBLAS). Fable-authored + galen-validated (≤2.3e-16 vs the vendor pair
+# portable, no cuSOLVER/cuBLAS). Validated on an RTX 4070 (≤2.3e-16 vs the vendor pair
 # on the real crown-front shape mix; weighted aggregate 1.13× vs cuSOLVER/cuBLAS). Full
 # validation harness + per-shape numbers: benchmark/gpu/pure_potrf_opt.jl. Reuses gpu_gemm_nt!
 # from PureSparseCUDAExt.jl. Included by the ext after the gemm kernel is defined.
@@ -342,7 +342,7 @@ end
 end
 
 # FUSED front-panel kernel v3 — same contract as _front_fused64! but fully REGISTER-
-# RESIDENT (measured on galen: v2's in-shared factor sweep is shared-traffic bound at
+# RESIDENT (measured on an RTX 4070: v2's in-shared factor sweep is shared-traffic bound at
 # ~92µs vs its 18µs FMA-issue floor, the in-shared L-inversion adds ~120µs, and a
 # row-serial B solve is 2-warp latency-bound at ~100µs regardless of m; probe:
 # benchmark/gpu/pivot_variant_probe.jl + front_v3_check.jl):
@@ -689,7 +689,7 @@ FrontWS(backend, ::Type{T}, maxblk::Int) where {T} =
     KernelAbstractions.zeros(backend, T, 64, 64, maxblk)
 )
 
-# Panel-rows threshold for :auto — MEASURED (galen, front_v3_check.jl): v3 (register-
+# Panel-rows threshold for :auto — MEASURED (RTX 4070, front_v3_check.jl): v3 (register-
 # resident fused factor+solve, cld(m,64) groups) is ~134µs/launch flat for m ≤ 2500 and
 # still beats v1 at m=5000 (216 vs 341µs); at m=10000 the per-group redundant factor
 # (cld(m,64) groups stacking on 46 SMs) loses to v1's cld(m,256)-group row solve

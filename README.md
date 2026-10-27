@@ -53,4 +53,4 @@ julia --project=test test/runtests.jl                      # full suite
 Correctness oracle and performance gate: Julia's built-in `SparseArrays`/`SuiteSparse`
 CHOLMOD wrapper (black-box output comparison only — never CHOLMOD's source). See
 [`docs/design.md` §9](docs/design.md) for the full testing/benchmarking methodology and
-[`CLAUDE.md`](CLAUDE.md) for the project's hard requirements.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the project's hard requirements.

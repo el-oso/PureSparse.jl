@@ -1,6 +1,6 @@
-# M1 wall-time gate (design.md §9.3, CLAUDE.md requirement 2 — non-negotiable). Chairmarks
+# M1 wall-time gate (design.md §9.3, CONTRIBUTING.md requirement 2 — non-negotiable). Chairmarks
 # medians, single-thread pinned. 3 of the design's 4 configs (config 4, CHOLMOD+PureBLAS, is
-# N/A per design §9.3 D1 — see openblas_backend.jl's header and CLAUDE.md's benchmarking
+# N/A per design §9.3 D1 — see openblas_backend.jl's header and CONTRIBUTING.md's benchmarking
 # section for why):
 #
 #   1. PureSparse + PureBLAS   (primary)
@@ -15,9 +15,8 @@
 #   julia --project=benchmark benchmark/gate.jl            # measure + save + print gate verdict
 #   julia --project=benchmark benchmark/gate.jl report      # print verdict from the last saved JSON only
 #
-# For a methodologically-valid (locked-clock) run: `sudo ../PureBLAS.jl/bench/fleet_freqlock.sh lock`
-# first (PureBLAS's own frequency-locking script — see PureBLAS.jl/CLAUDE.md's benchmarking
-# section; this repo does not duplicate that script). An unlocked run still produces real
+# For a methodologically valid run, use a host with a fixed CPU frequency (performance governor,
+# turbo disabled; see CONTRIBUTING.md "Benchmarking"). An unlocked run still produces real
 # numbers, just noisier — the JSON records whether the run claims to be locked.
 
 using PureSparse, SparseArrays, LinearAlgebra, Random, Statistics, JSON, Dates

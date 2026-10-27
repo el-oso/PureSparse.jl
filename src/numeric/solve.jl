@@ -21,7 +21,7 @@ triangular sweeps (design.md §4.4). `x` and `b` may alias. Zero allocations for
 single-RHS (`b::AbstractVector`) form (the permuted-RHS scratch is `F.ws.rhs`, sized
 `n` once in `Workspace`); multi-RHS (`b::AbstractMatrix`) still allocates a fresh
 `n×nrhs` scratch per call — `nrhs` is caller-chosen and unbounded, so it cannot be
-pre-sized (CLAUDE.md requirement 5 targets the per-factor hot path, which for an
+pre-sized (CONTRIBUTING.md requirement 5 targets the per-factor hot path, which for an
 interior-point consumer is single-RHS refactor+solve, not a growing multi-RHS count).
 """
 function solve!(x::AbstractVector{T}, F::_PanelFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer}
@@ -118,7 +118,7 @@ function _solve_D!(y::Matrix{T}, F::LDLFactor{T, Ti}) where {T, Ti <: Integer}
 end
 
 function _solve_L!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
-    # `y` is `F.ws.rhs` on every internal `solve!` call (the actual hot path CLAUDE.md req 5
+    # `y` is `F.ws.rhs` on every internal `solve!` call (the actual hot path CONTRIBUTING.md req 5
     # gates) — `_solve_L_cached!` then uses the SAME pre-wrapped/preallocated buffers
     # `panels`/`c` already use elsewhere, zero allocation. `solve_L!` is also exported
     # directly (split-solve consumers, e.g. iterative refinement) and CAN be called with an
