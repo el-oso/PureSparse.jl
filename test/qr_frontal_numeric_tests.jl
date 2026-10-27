@@ -139,25 +139,24 @@ end
     # Project.toml) — reach it through PureSparse's own binding, not a bare `using PureBLAS`.
     qbs = PureSparse.qr_block_size
 
-    # Regression for the `qr_block_size(0,0)` vs `qr_block_size(max_front_rows,
-    # max_front_cols)` mismatch: the symbolic ftau T-slab was budgeted with the former,
-    # the numeric loop packed pcount×pcount T's capped by the latter. `qr_block_size` is
-    # dimension-dependent (8 for small/zero dims, 16 once a front is large enough), so on
-    # a matrix with a large-enough front the packing overwrote `ftau` by up to one panel's
-    # worth — a genuine OOB write, silent-corruption on Zen3, hard SIGSEGV on Zen5. Every
-    # PRE-EXISTING frontal test used small fronts (nb==8 both places, no mismatch), so
-    # none caught it; this one deliberately builds a front large enough to make nb==16.
+    # The symbolic ftau T-slab and the numeric loop's panel cap must both use
+    # `qr_block_size(max_front_rows, max_front_cols)`. `qr_block_size` grows with the
+    # front's footprint relative to the L2 cache, so the two only differ from
+    # `qr_block_size(0, 0)` on a front large enough to step it up; small fronts cannot
+    # detect a slab budgeted with the wrong size (it overflows `ftau` by up to one panel).
     #
-    # A fully-dense 400×384 matrix has a single 400×384 front — big enough to step
-    # qr_block_size up to 16 (measured: the 8→16 boundary sits between a 256×256 and a
-    # 384×384 front). Density 1.0 is fine here: the point is the front SIZE, not sparsity.
+    # A fully-dense (n+16)×n matrix has a single front of that size. The step-up point
+    # depends on the CPU's L2 size and vector register count, so n is the smallest size
+    # at which this machine's block size exceeds the baseline.
+    sizes = 384:128:2048
+    n = sizes[something(findfirst(k -> qbs(k + 16, k) > qbs(0, 0), sizes), lastindex(sizes))]
+    m = n + 16
     rng = MersenneTwister(31337)
-    A = sparse(randn(rng, 400, 384))
+    A = sparse(randn(rng, m, n))
     ordering = PureSparse.COLAMDOrdering()
     F = PureSparse.qr_frontal(A; ordering)
 
-    # (1) The test must actually exercise the nb>baseline regime — otherwise it's vacuous
-    # (a future shrink of this matrix below the 8→16 boundary would silently defang it).
+    # (1) The front must be large enough for nb to exceed the baseline, or the test is vacuous.
     @test F.fsym.nb > qbs(0, 0)
     # (2) THE single-source-of-truth invariant, checked directly: the numeric loop's panel
     # width cap (`size(ws.Tm,1)`) must equal the nb the ftau slab was budgeted with
@@ -167,7 +166,7 @@ end
     @test size(F.ws.Tm, 1) == F.fsym.nb
     @test F.fsym.nb == qbs(F.fsym.max_front_rows, F.fsym.max_front_cols)
 
-    # (3)/(4) End-to-end correctness of the BLOCKED path (front element count 153600 >
+    # (3)/(4) End-to-end correctness of the BLOCKED path (front element count m·n >
     # QR_FRONTAL_UNBLOCKED_THRESHOLD, so this takes the wy_t!/wy_apply! blocked kernel,
     # NOT the scalar fallback every other frontal test hits). Regression for the
     # dropped-group bug: the numeric loop emitted only ONE NB-clamped group per split
@@ -180,11 +179,11 @@ end
     Ad = Matrix(A)[:, F.fsym.base.cperm]
     @test maximum(abs.(R' * R .- Ad' * Ad)) < 1.0e-6 * max(1, norm(Ad)^2)
 
-    b = randn(MersenneTwister(31338), 400)
-    x = PureSparse.solve!(zeros(384), F, b)
+    b = randn(MersenneTwister(31338), m)
+    x = PureSparse.solve!(zeros(n), F, b)
     @test normal_eq_resid(A, x, b) < 1.0e-6 * max(1, norm(b))
 
-    PureSparse.qr!(F, A)   # warm refactor at nb==16 must at least stay in-bounds
+    PureSparse.qr!(F, A)   # warm refactor at the stepped-up nb must stay in-bounds
     Rw = dense_R_frontal(F)
     @test maximum(abs.(Rw' * Rw .- Ad' * Ad)) < 1.0e-6 * max(1, norm(Ad)^2)
 
