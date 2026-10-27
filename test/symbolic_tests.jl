@@ -153,7 +153,7 @@ end
             @test j ∉ rows   # no diagonal
         end
         # symmetry: (i,j) present iff (j,i) present
-        edges = Set{Tuple{Int,Int}}()
+        edges = Set{Tuple{Int, Int}}()
         for j in 1:n, p in cp2[j]:(cp2[j + 1] - 1)
             push!(edges, (rv2[p], j))
         end

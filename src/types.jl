@@ -9,7 +9,7 @@ Fill-reducing permutation, elimination tree, column counts, and supernode partit
 sparse symmetric pattern. Computed once by [`symbolic`](@ref) and reused across many
 numeric factorizations of matrices sharing that pattern. Never holds numeric values.
 """
-struct Symbolic{Ti<:Integer}
+struct Symbolic{Ti <: Integer}
     n::Int
     perm::Vector{Ti}              # fill-reducing permutation
     iperm::Vector{Ti}
@@ -67,81 +67,81 @@ factor sharing one `Symbolic` — sized once from `Symbolic.max_extend_rows` (th
 buffers `c`/`cd`/`ir`/`rs`) so the numeric phase never allocates (CLAUDE.md requirement
 5; `Symbolic.max_update_size` remains a sizing diagnostic, no longer a buffer bound).
 """
-struct Workspace{T,Ti<:Integer}
+struct Workspace{T, Ti <: Integer}
     c::Matrix{T}                  # update block buffer, (max_extend_rows, max_extend_rows) —
-                                   # see llt.jl's `_row` comment: for any (descendant d, ancestor
-                                   # s) pair, ctot = |R| and k1 = |R1| are BOTH ≤ d's own
-                                   # below-diagonal row count ≤ max_extend_rows (R1 ⊆ R ⊆ d's
-                                   # below-diagonal rows, by construction of the update schedule,
-                                   # design §4.3/§0 B1) — so `view(c, 1:ctot, 1:k1)` is always
-                                   # in-bounds and, being a view of an already-allocated Matrix
-                                   # (not a fresh `unsafe_wrap`/`reshape`), costs zero allocation
-                                   # (measured: unsafe_wrap 80 B/call, reshape 48 B/call, view of
-                                   # a pre-existing Matrix 0 B/call). Real matrices show this is a
-                                   # modest 1.0–4.4x memory increase over the old flat
-                                   # `max_update_size` sizing (measured on the M1 gate set), a
-                                   # one-time Workspace cost, not a hot-path one.
+    # see llt.jl's `_row` comment: for any (descendant d, ancestor
+    # s) pair, ctot = |R| and k1 = |R1| are BOTH ≤ d's own
+    # below-diagonal row count ≤ max_extend_rows (R1 ⊆ R ⊆ d's
+    # below-diagonal rows, by construction of the update schedule,
+    # design §4.3/§0 B1) — so `view(c, 1:ctot, 1:k1)` is always
+    # in-bounds and, being a view of an already-allocated Matrix
+    # (not a fresh `unsafe_wrap`/`reshape`), costs zero allocation
+    # (measured: unsafe_wrap 80 B/call, reshape 48 B/call, view of
+    # a pre-existing Matrix 0 B/call). Real matrices show this is a
+    # modest 1.0–4.4x memory increase over the old flat
+    # `max_update_size` sizing (measured on the M1 gate set), a
+    # one-time Workspace cost, not a hot-path one.
     cd::Matrix{T}                  # L·D scaled-copy staging buffer for LDLᵀ descendant updates,
-                                   # (max_extend_rows, max_extend_rows), used via
-                                   # `view(cd, 1:k1, 1:wk)` — the same zero-alloc
-                                   # view-of-a-preallocated-Matrix technique as `c` above.
-                                   # In-bounds proof: ROWS — k1 = |R1| ≤ the descendant's own
-                                   # below-diagonal row count ≤ max_extend_rows, by exactly the
-                                   # containment argument written for `c` (R1 ⊆ R ⊆ d's
-                                   # below-diagonal rows). COLUMNS — unlike `c`, the natural
-                                   # (un-chunked) column extent here is the descendant's column
-                                   # count ncol_d, which max_extend_rows does NOT bound (a wide
-                                   # root-side supernode can have many columns and few
-                                   # below-diagonal rows); the bound instead holds BY
-                                   # CONSTRUCTION: ldlt.jl's update gemm was already chunked
-                                   # over descendant columns (to fit the old flat
-                                   # max_update_size sizing), and the chunk width is now capped
-                                   # at this buffer's own column capacity, wk ≤ size(cd, 2) =
-                                   # max_extend_rows, so the view can never overflow — verified
-                                   # empirically (dev-time assertion over the full test suite +
-                                   # gate matrices) before the assertion was removed. Cost of
-                                   # the cap: a small-k1/wide-descendant pair now takes
-                                   # ⌈ncol_d/max_extend_rows⌉ gemm calls where the old sizing
-                                   # allowed ⌈ncol_d·k1/max_update_size⌉ — same total flops,
-                                   # only per-call overhead; the flat sizing's fresh
-                                   # `_panelview` unsafe_wrap per chunk (an Array-header
-                                   # allocation, the last 1120 B/call of ldlt!) is gone.
+    # (max_extend_rows, max_extend_rows), used via
+    # `view(cd, 1:k1, 1:wk)` — the same zero-alloc
+    # view-of-a-preallocated-Matrix technique as `c` above.
+    # In-bounds proof: ROWS — k1 = |R1| ≤ the descendant's own
+    # below-diagonal row count ≤ max_extend_rows, by exactly the
+    # containment argument written for `c` (R1 ⊆ R ⊆ d's
+    # below-diagonal rows). COLUMNS — unlike `c`, the natural
+    # (un-chunked) column extent here is the descendant's column
+    # count ncol_d, which max_extend_rows does NOT bound (a wide
+    # root-side supernode can have many columns and few
+    # below-diagonal rows); the bound instead holds BY
+    # CONSTRUCTION: ldlt.jl's update gemm was already chunked
+    # over descendant columns (to fit the old flat
+    # max_update_size sizing), and the chunk width is now capped
+    # at this buffer's own column capacity, wk ≤ size(cd, 2) =
+    # max_extend_rows, so the view can never overflow — verified
+    # empirically (dev-time assertion over the full test suite +
+    # gate matrices) before the assertion was removed. Cost of
+    # the cap: a small-k1/wide-descendant pair now takes
+    # ⌈ncol_d/max_extend_rows⌉ gemm calls where the old sizing
+    # allowed ⌈ncol_d·k1/max_update_size⌉ — same total flops,
+    # only per-call overhead; the flat sizing's fresh
+    # `_panelview` unsafe_wrap per chunk (an Array-header
+    # allocation, the last 1120 B/call of ldlt!) is gone.
     relmap::Vector{Ti}            # length n, no clearing needed between supernodes (design §4.3)
     ir::Vector{Ti}                # length max_extend_rows: per-update hoisted target-row list —
-                                   # the staged scatter's `relmap[_row(rowind, ...)]` double
-                                   # indirection is IDENTICAL for every column b of the update
-                                   # block, so it is resolved once per (descendant, ancestor)
-                                   # pair into this buffer (filled during the contiguity check,
-                                   # which already walks those same lookups) instead of being
-                                   # recomputed k1 times. Measured on galen (5900X) at n=2048:
-                                   # the recomputation was ~1.5 ns/element over 7.9e6 scattered
-                                   # elements per factorization. ctot ≤ max_extend_rows by the
-                                   # same containment argument as `c` above.
+    # the staged scatter's `relmap[_row(rowind, ...)]` double
+    # indirection is IDENTICAL for every column b of the update
+    # block, so it is resolved once per (descendant, ancestor)
+    # pair into this buffer (filled during the contiguity check,
+    # which already walks those same lookups) instead of being
+    # recomputed k1 times. Measured on galen (5900X) at n=2048:
+    # the recomputation was ~1.5 ns/element over 7.9e6 scattered
+    # elements per factorization. ctot ≤ max_extend_rows by the
+    # same containment argument as `c` above.
     rs::Vector{Ti}                # length max_extend_rows + 1: run starts of the hoisted
-                                   # target-row list — ir splits into nr maximal consecutive
-                                   # runs, rs[r] = first local index a of run r, rs[nr+1] =
-                                   # ctot+1 sentinel. Built inside the same contiguity-check
-                                   # walk (contig ⟺ nr == 1); the scatter then adds run-by-run
-                                   # with contiguous SIMD inner loops instead of element-by-
-                                   # element indexed stores. Measured (galen, n=2048): 66% of
-                                   # scattered elements live in runs ≥ 9 rows, 38% in runs > 32.
+    # target-row list — ir splits into nr maximal consecutive
+    # runs, rs[r] = first local index a of run r, rs[nr+1] =
+    # ctot+1 sentinel. Built inside the same contiguity-check
+    # walk (contig ⟺ nr == 1); the scatter then adds run-by-run
+    # with contiguous SIMD inner loops instead of element-by-
+    # element indexed stores. Measured (galen, n=2048): 66% of
+    # scattered elements live in runs ≥ 9 rows, 38% in runs > 32.
     head::Vector{Ti}              # length nsuper+1, intrusive linked-list heads (0 = empty)
     next::Vector{Ti}              # length nsuper, intrusive linked-list next pointers
     dptr::Vector{Ti}              # length nsuper, per-descendant progress cursor into rowind
     rhs::Vector{T}                # permuted-RHS scratch for solve!, length n — zero-alloc single-
-                                   # vector solves (multi-RHS still allocates: nrhs is unbounded,
-                                   # not knowable ahead of time)
+    # vector solves (multi-RHS still allocates: nrhs is unbounded,
+    # not knowable ahead of time)
     rhs_blocks::Vector{Matrix{T}} # rhs_blocks[s] = unsafe_wrap(rhs @ super[s], nscol_s x 1), built
-                                   # ONCE — the `_solve_L!`/`_solve_Lt!` single-vector sweeps always
-                                   # call with `y === this Workspace's own rhs` (`solve!`'s top-level
-                                   # `y = F.ws.rhs`), never a caller-supplied array directly, so
-                                   # (unlike `F.panels` wrapping the VALUE array, which differs by
-                                   # factor) this can be cached exactly the same way: same technique,
-                                   # same lifetime argument (`rhs`'s identity never changes after
-                                   # this constructor runs, so the wraps never dangle).
+    # ONCE — the `_solve_L!`/`_solve_Lt!` single-vector sweeps always
+    # call with `y === this Workspace's own rhs` (`solve!`'s top-level
+    # `y = F.ws.rhs`), never a caller-supplied array directly, so
+    # (unlike `F.panels` wrapping the VALUE array, which differs by
+    # factor) this can be cached exactly the same way: same technique,
+    # same lifetime argument (`rhs`'s identity never changes after
+    # this constructor runs, so the wraps never dangle).
 end
 
-function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
+function Workspace{T, Ti}(sym::Symbolic) where {T, Ti <: Integer}
     mer = max(sym.max_extend_rows, 1)
     rhs = Vector{T}(undef, sym.n)
     rhs_blocks = Vector{Matrix{T}}(undef, sym.nsuper)
@@ -150,7 +150,7 @@ function Workspace{T,Ti}(sym::Symbolic) where {T,Ti<:Integer}
         nscol = Int(sym.super[s + 1] - sym.super[s])
         rhs_blocks[s] = unsafe_wrap(Array, pointer(rhs, j0), (nscol, 1))
     end
-    Workspace{T,Ti}(
+    return Workspace{T, Ti}(
         Matrix{T}(undef, mer, mer),
         Matrix{T}(undef, mer, mer),
         Vector{Ti}(undef, sym.n),
@@ -181,17 +181,17 @@ Supernodal LLᵀ factor (SPD path, design.md §4). Dense column-major panels for
 supernode, stored contiguously in `x`. Produced by [`cholesky`](@ref)/refactored in place
 by [`cholesky!`](@ref) (zero allocations after the first call).
 """
-mutable struct SupernodalFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
+mutable struct SupernodalFactor{T, Ti <: Integer} <: AbstractSparseFactor{T}
     sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
     x::Vector{T}                   # dense column-major storage, one block per supernode
     panels::Vector{Matrix{T}}      # panels[s] = unsafe_wrap(x @ px[s], nrow_s x ncol_s), built ONCE
-                                    # (design §0 follow-up: caching these — fixed shape per supernode
-                                    # across every cholesky! call on this factor, since px/rowind_ptr
-                                    # come from the unchanging Symbolic — is what makes cholesky!
-                                    # allocation-free; a fresh unsafe_wrap per call, while still far
-                                    # cheaper than the reshape(view(...)) compile-tax trap it replaced,
-                                    # still allocates a small Array header each time)
-    ws::Workspace{T,Ti}
+    # (design §0 follow-up: caching these — fixed shape per supernode
+    # across every cholesky! call on this factor, since px/rowind_ptr
+    # come from the unchanging Symbolic — is what makes cholesky!
+    # allocation-free; a fresh unsafe_wrap per call, while still far
+    # cheaper than the reshape(view(...)) compile-tax trap it replaced,
+    # still allocates a small Array header each time)
+    ws::Workspace{T, Ti}
     stats::FactorStats
     ok::Bool
 end
@@ -203,13 +203,13 @@ Supernodal LDLᵀ factor for symmetric quasi-definite systems (design.md §5). S
 layout as [`SupernodalFactor`](@ref) (unit-lower L, explicit 1s on the diagonal of each
 panel) plus a separate diagonal `d` and the caller's expected pivot `signs`.
 """
-mutable struct LDLFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
+mutable struct LDLFactor{T, Ti <: Integer} <: AbstractSparseFactor{T}
     sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
     x::Vector{T}
     panels::Vector{Matrix{T}}      # built-once panel wrappers, same caching as SupernodalFactor.panels
     d::Vector{T}                   # diagonal of D, permuted, length n
     signs::Vector{Int8}            # expected pivot signs (+1/-1/0=free), permuted, length n
-    ws::Workspace{T,Ti}
+    ws::Workspace{T, Ti}
     stats::FactorStats
     ok::Bool
 end
@@ -249,7 +249,7 @@ Storage layout (everything in FACTOR order, i.e. permuted by `sym.perm`):
   must be rebuilt via a fresh `ldlt`/`simplicial`. `stats.fail_col` records the
   factor-order column at which the failure was detected.
 """
-mutable struct SimplicialLDLFactor{T,Ti<:Integer} <: AbstractSparseFactor{T}
+mutable struct SimplicialLDLFactor{T, Ti <: Integer} <: AbstractSparseFactor{T}
     sym::Symbolic{Ti}              # shared symbolic (perm/iperm/n); parent below is the factor's own
     colptr::Vector{Ti}             # column j owns slots colptr[j]:colptr[j+1]-1, length n+1
     colnnz::Vector{Ti}             # slots of column j currently in use, length n

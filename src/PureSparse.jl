@@ -1,13 +1,13 @@
 module PureSparse
 
 import LinearAlgebra  # NOT `using` — our own `cholesky`/`cholesky!`/`ldlt`/`ldlt!` must not
-                       # silently extend LinearAlgebra's/SparseArrays' same-named stdlib
-                       # methods before the deliberate, opt-in M4 drop-in (design.md §8) —
-                       # `import` keeps LinearAlgebra.* qualified-only, so our definitions
-                       # create a genuinely separate function, not a stdlib method-table
-                       # overwrite. Verified: SparseArrays.cholesky(::SparseMatrixCSC)
-                       # exists (unwrapped, not just Symmetric-wrapped) and a bare `using`
-                       # here would silently replace it the moment PureSparse loads.
+# silently extend LinearAlgebra's/SparseArrays' same-named stdlib
+# methods before the deliberate, opt-in M4 drop-in (design.md §8) —
+# `import` keeps LinearAlgebra.* qualified-only, so our definitions
+# create a genuinely separate function, not a stdlib method-table
+# overwrite. Verified: SparseArrays.cholesky(::SparseMatrixCSC)
+# exists (unwrapped, not just Symmetric-wrapped) and a bare `using`
+# here would silently replace it the moment PureSparse loads.
 using SparseArrays
 using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!, nrm2
 using PureBLAS: wy_t!, wy_apply!, WYApplyWorkspace, qr_block_size

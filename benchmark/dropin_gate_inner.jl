@@ -29,7 +29,7 @@ if mode == "baseline"
     results = Any[]
     for (label, A) in gate_matrices()
         @info "baseline (CHOLMOD)" label
-        r = Dict{String,Any}("matrix" => label, "n" => size(A, 1))
+        r = Dict{String, Any}("matrix" => label, "n" => size(A, 1))
         # own-ordering arm
         F = _stdlib_cold(A)
         r["cholmod_perm"] = Vector{Int}(F.p)   # handed to stage 2's same-perm arm
@@ -78,7 +78,7 @@ else
         _ps_warm!(F, Afull)
         @assert PureSparse.issuccess(F) "warm refactor failed ($label)"
         x = F \ b
-        @assert norm(Symmetric(A, :L) * x - b) / norm(b) < 1e-8 "warm refactor wrong ($label)"
+        @assert norm(Symmetric(A, :L) * x - b) / norm(b) < 1.0e-8 "warm refactor wrong ($label)"
         r["ps_warm_own"] = _med(@be _ps_warm!($F, $Afull) seconds = SECONDS samples = SAMPLES evals = 1)
         # interposition overhead: same cold work via the direct PureSparse API
         r["ps_direct_cold_own"] = _med(@be _ps_direct_cold($A, $ord) seconds = SECONDS samples = SAMPLES evals = 1)
@@ -87,7 +87,7 @@ else
         Fp = _stdlib_cold_perm(A, cp)
         _ps_warm!(Fp, Afull)
         @assert PureSparse.issuccess(Fp) "same-perm warm refactor failed ($label)"
-        @assert norm(Symmetric(A, :L) * (Fp \ b) - b) / norm(b) < 1e-8 "same-perm warm wrong ($label)"
+        @assert norm(Symmetric(A, :L) * (Fp \ b) - b) / norm(b) < 1.0e-8 "same-perm warm wrong ($label)"
         r["dropin_cold_sameperm"] = _med(@be _stdlib_cold_perm($A, $cp) seconds = SECONDS samples = SAMPLES evals = 1)
         r["ps_warm_sameperm"] = _med(@be _ps_warm!($Fp, $Afull) seconds = SECONDS samples = SAMPLES evals = 1)
         push!(results, r)

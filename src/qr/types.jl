@@ -20,15 +20,15 @@ first, block entries after); every other field below is block-local. An implemen
 must never index `rcount`/`vptr`/etc. by a full-space column number without first
 translating through `ciperm`.
 """
-struct QRSymbolic{Ti<:Integer}
+struct QRSymbolic{Ti <: Integer}
     m::Int                         # full row count
     n::Int                         # full column count
     # --- singleton block (§2.3); n1 == 0 when disabled or none found ---
     n1::Int                        # number of pre-eliminated column singletons
     mb::Int                        # block row count m′ — the size of the PHYSICAL
-                                    #   permuted-row space every block-local structure
-                                    #   below indexes into; can be LESS than n-n1 (the
-                                    #   m < n-n1 case, §3.4 B2 fix)
+    #   permuted-row space every block-local structure
+    #   below indexes into; can be LESS than n-n1 (the
+    #   m < n-n1 case, §3.4 B2 fix)
     # --- permutations (FULL space, size n / m) ---
     cperm::Vector{Ti}              # column permutation (singletons first, then
     ciperm::Vector{Ti}             #   fill-reducing ∘ postorder on the rest), length n
@@ -51,23 +51,23 @@ struct QRSymbolic{Ti<:Integer}
     rptr::Vector{Ti}               # row-of-R pointers (CSC of Rᵀ), length n-n1+1
     vptr::Vector{Ti}               # V column pointers, length n-n1+1
     vrowind::Vector{Ti}            # V row patterns, physical (block-permuted, 1..mb)
-                                    #   row numbers — §3.4; pivot row for column k is
-                                    #   NOT assumed to be numbered k (B2) — see pivotslot
+    #   row numbers — §3.4; pivot row for column k is
+    #   NOT assumed to be numbered k (B2) — see pivotslot
     pivotslot::Vector{Ti}          # B2 fix: pivotslot[k] = the physical row number
-                                    #   (1..mb) that is column k's designated pivot row,
-                                    #   for a LIVE column k; 0 for a structurally dead
-                                    #   column (vcount[k]==0). Decouples "row k of R"
-                                    #   (a logical index, always 1..n-n1, live or dead)
-                                    #   from "physical row number" (1..mb, only live
-                                    #   columns consume one) — see design_qr.md §3.4
-                                    #   worked examples. Chosen at symbolic time
-                                    #   (pattern-only, static).
+    #   (1..mb) that is column k's designated pivot row,
+    #   for a LIVE column k; 0 for a structurally dead
+    #   column (vcount[k]==0). Decouples "row k of R"
+    #   (a logical index, always 1..n-n1, live or dead)
+    #   from "physical row number" (1..mb, only live
+    #   columns consume one) — see design_qr.md §3.4
+    #   worked examples. Chosen at symbolic time
+    #   (pattern-only, static).
     # --- workspace sizing ---
     max_rrow::Int                  # max rcount — sizes the row-subtree gather buffer
     max_vcol::Int                  # max V column length — sizes the packed reflector buffer
     nnzR::Int
     nnzV::Int                      # Σ vcount (D6: an upper bound on true numeric V
-                                    #   nonzeros, exact as a STRUCTURAL/allocation count)
+    #   nonzeros, exact as a STRUCTURAL/allocation count)
     flops::Float64                 # §3.5 — exact when rank detection is off
 end
 
@@ -96,47 +96,47 @@ Preallocated scratch buffers reused across every `qr!`/`solve!` call on a factor
 sharing one `QRSymbolic`, sized once from `QRSymbolic`'s workspace-sizing scalars so the
 numeric phase never allocates (CLAUDE.md requirement 5; design_qr.md §4.5).
 """
-struct QRWorkspace{T,Ti<:Integer}
+struct QRWorkspace{T, Ti <: Integer}
     x::Vector{T}                   # length mb (physical/block row space, §3.4),
-                                    #   zero-kept between columns (§4.1)
+    #   zero-kept between columns (§4.1)
     stamp::Vector{Ti}               # row-subtree stamp array, indexed by BLOCK COLUMN
-                                    #   (ancestor-climb marker, §4.1 step 2 — task 6
-                                    #   correction: the design's §4.5 prose groups this
-                                    #   under "max_rrow" alongside tsub, but stamp[node]
-                                    #   is looked up by column index (1..n-n1), not by
-                                    #   position-within-T^k — sizing it max_rrow would
-                                    #   under-allocate whenever max_rrow < n-n1), length n-n1
+    #   (ancestor-climb marker, §4.1 step 2 — task 6
+    #   correction: the design's §4.5 prose groups this
+    #   under "max_rrow" alongside tsub, but stamp[node]
+    #   is looked up by column index (1..n-n1), not by
+    #   position-within-T^k — sizing it max_rrow would
+    #   under-allocate whenever max_rrow < n-n1), length n-n1
     tsub::Vector{Ti}                # gathered/sorted T^k (row subtree), length n-n1 — task
-                                    #   7 correction: `max_rrow = max(rcount)` bounds R's
-                                    #   ROW sizes (column sizes of the star matrix's implied
-                                    #   Cholesky factor), but `T^k = {i<k : R[i,k]≠0}` is a
-                                    #   COLUMN-of-R quantity (⟺ a ROW of that same Cholesky
-                                    #   factor) — a genuinely different, uncomputed bound;
-                                    #   confirmed by a real BoundsError under
-                                    #   `--check-bounds=yes` (`max_rrow` undersized `tsub`
-                                    #   on a case where |T^k| exceeded it). `|T^k| < k ≤ n-n1`
-                                    #   always holds trivially, so this is the simple correct
-                                    #   fix rather than deriving the tight row-count bound.
+    #   7 correction: `max_rrow = max(rcount)` bounds R's
+    #   ROW sizes (column sizes of the star matrix's implied
+    #   Cholesky factor), but `T^k = {i<k : R[i,k]≠0}` is a
+    #   COLUMN-of-R quantity (⟺ a ROW of that same Cholesky
+    #   factor) — a genuinely different, uncomputed bound;
+    #   confirmed by a real BoundsError under
+    #   `--check-bounds=yes` (`max_rrow` undersized `tsub`
+    #   on a case where |T^k| exceeded it). `|T^k| < k ≤ n-n1`
+    #   always holds trivially, so this is the simple correct
+    #   fix rather than deriving the tight row-count bound.
     pack::Vector{T}                 # packed reflector staging buffer, length max_vcol (§4.4)
     rcursor::Vector{Ti}              # per-row append cursor into rcolind/rval, length n-n1
     rblk::Vector{T}                  # length max(n-n1, 1) — solve!/solve_minnorm! scratch
-                                    #   over R's own row/column space (task 10 zero-alloc
-                                    #   fix): solve_R!/solve_Rt! both document their x/c
-                                    #   args may alias, so one buffer serves as both input
-                                    #   and output in place, replacing what were previously
-                                    #   two freshly-`Vector{T}(undef,...)`'d temporaries.
+    #   over R's own row/column space (task 10 zero-alloc
+    #   fix): solve_R!/solve_Rt! both document their x/c
+    #   args may alias, so one buffer serves as both input
+    #   and output in place, replacing what were previously
+    #   two freshly-`Vector{T}(undef,...)`'d temporaries.
     n1a::Vector{T}                   # length max(n1, 1) — singleton-block solve scratch
-                                    #   (x1 in solve!, c1 in solve_minnorm!)
+    #   (x1 in solve!, c1 in solve_minnorm!)
     n1b::Vector{T}                   # length max(n1, 1) — singleton-block solve scratch
-                                    #   (z1 in solve_minnorm!, alongside n1a as c1 — the
-                                    #   two are read/written concurrently there, so unlike
-                                    #   rblk this genuinely needs a second buffer)
+    #   (z1 in solve_minnorm!, alongside n1a as c1 — the
+    #   two are read/written concurrently there, so unlike
+    #   rblk this genuinely needs a second buffer)
 end
 
-function QRWorkspace{T,Ti}(sym::QRSymbolic) where {T,Ti<:Integer}
+function QRWorkspace{T, Ti}(sym::QRSymbolic) where {T, Ti <: Integer}
     nb = length(sym.parent)        # block column count, n-n1
     n1 = sym.n1
-    QRWorkspace{T,Ti}(
+    return QRWorkspace{T, Ti}(
         zeros(T, max(sym.mb, 1)),
         zeros(Ti, nb),
         Vector{Ti}(undef, max(nb, 1)),
@@ -156,7 +156,7 @@ Householder vectors `V`/`beta` (design_qr.md §1.4/§4.1). Produced by
 [`qr`](@ref)/refactored in place by [`qr!`](@ref) (zero allocations after the first
 call, matching [`cholesky!`](@ref)/[`ldlt!`](@ref)'s contract).
 """
-mutable struct QRFactor{T<:Real,Ti<:Integer} <: AbstractSparseFactor{T}
+mutable struct QRFactor{T <: Real, Ti <: Integer} <: AbstractSparseFactor{T}
     sym::QRSymbolic{Ti}
     # R stored ROW-wise (CSC of Rᵀ): row k of R owns slots rptr[k]:rptr[k+1]-1.
     rcolind::Vector{Ti}
@@ -187,16 +187,16 @@ mutable struct QRFactor{T<:Real,Ti<:Integer} <: AbstractSparseFactor{T}
     # all three maps below are fixed for the factor's lifetime. n1==0 factors carry
     # trivial placeholders (bsym === sym, empty buffers).
     bsym::QRSymbolic{Ti}           # the A22 block's OWN symbolic (block-LOCAL
-                                    #   cperm/riperm indexing a22buf directly); === sym
-                                    #   when n1==0. All other block fields are shared
-                                    #   by reference with the composed sym.
-    a22buf::SparseMatrixCSC{T,Ti}  # pre-allocated A22 = A[surv_rows, surv_cols]
-                                    #   buffer: colptr/rowval fixed, nzval refreshed
-                                    #   in place each warm qr! via a22map
+    #   cperm/riperm indexing a22buf directly); === sym
+    #   when n1==0. All other block fields are shared
+    #   by reference with the composed sym.
+    a22buf::SparseMatrixCSC{T, Ti}  # pre-allocated A22 = A[surv_rows, surv_cols]
+    #   buffer: colptr/rowval fixed, nzval refreshed
+    #   in place each warm qr! via a22map
     a22map::Vector{Ti}             # A22 nzval slot -> A nzval slot (pattern-invariant)
     r1srcpos::Vector{Ti}           # r1val slot -> A nzval slot (post-sort order), for
-                                    #   the zero-alloc R11/R12 re-harvest
-    ws::QRWorkspace{T,Ti}          # §4.5
+    #   the zero-alloc R11/R12 re-harvest
+    ws::QRWorkspace{T, Ti}          # §4.5
     stats::QRStats
     ok::Bool
 end

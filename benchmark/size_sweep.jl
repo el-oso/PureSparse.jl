@@ -32,7 +32,7 @@ _median_time(b) = median(_times(b))
 
 function bench_size(n::Int; rng::AbstractRNG)
     A = random_spd(n, DENSITY; rng)
-    result = Dict{String,Any}("n" => n, "nnz" => nnz(A))
+    result = Dict{String, Any}("n" => n, "nnz" => nnz(A))
 
     sym = PureSparse.symbolic(A)
     F1 = PureSparse.cholesky(sym, A)
@@ -56,8 +56,10 @@ function run_sweep()
     rng = MersenneTwister(2026)
     results = [(@info "benchmarking" n; bench_size(n; rng)) for n in SIZES]
     host = gethostname()
-    payload = Dict("host" => host, "julia_version" => string(VERSION),
-        "density" => DENSITY, "results" => results)
+    payload = Dict(
+        "host" => host, "julia_version" => string(VERSION),
+        "density" => DENSITY, "results" => results
+    )
     mkpath(joinpath(@__DIR__, "results"))
     outpath = joinpath(@__DIR__, "results", "size_sweep_$(host).json")
     open(io -> JSON.print(io, payload, 2), outpath, "w")
@@ -67,19 +69,22 @@ end
 
 function print_table(payload)
     println("\n=== Size sweep (density=$(payload["density"]), host=$(payload["host"])) — warm numeric refactor, median ===")
-    println(rpad("n", 8), rpad("nnz(A)", 10), rpad("PS+PureBLAS", 14), rpad("PS+OpenBLAS", 14),
-        rpad("CHOLMOD+OB", 14), rpad("PB/CHOLMOD", 12), "OB/CHOLMOD")
+    println(
+        rpad("n", 8), rpad("nnz(A)", 10), rpad("PS+PureBLAS", 14), rpad("PS+OpenBLAS", 14),
+        rpad("CHOLMOD+OB", 14), rpad("PB/CHOLMOD", 12), "OB/CHOLMOD"
+    )
     for r in payload["results"]
         pb, ob, ch = r["ps_pureblas_warm"], r["ps_openblas_warm"], r["cholmod_openblas_warm"]
         println(
             rpad(string(r["n"]), 8), rpad(string(r["nnz"]), 10),
-            rpad(string(round(pb * 1e6; digits = 2)) * "us", 14),
-            rpad(string(round(ob * 1e6; digits = 2)) * "us", 14),
-            rpad(string(round(ch * 1e6; digits = 2)) * "us", 14),
+            rpad(string(round(pb * 1.0e6; digits = 2)) * "us", 14),
+            rpad(string(round(ob * 1.0e6; digits = 2)) * "us", 14),
+            rpad(string(round(ch * 1.0e6; digits = 2)) * "us", 14),
             rpad(string(round(ch / pb; digits = 2)) * "x", 12),
             string(round(ch / ob; digits = 2)) * "x",
         )
     end
+    return
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

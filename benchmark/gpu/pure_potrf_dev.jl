@@ -79,7 +79,7 @@ using CUDA.CUBLAS: trsm!
         gc = bc + (ty - 1) * 4 + (j - 1)
         if gr < M && gc < N
             C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
         end
     end
 end
@@ -137,7 +137,7 @@ end
             gc = bc + (ty - 1) * 4 + (j - 1)
             if gr < N && gc < N && gr >= gc
                 C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
             end
         end
     end
@@ -254,8 +254,10 @@ function gpu_trsm_rlt!(B, L)
         jb = min(nb, n - j0 + 1)
         Bj = view(B, :, j0:(j0 + jb - 1))
         if j0 > 1
-            gpu_gemm_nt!(Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
-                         -one(T), one(T))
+            gpu_gemm_nt!(
+                Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
+                -one(T), one(T)
+            )
         end
         tk(Bj, view(L, j0:(j0 + jb - 1), j0:(j0 + jb - 1)), m, jb; ndrange = cld(m, 256) * 256)
     end
@@ -321,9 +323,13 @@ med(v) = sort(v)[cld(length(v), 2)]
 function time_op!(op!, dst, src; reps = 11)
     copyto!(dst, src); op!(dst); CUDA.synchronize()             # warm (compile tax)
     tc = [Float64(CUDA.@elapsed copyto!(dst, src)) for _ in 1:reps]
-    tt = [Float64(CUDA.@elapsed begin
-                      copyto!(dst, src); op!(dst)
-                  end) for _ in 1:reps]
+    tt = [
+        Float64(
+            CUDA.@elapsed begin
+                copyto!(dst, src); op!(dst)
+            end
+        ) for _ in 1:reps
+    ]
     return max(med(tt) - med(tc), 0.0)
 end
 
@@ -335,8 +341,10 @@ end
 function run_potrf()
     T = Float64
     @printf("\n== potrf('L'): pure blocked-KA vs cuSOLVER (Float64) ==\n")
-    @printf("%6s  %10s  %5s  %10s  %10s  %10s  %11s  %8s\n",
-            "n", "relerr", "", "nb=32(ms)", "nb=64", "nb=128", "cuSOLVER", "vend/best")
+    @printf(
+        "%6s  %10s  %5s  %10s  %10s  %10s  %11s  %8s\n",
+        "n", "relerr", "", "nb=32(ms)", "nb=64", "nb=128", "cuSOLVER", "vend/best"
+    )
     for n in (1, 3, 16, 64, 200, 500, 1000, 1500)
         S = make_spd(n)
         src = CuArray{T}(S); dP = similar(src); dV = similar(src)
@@ -348,18 +356,23 @@ function run_potrf()
         @assert Array(info)[1] == 0
         tps = [time_op!(X -> gpu_potrf!(X, info; nb), dP, src) for nb in (32, 64, 128)]
         tv = time_op!(X -> potrf!('L', X), dV, src)
-        @printf("%6d  %10.2e  %5s  %10.3f  %10.3f  %10.3f  %11.3f  %7.2fx\n",
-                n, re, re <= 1e-13 ? "PASS" : "FAIL",
-                tps[1] * 1e3, tps[2] * 1e3, tps[3] * 1e3, tv * 1e3, tv / minimum(tps))
+        @printf(
+            "%6d  %10.2e  %5s  %10.3f  %10.3f  %10.3f  %11.3f  %7.2fx\n",
+            n, re, re <= 1.0e-13 ? "PASS" : "FAIL",
+            tps[1] * 1.0e3, tps[2] * 1.0e3, tps[3] * 1.0e3, tv * 1.0e3, tv / minimum(tps)
+        )
         foreach(CUDA.unsafe_free!, (src, dP, dV, info))
     end
+    return
 end
 
 function run_trsm()
     T = Float64
     @printf("\n== trsm R/L/T/N (B := B·L⁻ᵀ): pure blocked-KA vs cuBLAS (Float64) ==\n")
-    @printf("%6s %6s  %10s  %5s  %11s  %11s  %8s\n",
-            "m", "n", "relerr", "", "pure (ms)", "cuBLAS", "vend/pure")
+    @printf(
+        "%6s %6s  %10s  %5s  %11s  %11s  %8s\n",
+        "m", "n", "relerr", "", "pure (ms)", "cuBLAS", "vend/pure"
+    )
     for (m, n) in ((48, 16), (192, 64), (2000, 200), (8000, 500), (20000, 1000), (30000, 1500))
         dL = CuArray{T}(make_spd(n)); potrf!('L', dL)
         src = CuArray{T}(randn(m, n)); dP = similar(src); dV = similar(src)
@@ -369,10 +382,13 @@ function run_trsm()
         re = norm(Array(dP) - hv) / norm(hv)
         tp = time_op!(X -> gpu_trsm_rlt!(X, dL), dP, src)
         tv = time_op!(X -> trsm!('R', 'L', 'T', 'N', one(T), dL, X), dV, src)
-        @printf("%6d %6d  %10.2e  %5s  %11.3f  %11.3f  %7.2fx\n",
-                m, n, re, re <= 1e-13 ? "PASS" : "FAIL", tp * 1e3, tv * 1e3, tv / tp)
+        @printf(
+            "%6d %6d  %10.2e  %5s  %11.3f  %11.3f  %7.2fx\n",
+            m, n, re, re <= 1.0e-13 ? "PASS" : "FAIL", tp * 1.0e3, tv * 1.0e3, tv / tp
+        )
         foreach(CUDA.unsafe_free!, (dL, src, dP, dV))
     end
+    return
 end
 
 # The real call shape (gpu_numeric.jl step 3/4): P is an nsrow×nscol panel, the diag block
@@ -381,8 +397,10 @@ end
 function run_panel()
     T = Float64
     @printf("\n== strided panel views (lda=nsrow≠n): potrf(diag view) + trsm(below view) ==\n")
-    @printf("%6s %6s  %10s  %5s  %11s  %11s  %8s\n",
-            "nsrow", "nscol", "relerr", "", "pure (ms)", "vendor", "vend/pure")
+    @printf(
+        "%6s %6s  %10s  %5s  %11s  %11s  %8s\n",
+        "nsrow", "nscol", "relerr", "", "pure (ms)", "vendor", "vend/pure"
+    )
     for (nsrow, n) in ((48, 16), (200, 200), (300, 200), (4000, 500), (20000, 1000), (24000, 1500))
         P = randn(nsrow, n)
         P[1:n, 1:n] = make_spd(n)
@@ -408,10 +426,13 @@ function run_panel()
         re = norm(hp - hv) / norm(hv)
         tp = time_op!(pure!, dP, src)
         tv = time_op!(vend!, dV, src)
-        @printf("%6d %6d  %10.2e  %5s  %11.3f  %11.3f  %7.2fx\n",
-                nsrow, n, re, re <= 1e-13 ? "PASS" : "FAIL", tp * 1e3, tv * 1e3, tv / tp)
+        @printf(
+            "%6d %6d  %10.2e  %5s  %11.3f  %11.3f  %7.2fx\n",
+            nsrow, n, re, re <= 1.0e-13 ? "PASS" : "FAIL", tp * 1.0e3, tv * 1.0e3, tv / tp
+        )
         foreach(CUDA.unsafe_free!, (src, dP, dV, info))
     end
+    return
 end
 
 function main()
@@ -420,7 +441,7 @@ function main()
     run_potrf()
     run_trsm()
     run_panel()
-    println("\ndone.")
+    return println("\ndone.")
 end
 
 main()

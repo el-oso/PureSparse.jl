@@ -92,7 +92,7 @@ ordered last (before columns that are empty, which come very last; columns empti
 the dense-row withholding — "newly null", thesis §4.2.3 — come just before the dense
 block), each block in ascending original index (design_qr.md §2.2 pt 5).
 """
-function order_columns(alg::COLAMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function order_columns(alg::COLAMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     n == 0 && return Ti[]
     nnzA = Int(colptr[n + 1]) - 1
     perm = Vector{Ti}(undef, n)
@@ -490,9 +490,11 @@ end
 # Dead column entries are pruned from row patterns while copying (their thickness
 # already lives with a principal column that co-occurs in the same rows, so `rdeg`
 # stays exact). Returns the new free-tail start.
-function _colamd_gc!(iw::Vector{Int}, n::Int, m::Int, cstart::Vector{Int}, clen::Vector{Int},
+function _colamd_gc!(
+        iw::Vector{Int}, n::Int, m::Int, cstart::Vector{Int}, clen::Vector{Int},
         colstate::Vector{Int8}, rstart::Vector{Int}, rlen::Vector{Int},
-        rowlive::Vector{Bool}, fcol::Vector{Int}, free::Int)
+        rowlive::Vector{Bool}, fcol::Vector{Int}, free::Int
+    )
     @inbounds for i in 1:m
         rowlive[i] || continue
         if rlen[i] == 0

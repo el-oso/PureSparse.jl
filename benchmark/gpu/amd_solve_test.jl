@@ -35,8 +35,8 @@ function t_chol(A, label)
     b = randn(rng, size(A, 1))
     x = dev_solve(sym, F.x, nothing, b)
     res = norm(A * x - b) / norm(b)
-    @printf("  %-12s Cholesky  res=%.2e  %s\n", label, res, res < 1e-8 ? "OK" : "FAIL")
-    return res < 1e-8
+    @printf("  %-12s Cholesky  res=%.2e  %s\n", label, res, res < 1.0e-8 ? "OK" : "FAIL")
+    return res < 1.0e-8
 end
 
 function t_ldlt(K, signs, label)
@@ -45,19 +45,23 @@ function t_ldlt(K, signs, label)
     b = randn(rng, size(K, 1))
     x = dev_solve(sym, F.x, F.d, b)
     res = norm(K * x - b) / norm(b)
-    @printf("  %-12s LDLt      res=%.2e  %s\n", label, res, res < 1e-8 ? "OK" : "FAIL")
-    return res < 1e-8
+    @printf("  %-12s LDLt      res=%.2e  %s\n", label, res, res < 1.0e-8 ? "OK" : "FAIL")
+    return res < 1.0e-8
 end
 
-grid2d(m) = (n = m^2; A = spzeros(n, n);
+grid2d(m) = (
+    n = m^2; A = spzeros(n, n);
     for j in 1:m, i in 1:m
         k = (j - 1) * m + i; A[k, k] = 4.0
         i < m && (A[k, k + 1] = A[k + 1, k] = -1.0)
         j < m && (A[k, k + m] = A[k + m, k] = -1.0)
-    end; A + 0.05I)
+    end; A + 0.05I
+)
 
 println("AMDGPU: ", AMDGPU.functional(), "  device: ", AMDGPU.device())
-A1 = let n = 400; S = sprand(rng, n, n, 0.02); S + S' + n * I end
+A1 = let n = 400
+    S = sprand(rng, n, n, 0.02); S + S' + n * I
+end
 A2 = grid2d(25)
 K = let H = grid2d(20), n1 = 400, n2 = 20
     Ac = sprand(rng, n2, n1, 5.0 / n1)

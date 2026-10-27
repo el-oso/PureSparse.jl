@@ -26,17 +26,21 @@ const REPORT_ONLY = length(ARGS) >= 1 && ARGS[1] == "report"
 
 function make_env(active::Bool)
     envdir = mktempdir()
-    write(joinpath(envdir, "LocalPreferences.toml"), """
-    [PureSparse]
-    dropin_active = $active
-    """)
+    write(
+        joinpath(envdir, "LocalPreferences.toml"), """
+        [PureSparse]
+        dropin_active = $active
+        """
+    )
     bootstrap = joinpath(envdir, "bootstrap.jl")
-    write(bootstrap, """
-    using Pkg
-    Pkg.develop(path=raw"$PKGROOT")
-    Pkg.add(["Chairmarks", "JSON", "SparseArrays", "LinearAlgebra", "Random", "Statistics"])
-    Pkg.instantiate()
-    """)
+    write(
+        bootstrap, """
+        using Pkg
+        Pkg.develop(path=raw"$PKGROOT")
+        Pkg.add(["Chairmarks", "JSON", "SparseArrays", "LinearAlgebra", "Random", "Statistics"])
+        Pkg.instantiate()
+        """
+    )
     run(`$(Base.julia_cmd()) --project=$envdir $bootstrap`)
     return envdir
 end
@@ -56,8 +60,10 @@ using JSON
 payload = JSON.parsefile(json_out)
 results = payload["results"]
 println("\n=== M4 dropin-entry-point wall-time gate — warm numeric refactor, median seconds ===")
-println(rpad("matrix", 22), rpad("arm", 10), rpad("dropin cold", 13), rpad("CHOLMOD cold", 14),
-    rpad("PS warm", 12), rpad("CHOLMOD warm", 14), rpad("overhead", 10), "gate")
+println(
+    rpad("matrix", 22), rpad("arm", 10), rpad("dropin cold", 13), rpad("CHOLMOD cold", 14),
+    rpad("PS warm", 12), rpad("CHOLMOD warm", 14), rpad("overhead", 10), "gate"
+)
 npass = 0; ntotal = 0
 for r in results
     for arm in ("own", "sameperm")
@@ -68,12 +74,14 @@ for r in results
         pass = psw < chw
         pass && (npass += 1)
         ov = arm == "own" ? string(round(psc / r["ps_direct_cold_own"]; digits = 3)) * "x" : "-"
-        println(rpad(r["matrix"], 22), rpad(arm, 10),
+        println(
+            rpad(r["matrix"], 22), rpad(arm, 10),
             rpad(string(round(psc * 1000; digits = 4)) * "ms", 13),
             rpad(string(round(chc * 1000; digits = 4)) * "ms", 14),
             rpad(string(round(psw * 1000; digits = 4)) * "ms", 12),
             rpad(string(round(chw * 1000; digits = 4)) * "ms", 14),
-            rpad(ov, 10), pass ? "PASS" : "fail")
+            rpad(ov, 10), pass ? "PASS" : "fail"
+        )
     end
 end
 coldpass = count(r["dropin_cold_$arm"] < r["cholmod_cold_$arm"] for r in results, arm in ("own", "sameperm"))

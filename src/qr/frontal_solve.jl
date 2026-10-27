@@ -32,7 +32,7 @@
 # Gather panel `pnl`'s V (mp×pb, explicit unit diagonal) into `ws.wy.V` from the
 # front's stored rectangle, using `F.elimcol`/`F.tauv` (NOT a column-range view — see
 # module header). `row0`/`mp` = the panel's row extent (as recorded by factorization).
-function _gather_panel_V!(F::QRFrontFactor{T,Ti}, f::Int, pnl::Int, row0::Int, mp::Int, tvbase::Int) where {T,Ti<:Integer}
+function _gather_panel_V!(F::QRFrontFactor{T, Ti}, f::Int, pnl::Int, row0::Int, mp::Int, tvbase::Int) where {T, Ti <: Integer}
     fsym = F.fsym
     ws = F.ws
     Ff = _front_view(F, f)
@@ -81,7 +81,7 @@ end
     return nothing
 end
 
-@inline function _panel_T(F::QRFrontFactor{T,Ti}, f::Int, pnl::Int) where {T,Ti<:Integer}
+@inline function _panel_T(F::QRFrontFactor{T, Ti}, f::Int, pnl::Int) where {T, Ti <: Integer}
     fsym = F.fsym
     panello = Int(fsym.fpanelptr[f])
     base = Int(fsym.ftauptr[f])
@@ -101,7 +101,7 @@ postorder (ascending), panels within each front forward, `trans='T'` — the mir
 M5a's own `apply_Qt!` but replaying STORED per-panel `V`/`T` instead of re-walking a
 row-subtree (§A6).
 """
-function apply_Qt!(y::AbstractVector{T}, F::QRFrontFactor{T,Ti}) where {T,Ti<:Integer}
+function apply_Qt!(y::AbstractVector{T}, F::QRFrontFactor{T, Ti}) where {T, Ti <: Integer}
     fsym = F.fsym
     ws = F.ws
     @inbounds for f in 1:fsym.nfront
@@ -147,7 +147,7 @@ end
 `y ← Qy` in place: fronts in REVERSE postorder, panels within each front reverse,
 `trans='N'` (§A6, the mirror of `apply_Qt!`).
 """
-function apply_Q!(y::AbstractVector{T}, F::QRFrontFactor{T,Ti}) where {T,Ti<:Integer}
+function apply_Q!(y::AbstractVector{T}, F::QRFrontFactor{T, Ti}) where {T, Ti <: Integer}
     fsym = F.fsym
     ws = F.ws
     @inbounds for f in fsym.nfront:-1:1
@@ -202,7 +202,7 @@ entries are `rval[frptr[k]:frptr[k+1]-1]` against implicit columns
 `fcolind[fsnode[k]][pos(k):n_f]`; `fpivotrow[k]==0` (dead) forces `x[k]=0`, matching
 M5a's basic-solution semantics. `x`/`c` have length `n′`; may alias.
 """
-function solve_R!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, c::AbstractVector{T}) where {T,Ti<:Integer}
+function solve_R!(x::AbstractVector{T}, F::QRFrontFactor{T, Ti}, c::AbstractVector{T}) where {T, Ti <: Integer}
     fsym = F.fsym
     nb = length(fsym.base.parent)
     @inbounds for k in nb:-1:1
@@ -234,7 +234,7 @@ end
 `Rᵀ·x = c` via forward substitution (mirror of [`solve_R!`](@ref), design_qr_m5b.md
 §A6) — forward scatter since `R` is stored row-wise. `x`/`c` may alias.
 """
-function solve_Rt!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, c::AbstractVector{T}) where {T,Ti<:Integer}
+function solve_Rt!(x::AbstractVector{T}, F::QRFrontFactor{T, Ti}, c::AbstractVector{T}) where {T, Ti <: Integer}
     fsym = F.fsym
     nb = length(fsym.base.parent)
     x !== c && copyto!(x, 1, c, 1, nb)
@@ -270,7 +270,7 @@ space via `rperm`, `apply_Qt!`, `solve_R!`, scatter into `x` via `cperm`. `x`/`b
 full space (length `n`/`m`); the frontal path never carries singletons (`sym.n1==0`
 always, §A1.2), so unlike M5a's own `solve!` there is no singleton-block prepend.
 """
-function solve!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
+function solve!(x::AbstractVector{T}, F::QRFrontFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer}
     fsym = F.fsym
     sym = fsym.base
     nb = length(sym.parent)
@@ -301,11 +301,11 @@ end
 
 `solve!` allocating its own output (design_qr_m5b.md §A6).
 """
-Base.:\(F::QRFrontFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer} = solve!(Vector{T}(undef, F.fsym.base.n), F, b)
+Base.:\(F::QRFrontFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer} = solve!(Vector{T}(undef, F.fsym.base.n), F, b)
 
 """
     ldiv!(x::AbstractVector, F::QRFrontFactor, b::AbstractVector) -> x
 
 Alias for [`solve!`](@ref) (stdlib-compatible spelling, design_qr_m5b.md §A6).
 """
-LinearAlgebra.ldiv!(x::AbstractVector{T}, F::QRFrontFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer} = solve!(x, F, b)
+LinearAlgebra.ldiv!(x::AbstractVector{T}, F::QRFrontFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer} = solve!(x, F, b)

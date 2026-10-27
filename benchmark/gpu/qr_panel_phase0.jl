@@ -18,7 +18,7 @@ const KA = KernelAbstractions
     li = @index(Local, Linear)
     WG = @uniform prod(@groupsize())
     red = @localmem T (256,)
-    sh  = @localmem T (2,)
+    sh = @localmem T (2,)
     @inbounds for j in 1:nb
         # 1. sum of squares of x = A[j:m, j]
         s = zero(T)
@@ -56,7 +56,7 @@ const KA = KernelAbstractions
         end
         @synchronize
         # 4. apply H = I - tau v vᵀ to trailing columns k=j+1..nb
-        for k in j+1:nb
+        for k in (j + 1):nb
             s2 = zero(T)
             p = li
             while p <= m - j
@@ -101,7 +101,7 @@ function reconstruct_resid(A0, Afac, tau, m, nb)
     Qfull = Matrix{Float64}(I, m, m)
     for j in nb:-1:1
         v = zeros(m); v[j] = 1.0
-        v[j+1:m] = Afac[j+1:m, j]
+        v[(j + 1):m] = Afac[(j + 1):m, j]
         Qfull = (I - tau[j] * v * v') * Qfull
     end
     QR = Qfull[:, 1:nb] * R
@@ -115,40 +115,48 @@ function gpu_ms(f, reps)
     for _ in 1:reps
         push!(ts, CUDA.@elapsed f())
     end
-    return median(ts) * 1e3
+    return median(ts) * 1.0e3
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__  # main block only when run directly (not on include)
-const SHAPES = [(m, nb) for m in (512, 1024, 2048, 4096, 8192) for nb in (32, 48, 64)]
-const REPS = 200
+    const SHAPES = [(m, nb) for m in (512, 1024, 2048, 4096, 8192) for nb in (32, 48, 64)]
+    const REPS = 200
 
-println("M7 Phase-0: pure single-workgroup panel-QR  vs  cuSOLVER geqrf  (r = pure/geqrf)")
-println("GPU: ", CUDA.name(CUDA.device()))
-println(rpad("m x nb", 14), rpad("resid", 12), rpad("pure ms", 12), rpad("geqrf ms", 12), "r = pure/geqrf")
-results = Dict{String,Any}[]
-for (m, nb) in SHAPES
-    A0 = randn(m, nb)
-    # pure
-    Ap = CuMatrix(copy(A0)); taup = CUDA.zeros(Float64, nb)
-    panel_qr!(Ap, taup)
-    resid = reconstruct_resid(A0, Array(Ap), Array(taup), m, nb)
-    t_pure = gpu_ms(() -> (copyto!(Ap, A0); panel_qr!(Ap, taup)), REPS)
-    # geqrf (vendor) — copy back each rep so it factors the same input
-    Ag = CuMatrix(copy(A0))
-    t_geqrf = gpu_ms(() -> (copyto!(Ag, A0); CUDA.CUSOLVER.geqrf!(Ag)), REPS)
-    r = t_pure / t_geqrf
-    push!(results, Dict("m" => m, "nb" => nb, "resid" => resid,
-                        "pure_ms" => t_pure, "geqrf_ms" => t_geqrf, "r" => r))
-    println(rpad("$(m)x$(nb)", 14), rpad(round(resid, sigdigits = 2), 12),
+    println("M7 Phase-0: pure single-workgroup panel-QR  vs  cuSOLVER geqrf  (r = pure/geqrf)")
+    println("GPU: ", CUDA.name(CUDA.device()))
+    println(rpad("m x nb", 14), rpad("resid", 12), rpad("pure ms", 12), rpad("geqrf ms", 12), "r = pure/geqrf")
+    results = Dict{String, Any}[]
+    for (m, nb) in SHAPES
+        A0 = randn(m, nb)
+        # pure
+        Ap = CuMatrix(copy(A0)); taup = CUDA.zeros(Float64, nb)
+        panel_qr!(Ap, taup)
+        resid = reconstruct_resid(A0, Array(Ap), Array(taup), m, nb)
+        t_pure = gpu_ms(() -> (copyto!(Ap, A0); panel_qr!(Ap, taup)), REPS)
+        # geqrf (vendor) — copy back each rep so it factors the same input
+        Ag = CuMatrix(copy(A0))
+        t_geqrf = gpu_ms(() -> (copyto!(Ag, A0); CUDA.CUSOLVER.geqrf!(Ag)), REPS)
+        r = t_pure / t_geqrf
+        push!(
+            results, Dict(
+                "m" => m, "nb" => nb, "resid" => resid,
+                "pure_ms" => t_pure, "geqrf_ms" => t_geqrf, "r" => r
+            )
+        )
+        println(
+            rpad("$(m)x$(nb)", 14), rpad(round(resid, sigdigits = 2), 12),
             rpad(round(t_pure, sigdigits = 4), 12), rpad(round(t_geqrf, sigdigits = 4), 12),
-            round(r, digits = 3))
-end
-rs = [x["r"] for x in results]
-println("\nr: min ", round(minimum(rs), digits = 3), "  median ", round(median(rs), digits = 3),
+            round(r, digits = 3)
+        )
+    end
+    rs = [x["r"] for x in results]
+    println(
+        "\nr: min ", round(minimum(rs), digits = 3), "  median ", round(median(rs), digits = 3),
         "  max ", round(maximum(rs), digits = 3),
-        "   (need r <= 1.49 for overall >=1.0x at t=0.8)")
-open("qr_panel_phase0.json", "w") do io
-    JSON.print(io, Dict("gpu" => CUDA.name(CUDA.device()), "reps" => REPS, "results" => results), 2)
-end
-println("wrote qr_panel_phase0.json")
+        "   (need r <= 1.49 for overall >=1.0x at t=0.8)"
+    )
+    open("qr_panel_phase0.json", "w") do io
+        JSON.print(io, Dict("gpu" => CUDA.name(CUDA.device()), "reps" => REPS, "results" => results), 2)
+    end
+    println("wrote qr_panel_phase0.json")
 end  # main block guard

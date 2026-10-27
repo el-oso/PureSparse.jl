@@ -38,7 +38,7 @@ function hidden_band_with_dense_row(rng, m::Int, n::Int, halfbw::Int)
     I_ = Int[]
     J_ = Int[]
     for j in 1:n, _ in 1:4
-        push!(I_, clamp(j + rand(rng, (-halfbw):halfbw, ), 1, m - 1))
+        push!(I_, clamp(j + rand(rng, (-halfbw):halfbw), 1, m - 1))
         push!(J_, j)
     end
     Aband = sparse(I_, J_, ones(length(I_)), m - 1, n)[:, randperm(rng, n)]
@@ -56,9 +56,11 @@ end
         A = random_rect(rng, m, n, rand(rng, (0.05, 0.2, 0.5, 0.9)))
         # default; tiny mults (forces dense withholding, floor permitting); huge mults
         # (disables withholding entirely)
-        for alg in (COLAMDOrdering(),
+        for alg in (
+                COLAMDOrdering(),
                 COLAMDOrdering(dense_row_mult = 0.01, dense_col_mult = 0.01),
-                COLAMDOrdering(dense_row_mult = 1e9, dense_col_mult = 1e9))
+                COLAMDOrdering(dense_row_mult = 1.0e9, dense_col_mult = 1.0e9),
+            )
             p = PureSparse.order_columns(alg, m, n, A.colptr, A.rowval)
             @test length(p) == n
             n > 0 && @test sort(p) == collect(1:n)
@@ -151,8 +153,10 @@ end
     nnzR_fixed(A, p) = nnz(LinearAlgebra.qr(A[:, p]; ordering = SparseArrays.SPQR.ORDERING_FIXED).R)
 
     # Square and tall (m ≥ n): raw comparison.
-    for (m, n, d) in ((60, 40, 0.1), (120, 80, 0.05), (200, 100, 0.03), (150, 150, 0.04),
-            (100, 60, 0.15), (300, 200, 0.02), (400, 150, 0.03), (500, 300, 0.01))
+    for (m, n, d) in (
+            (60, 40, 0.1), (120, 80, 0.05), (200, 100, 0.03), (150, 150, 0.04),
+            (100, 60, 0.15), (300, 200, 0.02), (400, 150, 0.03), (500, 300, 0.01),
+        )
         for _ in 1:2
             A = random_rect(rng, m, n, d)
             p = PureSparse.order_columns(COLAMDOrdering(), m, n, A.colptr, A.rowval)
@@ -170,15 +174,19 @@ end
     # singletons+COLAMD conflates the two stages, so the reference peel is composed in
     # front here, mirroring what the real pipeline (and SPQR itself) does. With it,
     # measured quality is at parity (worst 1.002 over 40 wide instances).
-    for (m, n, d) in ((80, 120, 0.05), (50, 90, 0.1), (100, 180, 0.06), (60, 140, 0.08),
-            (90, 130, 0.07), (110, 160, 0.04))
+    for (m, n, d) in (
+            (80, 120, 0.05), (50, 90, 0.1), (100, 180, 0.06), (60, 140, 0.08),
+            (90, 130, 0.07), (110, 160, 0.04),
+        )
         for _ in 1:2
             A = random_rect(rng, m, n, d)
             peel, rowlive, collive = peel_singletons(A)
             rest = [j for j in 1:n if collive[j]]
             B = A[findall(rowlive), rest]
-            p2 = PureSparse.order_columns(COLAMDOrdering(), size(B, 1), size(B, 2),
-                B.colptr, B.rowval)
+            p2 = PureSparse.order_columns(
+                COLAMDOrdering(), size(B, 1), size(B, 2),
+                B.colptr, B.rowval
+            )
             p = vcat(peel, rest[p2])
             @test sort(p) == collect(1:n)
             @test nnzR_fixed(A, p) <= 1.15 * stdlib_spqr_nnzR(A)
@@ -210,8 +218,10 @@ end
     colptr2, rowval2 = PureSparse.ata_pattern(m - 1, n, Aband.colptr, Aband.rowval)
     adj = adj_of_pattern(n, colptr2, rowval2)
     p_with = PureSparse.order_columns(COLAMDOrdering(), m, n, A.colptr, A.rowval)
-    p_wo = PureSparse.order_columns(COLAMDOrdering(dense_row_mult = 1e9), m, n,
-        A.colptr, A.rowval)
+    p_wo = PureSparse.order_columns(
+        COLAMDOrdering(dense_row_mult = 1.0e9), m, n,
+        A.colptr, A.rowval
+    )
     @test sort(p_with) == collect(1:n)
     @test sort(p_wo) == collect(1:n)
     fill_with = elimination_fill_adj(n, adj, p_with)

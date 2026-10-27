@@ -13,7 +13,7 @@ where it is called the star-center) and the V/R row-structure builder (§3.4, wh
 is called `leftcol(r)`) need — computed once here to avoid duplicating (and risking
 divergent copies of) the min-finding loop.
 """
-function row_leftcol(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, ciperm::Vector{Ti}) where {Ti<:Integer}
+function row_leftcol(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, ciperm::Vector{Ti}) where {Ti <: Integer}
     rowptr, rowidx = csc_transpose(m, n, colptr, rowval)
     leftcol = zeros(Ti, m)
     @inbounds for i in 1:m
@@ -51,7 +51,7 @@ graph (proved via the fill-path theorem, Rose–Tarjan), so `etree(S)` = the col
 elimination tree of `A` and `column_counts(S)` = `rcount` (row sizes of `R`) —
 without ever forming `AᵀA`.
 """
-function star_pattern(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, ciperm::Vector{Ti}) where {Ti<:Integer}
+function star_pattern(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, ciperm::Vector{Ti}) where {Ti <: Integer}
     rowptr, rowidx, leftcol = row_leftcol(m, n, colptr, rowval, ciperm)
 
     # Bucket rows by their star-center (= leftcol[i]) via a head/next intrusive linked
@@ -183,8 +183,10 @@ first element is the minimum (= `pivotslot[k]`), and each child's survivor subli
 by the same induction. The `vcount` recurrence guarantees the pieces fill the segment
 exactly.
 """
-function qr_row_structure(m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti};
-        build_v::Bool = true) where {Ti<:Integer}
+function qr_row_structure(
+        m::Int, n::Int, parent::Vector{Ti}, leftcol::Vector{Ti};
+        build_v::Bool = true
+    ) where {Ti <: Integer}
     a = zeros(Ti, n)
     @inbounds for r in 1:m
         k = leftcol[r]
@@ -302,8 +304,10 @@ uses its own `symbolic_qr_frontal`-built `fsym.nnzVF`/front storage instead). Do
 default this to `false` — the `:column` path (`numeric.jl`, `singletons.jl`,
 `QRWorkspace`) needs the real `vrowind`/`pivotslot` contents.
 """
-function symbolic_qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering,
-        build_v::Bool = true) where {T,Ti<:Integer}
+function symbolic_qr(
+        A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering,
+        build_v::Bool = true
+    ) where {T, Ti <: Integer}
     m, n = size(A)
     fcperm = order_columns(ordering, m, n, A.colptr, A.rowval)
     fciperm = Vector{Ti}(undef, n)

@@ -6,7 +6,7 @@
 `y ← Qᵀy` in place (`y` has length `F.sym.mb`, physical row space): apply reflectors
 `k = 1..n` ASCENDING (`Qᵀ = H_n·…·H_1`, so `H_1` applies first, design_qr.md §6.1).
 """
-function apply_Qt!(y::AbstractVector{T}, F::QRFactor{T,Ti}) where {T,Ti<:Integer}
+function apply_Qt!(y::AbstractVector{T}, F::QRFactor{T, Ti}) where {T, Ti <: Integer}
     nb = length(F.sym.parent)
     @inbounds for k in 1:nb
         F.beta[k] == zero(T) && continue
@@ -21,7 +21,7 @@ end
 `y ← Qy` in place: apply reflectors `k = n..1` DESCENDING (`Q = H_1·…·H_n`, so `H_n`
 applies first, design_qr.md §6.1).
 """
-function apply_Q!(y::AbstractVector{T}, F::QRFactor{T,Ti}) where {T,Ti<:Integer}
+function apply_Q!(y::AbstractVector{T}, F::QRFactor{T, Ti}) where {T, Ti <: Integer}
     nb = length(F.sym.parent)
     @inbounds for k in nb:-1:1
         F.beta[k] == zero(T) && continue
@@ -39,7 +39,7 @@ end
 `x[k] = 0` for those, matching the design's "dead ⇒ x[k] = 0". `x`/`c` have length
 `n - n1`; `x`/`c` may alias.
 """
-function solve_R!(x::AbstractVector{T}, F::QRFactor{T,Ti}, c::AbstractVector{T}) where {T,Ti<:Integer}
+function solve_R!(x::AbstractVector{T}, F::QRFactor{T, Ti}, c::AbstractVector{T}) where {T, Ti <: Integer}
     sym = F.sym
     nb = length(sym.parent)
     ws = F.ws
@@ -71,7 +71,7 @@ finalized, its contribution is scattered immediately into every later `x[j]` tha
 row `j` needs from `k`. Dead columns (`diag == 0`) get `x[k] = 0` and scatter nothing.
 `x`/`c` may alias.
 """
-function solve_Rt!(x::AbstractVector{T}, F::QRFactor{T,Ti}, c::AbstractVector{T}) where {T,Ti<:Integer}
+function solve_Rt!(x::AbstractVector{T}, F::QRFactor{T, Ti}, c::AbstractVector{T}) where {T, Ti <: Integer}
     sym = F.sym
     nb = length(sym.parent)
     ws = F.ws
@@ -112,7 +112,7 @@ an arbitrary `c[k]` — `solve_R!` ignores it and forces `x[k] = 0` regardless. 
 is handled the same way as any other dead-column case, not as a special path (design's
 own "no special-casing" pattern, mirroring §3.4's B2 argument).
 """
-function solve!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
+function solve!(x::AbstractVector{T}, F::QRFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer}
     sym = F.sym
     m, n = sym.m, sym.n
     nb = length(sym.parent)
@@ -169,7 +169,7 @@ function solve!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) w
     end
 
     fill!(y, zero(T))                      # restore F.ws.x's "all-zero between columns"
-                                            # invariant (design.md §4.1) before the next qr!
+    # invariant (design.md §4.1) before the next qr!
     return x
 end
 
@@ -178,14 +178,14 @@ end
 
 `solve!` allocating its own output (design_qr.md §6.4).
 """
-Base.:\(F::QRFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer} = solve!(Vector{T}(undef, F.sym.n), F, b)
+Base.:\(F::QRFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer} = solve!(Vector{T}(undef, F.sym.n), F, b)
 
 """
     ldiv!(x::AbstractVector, F::QRFactor, b::AbstractVector) -> x
 
 Alias for [`solve!`](@ref) (design_qr.md §6.4's stdlib-compatible spelling).
 """
-LinearAlgebra.ldiv!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer} = solve!(x, F, b)
+LinearAlgebra.ldiv!(x::AbstractVector{T}, F::QRFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer} = solve!(x, F, b)
 
 """
     solve_minnorm!(x::AbstractVector, F::QRFactor, b::AbstractVector) -> x
@@ -213,14 +213,16 @@ return a wrong answer rather than error. Pass `tol=0` to the `qr(Aᵀ; ...)` cal
 produced `F` if you need this guarantee on a matrix you haven't separately verified is
 well-conditioned.
 """
-function solve_minnorm!(x::AbstractVector{T}, F::QRFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
+function solve_minnorm!(x::AbstractVector{T}, F::QRFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer}
     sym = F.sym
-    F.stats.n_dead == 0 || throw(ArgumentError(
-        "solve_minnorm!: F has $(F.stats.n_dead) rank-detected dead column(s) — the " *
-        "minimum-norm formula requires Aᵀ to be factored at full rank; pass tol=0 to " *
-        "qr(Aᵀ; ...) if Aᵀ is well-conditioned, or this system is genuinely rank-" *
-        "deficient and solve_minnorm! does not support that case",
-    ))
+    F.stats.n_dead == 0 || throw(
+        ArgumentError(
+            "solve_minnorm!: F has $(F.stats.n_dead) rank-detected dead column(s) — the " *
+                "minimum-norm formula requires Aᵀ to be factored at full rank; pass tol=0 to " *
+                "qr(Aᵀ; ...) if Aᵀ is well-conditioned, or this system is genuinely rank-" *
+                "deficient and solve_minnorm! does not support that case",
+        )
+    )
     nb = length(sym.parent)
     n1 = sym.n1
     c2 = F.ws.rblk                          # length nb, zero-alloc (task 10)

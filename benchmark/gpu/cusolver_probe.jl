@@ -23,25 +23,27 @@ L21_cpu = A21 / L11_cpu'             # A21 * inv(L11')
 storage = CUDA.zeros(Float64, 12000)
 off = 211
 packed = vcat(Matrix(G), A21)                 # nsrow×nscol column-major
-copyto!(view(storage, off:(off + nsrow*nscol - 1)), vec(packed))
-panel = reshape(view(storage, off:(off + nsrow*nscol - 1)), nsrow, nscol)
+copyto!(view(storage, off:(off + nsrow * nscol - 1)), vec(packed))
+panel = reshape(view(storage, off:(off + nsrow * nscol - 1)), nsrow, nscol)
 diagblk = view(panel, 1:nscol, 1:nscol)
 _, info = potrf!('L', diagblk)                 # in-place lower Cholesky of the diag block
 @assert info == 0 "potrf! info=$info"
-sub = view(panel, nscol+1:nsrow, 1:nscol)
+sub = view(panel, (nscol + 1):nsrow, 1:nscol)
 # solve sub * L11' = A21  →  side=R, uplo=L, transA=T (L11'), diag=N
 trsm!('R', 'L', 'T', 'N', 1.0, diagblk, sub)
 CUDA.synchronize()
 
 L11_gpu = Array(view(panel, 1:nscol, 1:nscol))
 # zero the strict upper (potrf! leaves the original upper untouched; CPU L is lower)
-for i in 1:nscol, j in i+1:nscol; L11_gpu[i, j] = 0.0; end
-L21_gpu = Array(view(panel, nscol+1:nsrow, 1:nscol))
+for i in 1:nscol, j in (i + 1):nscol
+    L11_gpu[i, j] = 0.0
+end
+L21_gpu = Array(view(panel, (nscol + 1):nsrow, 1:nscol))
 
 e11 = norm(L11_gpu - L11_cpu) / norm(L11_cpu)
 e21 = norm(L21_gpu - L21_cpu) / norm(L21_cpu)
 println("potrf! L11 relerr = ", e11)
 println("trsm!  L21 relerr = ", e21)
-@assert e11 < 1e-12 "L11 mismatch"
-@assert e21 < 1e-12 "L21 mismatch"
+@assert e11 < 1.0e-12 "L11 mismatch"
+@assert e21 < 1.0e-12 "L21 mismatch"
 println("cuSOLVER potrf! + cuBLAS trsm! API CONFIRMED (lower Cholesky + panel solve match CPU)")

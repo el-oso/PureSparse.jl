@@ -8,7 +8,7 @@
 # L/Lᵀ sweeps are written once over this union; the only difference is the diagonal:
 # LLᵀ panels store L's true diagonal (trsm diag='N'), LDLᵀ panels store unit-lower L
 # (trsm diag='U') plus the separate D solved by `solve_D!`.
-const _PanelFactor{T,Ti} = Union{SupernodalFactor{T,Ti},LDLFactor{T,Ti}}
+const _PanelFactor{T, Ti} = Union{SupernodalFactor{T, Ti}, LDLFactor{T, Ti}}
 _diagchar(::SupernodalFactor) = 'N'
 _diagchar(::LDLFactor) = 'U'
 
@@ -24,7 +24,7 @@ single-RHS (`b::AbstractVector`) form (the permuted-RHS scratch is `F.ws.rhs`, s
 pre-sized (CLAUDE.md requirement 5 targets the per-factor hot path, which for an
 interior-point consumer is single-RHS refactor+solve, not a growing multi-RHS count).
 """
-function solve!(x::AbstractVector{T}, F::_PanelFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
+function solve!(x::AbstractVector{T}, F::_PanelFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer}
     sym = F.sym
     n = sym.n
     perm = sym.perm
@@ -44,7 +44,7 @@ function solve!(x::AbstractVector{T}, F::_PanelFactor{T,Ti}, b::AbstractVector{T
     return x
 end
 
-function solve!(x::AbstractMatrix{T}, F::_PanelFactor{T,Ti}, b::AbstractMatrix{T}) where {T,Ti<:Integer}
+function solve!(x::AbstractMatrix{T}, F::_PanelFactor{T, Ti}, b::AbstractMatrix{T}) where {T, Ti <: Integer}
     sym = F.sym
     n = sym.n
     perm = sym.perm
@@ -97,7 +97,7 @@ stage of the LDLᵀ `solve!`, exported for iterative refinement and split-solve 
 """
 solve_D!(y::AbstractVecOrMat, F::LDLFactor) = _solve_D!(y, F)
 
-function _solve_D!(y::Vector{T}, F::LDLFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_D!(y::Vector{T}, F::LDLFactor{T, Ti}) where {T, Ti <: Integer}
     d = F.d
     @inbounds for k in 1:F.sym.n
         y[k] /= d[k]
@@ -105,7 +105,7 @@ function _solve_D!(y::Vector{T}, F::LDLFactor{T,Ti}) where {T,Ti<:Integer}
     return y
 end
 
-function _solve_D!(y::Matrix{T}, F::LDLFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_D!(y::Matrix{T}, F::LDLFactor{T, Ti}) where {T, Ti <: Integer}
     d = F.d
     nrhs = size(y, 2)
     @inbounds for k in 1:F.sym.n
@@ -117,7 +117,7 @@ function _solve_D!(y::Matrix{T}, F::LDLFactor{T,Ti}) where {T,Ti<:Integer}
     return y
 end
 
-function _solve_L!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_L!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     # `y` is `F.ws.rhs` on every internal `solve!` call (the actual hot path CLAUDE.md req 5
     # gates) — `_solve_L_cached!` then uses the SAME pre-wrapped/preallocated buffers
     # `panels`/`c` already use elsewhere, zero allocation. `solve_L!` is also exported
@@ -137,7 +137,7 @@ function _solve_L!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
     return y
 end
 
-function _solve_L_cached!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_L_cached!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
@@ -146,33 +146,33 @@ function _solve_L_cached!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Inte
     ws = F.ws
 
     GC.@preserve y begin
-    @inbounds for s in 1:nsuper
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nscol = j1 - j0 + 1
-        rp0 = Int(rowind_ptr[s])
-        nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = F.panels[s]
-        Ldiag = view(panel, 1:nscol, 1:nscol)
-        yblk = ws.rhs_blocks[s]
-        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
+        @inbounds for s in 1:nsuper
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nscol = j1 - j0 + 1
+            rp0 = Int(rowind_ptr[s])
+            nsrow = Int(rowind_ptr[s + 1]) - rp0
+            panel = F.panels[s]
+            Ldiag = view(panel, 1:nscol, 1:nscol)
+            yblk = ws.rhs_blocks[s]
+            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
 
-        if nsrow > nscol
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-            nex = nsrow - nscol
-            upd = view(ws.c, 1:nex, 1:1)
-            gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
-            for a in 1:nex
-                ra = _row(rowind, rp0, nscol + a)
-                y[ra] += upd[a, 1]
+            if nsrow > nscol
+                Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+                nex = nsrow - nscol
+                upd = view(ws.c, 1:nex, 1:1)
+                gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
+                for a in 1:nex
+                    ra = _row(rowind, rp0, nscol + a)
+                    y[ra] += upd[a, 1]
+                end
             end
         end
-    end
     end
     return y
 end
 
-function _solve_L_generic!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_L_generic!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
@@ -180,32 +180,32 @@ function _solve_L_generic!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Int
     rowind = sym.rowind
 
     GC.@preserve y begin
-    @inbounds for s in 1:nsuper
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nscol = j1 - j0 + 1
-        rp0 = Int(rowind_ptr[s])
-        nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = F.panels[s]
-        Ldiag = view(panel, 1:nscol, 1:nscol)
-        yblk = _panelview(y, j0, nscol, 1)
-        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
+        @inbounds for s in 1:nsuper
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nscol = j1 - j0 + 1
+            rp0 = Int(rowind_ptr[s])
+            nsrow = Int(rowind_ptr[s + 1]) - rp0
+            panel = F.panels[s]
+            Ldiag = view(panel, 1:nscol, 1:nscol)
+            yblk = _panelview(y, j0, nscol, 1)
+            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
 
-        if nsrow > nscol
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-            upd = Matrix{T}(undef, nsrow - nscol, 1)
-            gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
-            for a in 1:(nsrow - nscol)
-                ra = _row(rowind, rp0, nscol + a)
-                y[ra] += upd[a, 1]
+            if nsrow > nscol
+                Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+                upd = Matrix{T}(undef, nsrow - nscol, 1)
+                gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
+                for a in 1:(nsrow - nscol)
+                    ra = _row(rowind, rp0, nscol + a)
+                    y[ra] += upd[a, 1]
+                end
             end
         end
-    end
     end
     return y
 end
 
-function _solve_L!(y::Matrix{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_L!(y::Matrix{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
@@ -216,34 +216,34 @@ function _solve_L!(y::Matrix{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
     nrhs = size(y, 2)
 
     GC.@preserve x begin
-    @inbounds for s in 1:nsuper
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nscol = j1 - j0 + 1
-        rp0 = Int(rowind_ptr[s])
-        nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = _panelview(x, Int(px[s]), nsrow, nscol)
-        Ldiag = view(panel, 1:nscol, 1:nscol)
-        yblk = view(y, j0:j1, :)
-        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
+        @inbounds for s in 1:nsuper
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nscol = j1 - j0 + 1
+            rp0 = Int(rowind_ptr[s])
+            nsrow = Int(rowind_ptr[s + 1]) - rp0
+            panel = _panelview(x, Int(px[s]), nsrow, nscol)
+            Ldiag = view(panel, 1:nscol, 1:nscol)
+            yblk = view(y, j0:j1, :)
+            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
 
-        if nsrow > nscol
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-            upd = Matrix{T}(undef, nsrow - nscol, nrhs)
-            gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
-            for a in 1:(nsrow - nscol)
-                ra = _row(rowind, rp0, nscol + a)
-                for c in 1:nrhs
-                    y[ra, c] += upd[a, c]
+            if nsrow > nscol
+                Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+                upd = Matrix{T}(undef, nsrow - nscol, nrhs)
+                gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
+                for a in 1:(nsrow - nscol)
+                    ra = _row(rowind, rp0, nscol + a)
+                    for c in 1:nrhs
+                        y[ra, c] += upd[a, c]
+                    end
                 end
             end
         end
     end
-    end
     return y
 end
 
-function _solve_Lt!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_Lt!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     # See `_solve_L!`'s comment: same cached-vs-generic split, same reason (type-stable
     # `yblk`/`gathered` in each branch, not a Union between SubArray and fresh Matrix).
     if y === F.ws.rhs
@@ -254,7 +254,7 @@ function _solve_Lt!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
     return y
 end
 
-function _solve_Lt_cached!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_Lt_cached!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
@@ -263,33 +263,33 @@ function _solve_Lt_cached!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Int
     ws = F.ws
 
     GC.@preserve y begin
-    @inbounds for s in nsuper:-1:1
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nscol = j1 - j0 + 1
-        rp0 = Int(rowind_ptr[s])
-        nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = F.panels[s]
-        Ldiag = view(panel, 1:nscol, 1:nscol)
-        yblk = ws.rhs_blocks[s]
+        @inbounds for s in nsuper:-1:1
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nscol = j1 - j0 + 1
+            rp0 = Int(rowind_ptr[s])
+            nsrow = Int(rowind_ptr[s + 1]) - rp0
+            panel = F.panels[s]
+            Ldiag = view(panel, 1:nscol, 1:nscol)
+            yblk = ws.rhs_blocks[s]
 
-        if nsrow > nscol
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-            nex = nsrow - nscol
-            gathered = view(ws.c, 1:nex, 1:1)
-            for a in 1:nex
-                ra = _row(rowind, rp0, nscol + a)
-                gathered[a, 1] = y[ra]
+            if nsrow > nscol
+                Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+                nex = nsrow - nscol
+                gathered = view(ws.c, 1:nex, 1:1)
+                for a in 1:nex
+                    ra = _row(rowind, rp0, nscol + a)
+                    gathered[a, 1] = y[ra]
+                end
+                gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
             end
-            gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
+            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
         end
-        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
-    end
     end
     return y
 end
 
-function _solve_Lt_generic!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_Lt_generic!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
@@ -297,32 +297,32 @@ function _solve_Lt_generic!(y::Vector{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:In
     rowind = sym.rowind
 
     GC.@preserve y begin
-    @inbounds for s in nsuper:-1:1
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nscol = j1 - j0 + 1
-        rp0 = Int(rowind_ptr[s])
-        nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = F.panels[s]
-        Ldiag = view(panel, 1:nscol, 1:nscol)
-        yblk = _panelview(y, j0, nscol, 1)
+        @inbounds for s in nsuper:-1:1
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nscol = j1 - j0 + 1
+            rp0 = Int(rowind_ptr[s])
+            nsrow = Int(rowind_ptr[s + 1]) - rp0
+            panel = F.panels[s]
+            Ldiag = view(panel, 1:nscol, 1:nscol)
+            yblk = _panelview(y, j0, nscol, 1)
 
-        if nsrow > nscol
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-            gathered = Matrix{T}(undef, nsrow - nscol, 1)
-            for a in 1:(nsrow - nscol)
-                ra = _row(rowind, rp0, nscol + a)
-                gathered[a, 1] = y[ra]
+            if nsrow > nscol
+                Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+                gathered = Matrix{T}(undef, nsrow - nscol, 1)
+                for a in 1:(nsrow - nscol)
+                    ra = _row(rowind, rp0, nscol + a)
+                    gathered[a, 1] = y[ra]
+                end
+                gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
             end
-            gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
+            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
         end
-        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
-    end
     end
     return y
 end
 
-function _solve_Lt!(y::Matrix{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_Lt!(y::Matrix{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
     nsuper = sym.nsuper
     super = sym.super
@@ -333,29 +333,29 @@ function _solve_Lt!(y::Matrix{T}, F::_PanelFactor{T,Ti}) where {T,Ti<:Integer}
     nrhs = size(y, 2)
 
     GC.@preserve x begin
-    @inbounds for s in nsuper:-1:1
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nscol = j1 - j0 + 1
-        rp0 = Int(rowind_ptr[s])
-        nsrow = Int(rowind_ptr[s + 1]) - rp0
-        panel = _panelview(x, Int(px[s]), nsrow, nscol)
-        Ldiag = view(panel, 1:nscol, 1:nscol)
-        yblk = view(y, j0:j1, :)
+        @inbounds for s in nsuper:-1:1
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nscol = j1 - j0 + 1
+            rp0 = Int(rowind_ptr[s])
+            nsrow = Int(rowind_ptr[s + 1]) - rp0
+            panel = _panelview(x, Int(px[s]), nsrow, nscol)
+            Ldiag = view(panel, 1:nscol, 1:nscol)
+            yblk = view(y, j0:j1, :)
 
-        if nsrow > nscol
-            Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-            gathered = Matrix{T}(undef, nsrow - nscol, nrhs)
-            for a in 1:(nsrow - nscol)
-                ra = _row(rowind, rp0, nscol + a)
-                for c in 1:nrhs
-                    gathered[a, c] = y[ra, c]
+            if nsrow > nscol
+                Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
+                gathered = Matrix{T}(undef, nsrow - nscol, nrhs)
+                for a in 1:(nsrow - nscol)
+                    ra = _row(rowind, rp0, nscol + a)
+                    for c in 1:nrhs
+                        gathered[a, c] = y[ra, c]
+                    end
                 end
+                gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
             end
-            gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
+            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
         end
-        trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
-    end
     end
     return y
 end

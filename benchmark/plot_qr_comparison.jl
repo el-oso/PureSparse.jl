@@ -44,8 +44,12 @@ const C_SPQR = "#4a3aa7"   # SuiteSparseQR
 # Bars under a log y-axis: draw an explicit rectangle anchored at the axis floor
 # (Plots/GR's default zero-baseline bars misrender under yscale=:log10).
 function logbar!(p, xs, vals, floor_y; width, color, label)
-    shapes = [Shape([x - width / 2, x + width / 2, x + width / 2, x - width / 2],
-                    [floor_y, floor_y, v, v]) for (x, v) in zip(xs, vals)]
+    shapes = [
+        Shape(
+            [x - width / 2, x + width / 2, x + width / 2, x - width / 2],
+            [floor_y, floor_y, v, v]
+        ) for (x, v) in zip(xs, vals)
+    ]
     plot!(p, shapes; color, linecolor = :white, linewidth = 1, label = [label fill("", 1, length(shapes) - 1)])
     return p
 end
@@ -55,9 +59,9 @@ ticklabel(v) = v >= 1 ? string(round(Int, v)) : string(round(v; sigdigits = 1))
 
 # The D13 gate quantity for a row: PureSparse best-of(:column, :frontal) WARM refactor
 # median (the same choice qr(A; method=:auto) makes) vs SuiteSparseQR cold median.
-ps_best_warm_ms(r) = 1e3 * min(Float64(r["ps_warm"]), Float64(r["ps_frontal_warm"]))
+ps_best_warm_ms(r) = 1.0e3 * min(Float64(r["ps_warm"]), Float64(r["ps_frontal_warm"]))
 ps_best_warm_arm(r) = Float64(r["ps_warm"]) <= Float64(r["ps_frontal_warm"]) ? ":column" : ":frontal"
-spqr_cold_ms(r) = 1e3 * median(Float64.(r["spqr_cold_samples"]))
+spqr_cold_ms(r) = 1.0e3 * median(Float64.(r["spqr_cold_samples"]))
 
 # ── 1) D13 gate: PureSparse best-of warm qr! vs SuiteSparseQR cold, faceted by stratum ──
 gate = JSON.parsefile(joinpath(RESULTS, "qr_gate_neuromancer.json"))
@@ -80,33 +84,41 @@ panels = map(strata) do st
 
     allvals = vcat(ps, sp)
     lo = 10.0^floor(log10(minimum(allvals)) - 0.05)
-    hi = 10.0^(log10(maximum(allvals)) + 0.30)
+    hi = 10.0^(log10(maximum(allvals)) + 0.3)
     yt = logticks(lo, hi)
-    p = plot(; yscale = :log10, ylims = (lo, hi), yticks = (yt, ticklabel.(yt)),
+    p = plot(;
+        yscale = :log10, ylims = (lo, hi), yticks = (yt, ticklabel.(yt)),
         xticks = ((1:k) .* 2 .- 0.5, labels), xlims = (0.3, 2k + 0.7), xrotation = 12,
         legend = (st == strata[1] ? :topleft : false),
         title = "$st  —  $npass/$k PASS", titlefontsize = 10,
         tickfontsize = 6, guidefontsize = 8,
         ylabel = "median time [ms]", grid = :y, gridalpha = 0.15,
-        framestyle = :box)
+        framestyle = :box
+    )
     for i in 1:k
         xp = 2i - 1
         xs = 2i
-        logbar!(p, [xp], [ps[i]], lo; width = 0.85, color = C_PS,
-            label = (i == 1 ? "PureSparse warm qr! (best of :column/:frontal)" : ""))
-        logbar!(p, [xs], [sp[i]], lo; width = 0.85, color = C_SPQR,
-            label = (i == 1 ? "SuiteSparseQR cold (stdlib)" : ""))
+        logbar!(
+            p, [xp], [ps[i]], lo; width = 0.85, color = C_PS,
+            label = (i == 1 ? "PureSparse warm qr! (best of :column/:frontal)" : "")
+        )
+        logbar!(
+            p, [xs], [sp[i]], lo; width = 0.85, color = C_SPQR,
+            label = (i == 1 ? "SuiteSparseQR cold (stdlib)" : "")
+        )
         # arm that won under the PS bar, ms value above each bar
-        annotate!(p, [(xp, ps[i] * 1.20, Plots.text(arms[i], 6, :center, "#2a78d6"))])
+        annotate!(p, [(xp, ps[i] * 1.2, Plots.text(arms[i], 6, :center, "#2a78d6"))])
         annotate!(p, [(xp, lo * 1.9, Plots.text(string(round(ps[i]; sigdigits = 2)), 6, :center, :white))])
         annotate!(p, [(xs, lo * 1.9, Plots.text(string(round(sp[i]; sigdigits = 2)), 6, :center, :white))])
     end
     p
 end
-plot(panels...; layout = (3, 1), size = (950, 1150),
+plot(
+    panels...; layout = (3, 1), size = (950, 1150),
     plot_title = "M5 QR gate — warm qr! vs SPQR cold (D13), medians — $total_pass/$total_k PASS " *
-                 "(neuromancer + galen, clock-locked)",
-    plot_titlefontsize = 10, left_margin = 8Plots.mm, bottom_margin = 4Plots.mm)
+        "(neuromancer + galen, clock-locked)",
+    plot_titlefontsize = 10, left_margin = 8Plots.mm, bottom_margin = 4Plots.mm
+)
 savefig(joinpath(OUT, "qr_gate_strata.png"))
 println("wrote ", joinpath(OUT, "qr_gate_strata.png"), "  ($total_pass/$total_k PASS)")
 
@@ -114,32 +126,38 @@ println("wrote ", joinpath(OUT, "qr_gate_strata.png"), "  ($total_pass/$total_k 
 flag = JSON.parsefile(joinpath(RESULTS, "faer_vs_puresparse_7000x4000_neuromancer.json"))
 frows = sort(flag["results"], by = r -> r["density"])
 k = length(frows)
-labels = [string(round(Int, 100 * r["density"])) * "% density\nnnz = " * string(r["nnz"])
-          for r in frows]
+labels = [
+    string(round(Int, 100 * r["density"])) * "% density\nnnz = " * string(r["nnz"])
+        for r in frows
+]
 # Bar chart (median), not violin, here: at this problem size faer/SPQR cost ~6-9 s/sample —
 # even at 10 samples each that's too few for a meaningful density estimate. The gate panel
 # above is a median bar chart for a different reason (warm path is deterministic).
-series = [("PureSparse :frontal", "ps_frontal", C_PS),
-          ("faer", "faer", C_FAER),
-          ("SuiteSparseQR", "spqr", C_SPQR)]
+series = [
+    ("PureSparse :frontal", "ps_frontal", C_PS),
+    ("faer", "faer", C_FAER),
+    ("SuiteSparseQR", "spqr", C_SPQR),
+]
 
 allvals = [r[key] for r in frows for (_, key, _) in series]
 lo = 10.0^floor(log10(minimum(allvals)) - 0.05)
-hi = 10.0^(log10(maximum(allvals)) + 0.30)   # headroom for value labels and legend
+hi = 10.0^(log10(maximum(allvals)) + 0.3)   # headroom for value labels and legend
 yt = logticks(lo, hi)
 nsamp = length(frows[1]["ps_frontal_samples"])
-p2 = plot(; yscale = :log10, ylims = (lo, hi), yticks = (yt, ticklabel.(yt)),
+p2 = plot(;
+    yscale = :log10, ylims = (lo, hi), yticks = (yt, ticklabel.(yt)),
     xticks = ((1:k) .* 3 .- 1, labels), xlims = (0.3, 3k + 0.7), legend = :topright,
     ylabel = "cold factorize, median of $nsamp samples [s]", grid = :y, gridalpha = 0.15,
     framestyle = :box, tickfontsize = 9,
     title = "sparse QR, 7000×4000, neuromancer (clock-locked) — log scale",
-    titlefontsize = 11)
+    titlefontsize = 11
+)
 for (i, r) in enumerate(frows)
     for (j, (name, key, col)) in enumerate(series)
         x = 3 * (i - 1) + j
         v = r[key]
         logbar!(p2, [x], [v], lo; width = 0.85, color = col, label = (i == 1 ? name : ""))
-        annotate!(p2, [(x, v * 1.10, Plots.text(string(round(v; digits = 2)) * "s", 8, :center))])
+        annotate!(p2, [(x, v * 1.1, Plots.text(string(round(v; digits = 2)) * "s", 8, :center))])
     end
 end
 plot!(p2; size = (820, 520))

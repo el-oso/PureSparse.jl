@@ -19,8 +19,10 @@ const COLUMN_SECONDS = 5.0    # first rep always completes regardless of this ca
 _times(b) = Float64[s.time for s in b.samples]
 _median_time(b) = median(_times(b))
 
-const FAER_LIB = joinpath(homedir(), "Documents", "claude", "BlazingPorts.jl", "bench",
-    "rust_compare", "rust", "target", "release", "libblazing_compare.so")
+const FAER_LIB = joinpath(
+    homedir(), "Documents", "claude", "BlazingPorts.jl", "bench",
+    "rust_compare", "rust", "target", "release", "libblazing_compare.so"
+)
 # `faer_sparse_qr_factor` (BlazingPorts.jl, factorize-only — `std::hint::black_box` as
 # the dead-code-elimination guard instead of a real solve). The original
 # `faer_sparse_qr` times factorize+solve_lstsq (a solve was the only way faer's Qr
@@ -32,9 +34,11 @@ const FAER_LIB = joinpath(homedir(), "Documents", "claude", "BlazingPorts.jl", "
     m, n = size(A)
     colptr0 = Csize_t.(A.colptr .- 1)
     rowval0 = Csize_t.(A.rowval .- 1)
-    return ccall((:faer_sparse_qr_factor, FAER_LIB), Float64,
+    return ccall(
+        (:faer_sparse_qr_factor, FAER_LIB), Float64,
         (Csize_t, Csize_t, Csize_t, Ptr{Csize_t}, Ptr{Csize_t}, Ptr{Float64}),
-        m, n, nnz(A), colptr0, rowval0, A.nzval)
+        m, n, nnz(A), colptr0, rowval0, A.nzval
+    )
 end
 
 @noinline _ps_column_cold(A, ordering) = PureSparse.qr(A; ordering, method = :column)
@@ -43,10 +47,10 @@ end
 
 m, n = 7000, 4000
 results = Any[]
-for dens in (0.01, 0.10)
+for dens in (0.01, 0.1)
     rng = MersenneTwister(hash((m, n, dens)))
     A = sprand(rng, m, n, dens)
-    @info "density $dens: nnz=$(nnz(A)) ($(round(100*nnz(A)/(m*n); digits=2))%)"
+    @info "density $dens: nnz=$(nnz(A)) ($(round(100 * nnz(A) / (m * n); digits = 2))%)"
 
     ordering = PureSparse.COLAMDOrdering()
     b_col = @be _ps_column_cold($A, $ordering) seconds = COLUMN_SECONDS samples = COLUMN_SAMPLES evals = 1
@@ -66,14 +70,18 @@ for dens in (0.01, 0.10)
         "faer_samples" => _times(b_faer),
     )
     push!(results, r)
-    println(rpad("density=$dens", 16), rpad("PS column: $(round(r["ps_column"]*1000;digits=2))ms", 24),
-        rpad("PS frontal: $(round(r["ps_frontal"]*1000;digits=2))ms", 26),
-        rpad("SPQR: $(round(r["spqr"]*1000;digits=2))ms", 20),
-        "faer: $(round(r["faer"]*1000;digits=2))ms")
+    println(
+        rpad("density=$dens", 16), rpad("PS column: $(round(r["ps_column"] * 1000; digits = 2))ms", 24),
+        rpad("PS frontal: $(round(r["ps_frontal"] * 1000; digits = 2))ms", 26),
+        rpad("SPQR: $(round(r["spqr"] * 1000; digits = 2))ms", 20),
+        "faer: $(round(r["faer"] * 1000; digits = 2))ms"
+    )
 end
 
-payload = Dict("host" => gethostname(), "julia_version" => string(VERSION),
-    "timestamp" => string(Dates.now()), "m" => m, "n" => n, "results" => results)
+payload = Dict(
+    "host" => gethostname(), "julia_version" => string(VERSION),
+    "timestamp" => string(Dates.now()), "m" => m, "n" => n, "results" => results
+)
 mkpath(joinpath(@__DIR__, "results"))
 open(joinpath(@__DIR__, "results", "faer_vs_puresparse_7000x4000_$(gethostname()).json"), "w") do io
     JSON.print(io, payload, 2)

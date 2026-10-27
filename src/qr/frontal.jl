@@ -13,7 +13,7 @@ Preallocated scratch for [`QRFrontFactor`](@ref)'s numeric loop, sized once from
 [`QRFrontSymbolic`](@ref)'s capacity scalars (design_qr_m5b.md §A4.4) — zero
 allocations after construction.
 """
-struct QRFrontWorkspace{T,Ti<:Integer}
+struct QRFrontWorkspace{T, Ti <: Integer}
     g2l::Vector{Ti}
     cg2l::Vector{Ti}
     bucket::Vector{Ti}
@@ -43,7 +43,7 @@ struct QRFrontWorkspace{T,Ti<:Integer}
     tvbases::Vector{Int}
 end
 
-function QRFrontWorkspace{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
+function QRFrontWorkspace{T, Ti}(fsym::QRFrontSymbolic{Ti}) where {T, Ti <: Integer}
     nb = length(fsym.base.parent)
     # Read the ONE NB the symbolic phase committed to (fsym.nb) — do NOT recompute it
     # here. The ftau T-slab was budgeted with exactly this value; sizing Tm / the panel
@@ -54,7 +54,7 @@ function QRFrontWorkspace{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
     NB = fsym.nb
     mrows = max(fsym.max_front_rows, 1)
     ncols = max(fsym.max_front_cols, 1)
-    return QRFrontWorkspace{T,Ti}(
+    return QRFrontWorkspace{T, Ti}(
         zeros(Ti, nb),
         zeros(Ti, nb),
         Vector{Ti}(undef, ncols + 1),
@@ -85,7 +85,7 @@ rectangle per front laid contiguously in `fval` at `fsym.fvalptr` offsets. Produ
 [`qr_frontal`](@ref)/refactored in place by [`qr!`](@ref) (zero allocations after the
 first call, mirroring [`QRFactor`](@ref)'s own contract).
 """
-mutable struct QRFrontFactor{T<:Real,Ti<:Integer} <: AbstractSparseFactor{T}
+mutable struct QRFrontFactor{T <: Real, Ti <: Integer} <: AbstractSparseFactor{T}
     fsym::QRFrontSymbolic{Ti}
     fval::Vector{T}
     ftau::Vector{T}
@@ -95,37 +95,37 @@ mutable struct QRFrontFactor{T<:Real,Ti<:Integer} <: AbstractSparseFactor{T}
     fm::Vector{Ti}
     fr::Vector{Ti}
     fe::Vector{Ti}   # e_f = total reflectors formed (pivotal + non-pivotal) this front;
-                      # rows (fe+1):fm are mathematically all-zero residue (more rows
-                      # than columns), NOT survivors — pass-up only sets fmincol for
-                      # (fr+1):fe, so the child-gather loop must stop at fe, not fm
-                      # (reading past it hits garbage assembly-time LOCAL mincols, a
-                      # real bug: BoundsError/segfault when misread as a global column).
+    # rows (fe+1):fm are mathematically all-zero residue (more rows
+    # than columns), NOT survivors — pass-up only sets fmincol for
+    # (fr+1):fe, so the child-gather loop must stop at fe, not fm
+    # (reading past it hits garbage assembly-time LOCAL mincols, a
+    # real bug: BoundsError/segfault when misread as a global column).
     fnpanel::Vector{Ti}
     fscalar::Vector{Bool}   # true: this front used the small-front scalar fallback
-                            # (tuning.jl QR_FRONTAL_UNBLOCKED_THRESHOLD, faer's own
-                            # qr_in_place_unblocked precedent) — no WY panels stored
-                            # for it (fnpanel[f]==0), solve replay walks F.elimcol/
-                            # F.tauv column-by-column instead of via _gather_panel_V!/
-                            # wy_apply!. Distinct from "fnpanel==0 because every column
-                            # was dead" (a legitimate blocked-path outcome) — checking
-                            # this flag rather than fnpanel==0 avoids that ambiguity.
+    # (tuning.jl QR_FRONTAL_UNBLOCKED_THRESHOLD, faer's own
+    # qr_in_place_unblocked precedent) — no WY panels stored
+    # for it (fnpanel[f]==0), solve replay walks F.elimcol/
+    # F.tauv column-by-column instead of via _gather_panel_V!/
+    # wy_apply!. Distinct from "fnpanel==0 because every column
+    # was dead" (a legitimate blocked-path outcome) — checking
+    # this flag rather than fnpanel==0 avoids that ambiguity.
     pnrows::Vector{Ti}
     pncols::Vector{Ti}
     pbs::Vector{Ti}
     elimcol::Vector{Ti}   # same indexing/capacity as tauv: elimcol[t] = the FRONT-LOCAL
-                          # column of elimination t — needed because a panel's alive
-                          # reflectors are not always column-contiguous (a dead-skipped
-                          # pivotal column breaks contiguity), so solve-phase replay
-                          # cannot recover "which columns" from a simple range
+    # column of elimination t — needed because a panel's alive
+    # reflectors are not always column-contiguous (a dead-skipped
+    # pivotal column breaks contiguity), so solve-phase replay
+    # cannot recover "which columns" from a simple range
     fpivotrow::Vector{Ti}
     rval::Vector{T}
     rowval::Vector{T}
-    ws::QRFrontWorkspace{T,Ti}
+    ws::QRFrontWorkspace{T, Ti}
     stats::QRStats
     ok::Bool
 end
 
-function QRFrontFactor{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
+function QRFrontFactor{T, Ti}(fsym::QRFrontSymbolic{Ti}) where {T, Ti <: Integer}
     nb = length(fsym.base.parent)
     nz = length(fsym.rowptr) > 0 ? Int(fsym.rowptr[end] - 1) : 0
     tauv_cap = 0
@@ -133,7 +133,7 @@ function QRFrontFactor{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
         n_f = Int(fsym.fcolptr[f + 1] - fsym.fcolptr[f])
         tauv_cap += min(Int(fsym.fmmax[f]), n_f)
     end
-    return QRFrontFactor{T,Ti}(
+    return QRFrontFactor{T, Ti}(
         fsym,
         Vector{T}(undef, fsym.nnzVF),
         Vector{T}(undef, Int(fsym.ftauptr[end] - 1)),
@@ -152,7 +152,7 @@ function QRFrontFactor{T,Ti}(fsym::QRFrontSymbolic{Ti}) where {T,Ti<:Integer}
         zeros(Ti, nb),
         zeros(T, fsym.nnzRF),
         Vector{T}(undef, nz),
-        QRFrontWorkspace{T,Ti}(fsym),
+        QRFrontWorkspace{T, Ti}(fsym),
         QRStats(),
         true,
     )
@@ -235,7 +235,7 @@ end
 
 # Front f's mmax_f × n_f rectangle reshaped from the flat `fval` storage at its
 # `fvalptr` offset — shared by assembly, factorization, and solve replay.
-@inline function _front_view(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
+@inline function _front_view(F::QRFrontFactor{T, Ti}, f::Int) where {T, Ti <: Integer}
     fsym = F.fsym
     mmax_f = Int(fsym.fmmax[f])
     n_f = n_f_of(fsym, f)

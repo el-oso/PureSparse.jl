@@ -18,9 +18,11 @@
 # the DISJOINT scratch Dout (lower = unit-L, strict upper = 0) — A is never written, so
 # no group's load of the unfactored A can race it (see _front_fused64!; replaces the
 # atomic-counter election, which gfx1151's compiler cannot compile).
-@kernel unsafe_indices = true function _ldl_front_fused64_v2!(A, B, n, m, @Const(sgn), dv,
-                                                              stats, delta, zeta, firstblk,
-                                                              Dout)
+@kernel unsafe_indices = true function _ldl_front_fused64_v2!(
+        A, B, n, m, @Const(sgn), dv,
+        stats, delta, zeta, firstblk,
+        Dout
+    )
     T = eltype(A)
     li = @index(Local, NTuple)            # (16,16)
     gi = @index(Group, Linear)
@@ -60,7 +62,7 @@
                 end
                 sg = sgn[j]
                 wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
-                            (sg == Int8(-1) && !(dj < zero(T)))
+                    (sg == Int8(-1) && !(dj < zero(T)))
                 if wrongsign || adj < delta           # signed regularization (dmax-independent)
                     tgt = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
                     newd = tgt * max(delta, adj); npert += 1
@@ -169,9 +171,11 @@ end
 # loop; then the strict upper triangle is filled with the D-SCALED transposed factor
 # Lds[k,j] = L11[j,k]·d_k, and each thread forward-substitutes one row of
 # L21·(D·L11ᵀ) = A21:  L21[i,j] = (A21[i,j] − Σ_{k<j} L21[i,k]·Lds[k,j])·(1/d_j).
-@kernel unsafe_indices = true function _ldl_front_fused64_v1!(A, B, n, m, @Const(sgn), dv,
-                                                              stats, delta, zeta, firstblk,
-                                                              Dout)
+@kernel unsafe_indices = true function _ldl_front_fused64_v1!(
+        A, B, n, m, @Const(sgn), dv,
+        stats, delta, zeta, firstblk,
+        Dout
+    )
     T = eltype(A)
     li = @index(Local, Linear)            # 1..256
     gi = @index(Group, Linear)
@@ -205,7 +209,7 @@ end
                 end
                 sg = sgn[j]
                 wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
-                            (sg == Int8(-1) && !(dj < zero(T)))
+                    (sg == Int8(-1) && !(dj < zero(T)))
                 if wrongsign || adj < delta
                     tgt = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
                     newd = tgt * max(delta, adj); npert += 1
@@ -284,8 +288,10 @@ end
 # keeping gr ≥ gc — the _syrk_trap_4x4! of ext/gpu_dense.jl with the block's signed D
 # folded into the A-side shared load (one extra multiply per staged element). This is the
 # right-looking trailing update U −= L̂·D̂·L̂ᵀ restricted to the remaining panel columns.
-@kernel unsafe_indices = true function _syrk_trap_d_4x4!(C, @Const(A), @Const(d), alpha,
-                                                         beta, M, N, K)
+@kernel unsafe_indices = true function _syrk_trap_d_4x4!(
+        C, @Const(A), @Const(d), alpha,
+        beta, M, N, K
+    )
     T = eltype(C)
     li = @index(Local, NTuple)
     gi = @index(Group, NTuple)
@@ -308,7 +314,7 @@ end
                 ml = p & 63; kl = p >> 6
                 gr = br + ml; gk = k0 + kl
                 As[ml + 1, kl + 1] = (gr < M && gk < K) ? A[gr + 1, gk + 1] * d[gk + 1] :
-                                     zero(T)
+                    zero(T)
                 gc = bc + ml
                 Bs[ml + 1, kl + 1] = (gc < N && gk < K) ? A[gc + 1, gk + 1] : zero(T)
             end
@@ -326,7 +332,7 @@ end
             gc = bc + (ty - 1) * 4 + (j - 1)
             if gr < M && gc < N && gr >= gc
                 C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
             end
         end
     end
@@ -381,8 +387,10 @@ trailing update, 1 launch]. The caller does the U_s Schur update separately.
 `mode`: `:fused` (v1 row-solve) | `:fused2` (v2 block-inverse multiply) | `:auto`
 (v2 iff panel rows ≤ LDL_FUSE_M_MAX[]).
 """
-function gpu_ldlt_front!(P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
-                         nb::Int = 64, mode::Symbol = :auto)
+function gpu_ldlt_front!(
+        P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
+        nb::Int = 64, mode::Symbol = :auto
+    )
     nsrow = size(P, 1)
     n = nscol
     @assert size(P, 2) == n && nsrow >= n
@@ -403,12 +411,16 @@ function gpu_ldlt_front!(P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
         md = mode == :auto ? (m <= LDL_FUSE_M_MAX[] ? :fused2 : :fused) : mode
         if md == :fused2 || m == 0
             G = max(cld(m, 64), 1)
-            f2(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.Dout;
-               ndrange = (G * 16, 16))
+            f2(
+                D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.Dout;
+                ndrange = (G * 16, 16)
+            )
         else                                          # :fused (v1)
             G = max(cld(m, 256), 1)
-            f1(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.Dout;
-               ndrange = G * 256)
+            f1(
+                D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.Dout;
+                ndrange = G * 256
+            )
         end
         D .= view(ws.Dout, 1:jb, 1:jb)                # scratch → panel diag (stream-ordered)
         if j1 < n                         # trailing trapezoid: rows j1+1..nsrow, cols j1+1..n

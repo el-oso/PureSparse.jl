@@ -37,7 +37,7 @@ loop already relies on. `parent` is therefore derived from the *stored* pattern
 harmless no-op in the numeric recurrence (paper §5.2: iterations with `w_j = 0` change
 nothing).
 """
-function simplicial(F::LDLFactor{T,Ti}; grow::Real = SIMPLICIAL_GROW) where {T,Ti<:Integer}
+function simplicial(F::LDLFactor{T, Ti}; grow::Real = SIMPLICIAL_GROW) where {T, Ti <: Integer}
     grow >= 0 || throw(ArgumentError("simplicial: grow must be nonnegative (got $grow)"))
     sym = F.sym
     n = sym.n
@@ -89,7 +89,7 @@ function simplicial(F::LDLFactor{T,Ti}; grow::Real = SIMPLICIAL_GROW) where {T,T
 
     stats = FactorStats()
     stats.nnzL = used + n                        # + n implicit unit diagonals
-    G = SimplicialLDLFactor{T,Ti}(
+    G = SimplicialLDLFactor{T, Ti}(
         sym, colptr, colnnz, rowval, nzval, copy(F.d), parent,
         zeros(T, n), Vector{Ti}(undef, n), stats, F.ok,
     )
@@ -142,7 +142,7 @@ and columns with `wⱼ = 0` are skipped (§5.2). Path columns whose parent chang
 `G.parent[j]` rewritten to `min` of the merged pattern (Algorithm 3: `π̄(j) =
 min L̄ⱼ \\ {j}`); Theorem 4.1 guarantees no off-path parent changes.
 """
-function updowndate!(G::SimplicialLDLFactor{T,Ti}, w::AbstractVector{T}, sigma::Integer) where {T,Ti<:Integer}
+function updowndate!(G::SimplicialLDLFactor{T, Ti}, w::AbstractVector{T}, sigma::Integer) where {T, Ti <: Integer}
     (sigma == 1 || sigma == -1) || throw(ArgumentError("updowndate!: sigma must be +1 or -1 (got $sigma)"))
     n = G.sym.n
     length(w) == n || throw(DimensionMismatch("updowndate!: length(w) = $(length(w)), need n = $n"))
@@ -292,7 +292,7 @@ Rank-k modification `A + sigma·W·Wᵀ` as `size(W, 2)` sequenced rank-1 calls 
 extension, not implemented). Stops at the first non-`:ok` column and returns its
 status; the factor is then invalid (`G.ok == false`) exactly as for the rank-1 case.
 """
-function updowndate!(G::SimplicialLDLFactor{T,Ti}, W::AbstractMatrix{T}, sigma::Integer) where {T,Ti<:Integer}
+function updowndate!(G::SimplicialLDLFactor{T, Ti}, W::AbstractMatrix{T}, sigma::Integer) where {T, Ti <: Integer}
     for c in axes(W, 2)
         status = updowndate!(G, view(W, :, c), sigma)
         status === :ok || return status
@@ -315,7 +315,7 @@ backward `Lᵀ`, unpermute — the same staging as the supernodal [`solve!`](@re
 buffer per call (correctness-first; the zero-allocation contract applies to
 [`updowndate!`](@ref), not to the solves). `x` and `b` may alias.
 """
-function solve!(x::AbstractVector{T}, G::SimplicialLDLFactor{T,Ti}, b::AbstractVector{T}) where {T,Ti<:Integer}
+function solve!(x::AbstractVector{T}, G::SimplicialLDLFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer}
     n = G.sym.n
     perm = G.sym.perm
     y = Vector{T}(undef, n)
@@ -331,7 +331,7 @@ function solve!(x::AbstractVector{T}, G::SimplicialLDLFactor{T,Ti}, b::AbstractV
     return x
 end
 
-function solve!(x::AbstractMatrix{T}, G::SimplicialLDLFactor{T,Ti}, b::AbstractMatrix{T}) where {T,Ti<:Integer}
+function solve!(x::AbstractMatrix{T}, G::SimplicialLDLFactor{T, Ti}, b::AbstractMatrix{T}) where {T, Ti <: Integer}
     for c in axes(b, 2)
         solve!(view(x, :, c), G, view(b, :, c))
     end
@@ -375,7 +375,7 @@ function _eachcol_solve!(f::F, y::AbstractMatrix, G::SimplicialLDLFactor) where 
     return y
 end
 
-function _solve_L!(y::AbstractVector{T}, G::SimplicialLDLFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_L!(y::AbstractVector{T}, G::SimplicialLDLFactor{T, Ti}) where {T, Ti <: Integer}
     colptr = G.colptr
     colnnz = G.colnnz
     rowval = G.rowval
@@ -391,7 +391,7 @@ function _solve_L!(y::AbstractVector{T}, G::SimplicialLDLFactor{T,Ti}) where {T,
     return y
 end
 
-function _solve_D!(y::AbstractVector{T}, G::SimplicialLDLFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_D!(y::AbstractVector{T}, G::SimplicialLDLFactor{T, Ti}) where {T, Ti <: Integer}
     d = G.d
     @inbounds for j in 1:G.sym.n
         y[j] /= d[j]
@@ -399,7 +399,7 @@ function _solve_D!(y::AbstractVector{T}, G::SimplicialLDLFactor{T,Ti}) where {T,
     return y
 end
 
-function _solve_Lt!(y::AbstractVector{T}, G::SimplicialLDLFactor{T,Ti}) where {T,Ti<:Integer}
+function _solve_Lt!(y::AbstractVector{T}, G::SimplicialLDLFactor{T, Ti}) where {T, Ti <: Integer}
     colptr = G.colptr
     colnnz = G.colnnz
     rowval = G.rowval

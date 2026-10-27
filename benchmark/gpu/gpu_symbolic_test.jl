@@ -9,17 +9,17 @@ rng = MersenneTwister(7)
 A = sprand(rng, 1500, 1500, 0.004); A = A + A' + 3000I    # SPD
 
 S = PureSparse.symbolic(A; ordering = PureSparse.AMDOrdering())
-snflop = [sum(Float64(S.colcount[j])^2 for j in S.super[s]:(S.super[s+1]-1)) for s in 1:S.nsuper]
+snflop = [sum(Float64(S.colcount[j])^2 for j in S.super[s]:(S.super[s + 1] - 1)) for s in 1:S.nsuper]
 cut = sort(snflop)[cld(S.nsuper, 2)]     # ~half on GPU
 
 G = ext.gpu_symbolic(A; ordering = PureSparse.AMDOrdering(), frontier_cutoff = cut)
 println("nsuper=", S.nsuper, "  on GPU=", count(G.on_gpu), "  boundary=", length(G.boundary))
 
 # 1. device pattern arrays match the CPU Symbolic exactly (upload correctness)
-@assert Array(G.d_rowind)     == S.rowind      "d_rowind mismatch"
+@assert Array(G.d_rowind) == S.rowind      "d_rowind mismatch"
 @assert Array(G.d_rowind_ptr) == S.rowind_ptr  "d_rowind_ptr mismatch"
-@assert Array(G.d_super)      == S.super       "d_super mismatch"
-@assert Array(G.d_snode_of)   == S.snode_of    "d_snode_of mismatch"
+@assert Array(G.d_super) == S.super       "d_super mismatch"
+@assert Array(G.d_snode_of) == S.snode_of    "d_snode_of mismatch"
 println("device pattern arrays match CPU Symbolic ✓")
 
 # 2. frontier upward-closed (constructor asserts, re-check here)
@@ -38,8 +38,10 @@ println("gpu_order + boundary consistent ✓")
 # 4. sizing consistent
 @assert G.bytes.nzval == S.nnzL * sizeof(Float64)
 @assert G.bytes.total == G.bytes.nzval + G.bytes.cbuf + G.bytes.boundbuf
-println("device-memory budget: total=", round(G.bytes.total/1e6, digits=1), " MB ",
-        "(nzval=", round(G.bytes.nzval/1e6,digits=1), " boundbuf=", round(G.bytes.boundbuf/1e6,digits=1), ")")
+println(
+    "device-memory budget: total=", round(G.bytes.total / 1.0e6, digits = 1), " MB ",
+    "(nzval=", round(G.bytes.nzval / 1.0e6, digits = 1), " boundbuf=", round(G.bytes.boundbuf / 1.0e6, digits = 1), ")"
+)
 
 # 5. device assembly oracle (§4): scatter A.nzval into packed storage via amap, vs CPU
 @assert length(S.amap) == length(A.nzval) "amap length $(length(S.amap)) != nnz(A) $(length(A.nzval))"

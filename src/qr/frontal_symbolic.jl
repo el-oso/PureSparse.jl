@@ -13,7 +13,7 @@ multifrontal numeric phase (design_qr_m5b.md §A4.2). Composes the M5a symbolic
 (`base`) by reference — every array below is BLOCK space (columns `1:n′`, physical
 rows `1:mb`, `n′ = length(base.parent)`), matching `QRSymbolic`'s own D5 convention.
 """
-struct QRFrontSymbolic{Ti<:Integer}
+struct QRFrontSymbolic{Ti <: Integer}
     base::QRSymbolic{Ti}
     # --- front partition & tree (post-amalgamation) ---
     nfront::Int
@@ -67,7 +67,7 @@ CSC-form children lists of the front tree, ascending front order (§A2.3) — th
 head/next-then-flatten idiom `relaxed_amalgamation`'s own `supernode_tree` construction
 uses internally, materialized flat here since it is symbolic (built once).
 """
-function _front_children(nfront::Int, fparent::Vector{Ti}) where {Ti<:Integer}
+function _front_children(nfront::Int, fparent::Vector{Ti}) where {Ti <: Integer}
     cnt = zeros(Ti, nfront)
     @inbounds for s in 1:nfront
         p = fparent[s]
@@ -101,7 +101,7 @@ destination slot in the row-form's value buffer — the `amap` idiom (design.md 
 QR-shaped: filling numeric values from a fresh `A2` in `qr!` is then one O(nnz) pass
 with no per-entry searching.
 """
-function _block_row_form(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, cperm::Vector{Ti}, ciperm::Vector{Ti}) where {Ti<:Integer}
+function _block_row_form(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, cperm::Vector{Ti}, ciperm::Vector{Ti}) where {Ti <: Integer}
     nz = Int(colptr[n + 1]) - 1
     cnt = zeros(Ti, m)
     @inbounds for p in 1:nz
@@ -141,10 +141,12 @@ originating block matrix `A` (`size(A) == (sym.m, sym.n)`). `fundamental=false` 
 M5b's own default (SPQR paper's two-condition supernode test, §A2.2); pass `true` only
 to compare against the fundamental (3-condition) partition.
 """
-function symbolic_qr_frontal(sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T,Ti};
-        fundamental::Bool = false, amalg_cols::NTuple{3,Int} = AMALG_COLS,
-        amalg_zmax::NTuple{3,Float64} = AMALG_ZMAX,
-        nb_override::Union{Nothing,Int} = nothing) where {T,Ti<:Integer}
+function symbolic_qr_frontal(
+        sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T, Ti};
+        fundamental::Bool = false, amalg_cols::NTuple{3, Int} = AMALG_COLS,
+        amalg_zmax::NTuple{3, Float64} = AMALG_ZMAX,
+        nb_override::Union{Nothing, Int} = nothing
+    ) where {T, Ti <: Integer}
     sym.n1 == 0 || throw(ArgumentError("symbolic_qr_frontal: sym.n1 = $(sym.n1) > 0 — the frontal path factorizes the non-singleton block only"))
     m, n = size(A)
     (m == sym.m && n == sym.n) || throw(DimensionMismatch("symbolic_qr_frontal: size(A) = ($m,$n), expected ($(sym.m),$(sym.n))"))
@@ -235,7 +237,7 @@ function symbolic_qr_frontal(sym::QRSymbolic{Ti}, A::SparseMatrixCSC{T,Ti};
         f = fsnode[k]
         n_f = Int(fcolptr[f + 1] - fcolptr[f])
         pos = k - Int(fsuper[f]) + 1   # pivotal columns are fcolind's first p_f entries,
-                                       # stored in the same order as fsuper's own range
+        # stored in the same order as fsuper's own range
         frptr[k + 1] = frptr[k] + Ti(n_f - pos + 1)
     end
 

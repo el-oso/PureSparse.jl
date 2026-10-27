@@ -42,7 +42,7 @@ most common refactor misuse (passing the wrong matrix). Only runs when
 """
 function check_refactor_shape(A::SparseMatrixCSC, expected_m::Integer, expected_n::Integer, label::String)
     StrictMode.checks_enabled() || return nothing
-    _check_refactor_shape_impl(A, expected_m, expected_n, label)
+    return _check_refactor_shape_impl(A, expected_m, expected_n, label)
 end
 
 function _check_refactor_shape_impl(A::SparseMatrixCSC, expected_m::Integer, expected_n::Integer, label::String)
@@ -50,8 +50,8 @@ function _check_refactor_shape_impl(A::SparseMatrixCSC, expected_m::Integer, exp
     (m == expected_m && n == expected_n) || _strict_fail(
         :refactor_shape, label,
         "A is $(m)×$(n), expected $(expected_m)×$(expected_n) (the shape the factor's " *
-        "symbolic analysis was built for) — `$label` refactors in place and requires an " *
-        "identically-shaped, identically-patterned matrix",
+            "symbolic analysis was built for) — `$label` refactors in place and requires an " *
+            "identically-shaped, identically-patterned matrix",
     )
     return nothing
 end
@@ -71,15 +71,15 @@ require storing the original `colptr`/`rowval`, out of scope here. Only runs whe
 """
 function check_refactor_nnz(A::SparseMatrixCSC, expected_nnz::Integer, label::String)
     StrictMode.checks_enabled() || return nothing
-    _check_refactor_nnz_impl(A, expected_nnz, label)
+    return _check_refactor_nnz_impl(A, expected_nnz, label)
 end
 
 function _check_refactor_nnz_impl(A::SparseMatrixCSC, expected_nnz::Integer, label::String)
     nnz(A) == expected_nnz || _strict_fail(
         :refactor_pattern, label,
         "A has nnz=$(nnz(A)), expected $(expected_nnz) (the pattern the factor's symbolic " *
-        "analysis was built for) — `$label` requires the same sparsity pattern as the " *
-        "original; build a fresh factor instead if the pattern changed",
+            "analysis was built for) — `$label` requires the same sparsity pattern as the " *
+            "original; build a fresh factor instead if the pattern changed",
     )
     return nothing
 end
@@ -93,7 +93,7 @@ scan, too expensive to pay unconditionally on every factorization — only runs 
 """
 function check_finite(v::AbstractVector, label::String)
     StrictMode.checks_enabled() || return nothing
-    _check_finite_impl(v, label)
+    return _check_finite_impl(v, label)
 end
 
 function _check_finite_impl(v::AbstractVector, label::String)

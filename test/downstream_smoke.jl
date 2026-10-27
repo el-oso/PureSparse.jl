@@ -28,31 +28,31 @@ using Test, LinearAlgebra, SparseArrays, Random
         F = cholesky(Symmetric(A))
         @test issuccess(F)
         x = F \ b
-        @test norm(A * x - b) / norm(b) < 1e-10
-        @test logdet(F) ≈ logdet(Ad) rtol = 1e-8
-        @test det(F) ≈ det(Ad) rtol = 1e-6
+        @test norm(A * x - b) / norm(b) < 1.0e-10
+        @test logdet(F) ≈ logdet(Ad) rtol = 1.0e-8
+        @test det(F) ≈ det(Ad) rtol = 1.0e-6
 
         L = sparse(F.L)
         p = F.p
         @test sort(p) == collect(1:n)
-        @test norm(Matrix(L * L') - Ad[p, p]) / norm(Ad) < 1e-10
-        @test F.U \ b ≈ L' \ b rtol = 1e-10   # U behaves as Lᵀ
+        @test norm(Matrix(L * L') - Ad[p, p]) / norm(Ad) < 1.0e-10
+        @test F.U \ b ≈ L' \ b rtol = 1.0e-10   # U behaves as Lᵀ
 
         # plain SparseMatrixCSC entry point (no Symmetric wrapper)
         F2 = cholesky(A)
-        @test norm(A * (F2 \ b) - b) / norm(b) < 1e-10
+        @test norm(A * (F2 \ b) - b) / norm(b) < 1.0e-10
 
         # caller-supplied ordering: solves must still be exact
         F3 = cholesky(Symmetric(A); perm = collect(n:-1:1))
-        @test F3 \ b ≈ x rtol = 1e-8
+        @test F3 \ b ≈ x rtol = 1.0e-8
 
         # shift: factors A + c·I
         F4 = cholesky(Symmetric(A); shift = 2.0)
-        @test norm((A + 2.0I) * (F4 \ b) - b) / norm(b) < 1e-10
+        @test norm((A + 2.0I) * (F4 \ b) - b) / norm(b) < 1.0e-10
 
         # Int32 column/row indices
-        F5 = cholesky(SparseMatrixCSC{Float64,Int32}(A))
-        @test norm(A * (F5 \ b) - b) / norm(b) < 1e-10
+        F5 = cholesky(SparseMatrixCSC{Float64, Int32}(A))
+        @test norm(A * (F5 \ b) - b) / norm(b) < 1.0e-10
     end
 
     @testset "cholesky: failure reporting" begin
@@ -70,10 +70,10 @@ using Test, LinearAlgebra, SparseArrays, Random
         Fk = ldlt(K)
         @test issuccess(Fk)
         xk = Fk \ kb
-        @test norm(K * xk - kb) / norm(kb) < 1e-8
+        @test norm(K * xk - kb) / norm(kb) < 1.0e-8
         Kd = Matrix(K)
-        @test det(Fk) ≈ abs(det(Kd)) rtol = 1e-4
-        @test logdet(Fk) ≈ log(abs(det(Kd))) rtol = 1e-6
+        @test det(Fk) ≈ abs(det(Kd)) rtol = 1.0e-4
+        @test logdet(Fk) ≈ log(abs(det(Kd))) rtol = 1.0e-6
         @test logdet(Fk) isa Real
     end
 end

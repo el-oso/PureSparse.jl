@@ -9,44 +9,52 @@
 # `using`.
 module OpenBLASBackend
 
-using LinearAlgebra: LinearAlgebra, BLAS, LAPACK, PosDefException
+    using LinearAlgebra: LinearAlgebra, BLAS, LAPACK, PosDefException
 
-export potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
+    export potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
 
-function potrf!(A::AbstractMatrix; uplo::Char = 'L')
-    _, info = LAPACK.potrf!(uplo, A)
-    info == 0 || throw(PosDefException(info))
-    return A
-end
+    function potrf!(A::AbstractMatrix; uplo::Char = 'L')
+        _, info = LAPACK.potrf!(uplo, A)
+        info == 0 || throw(PosDefException(info))
+        return A
+    end
 
-function trsm!(B::AbstractMatrix, A::AbstractMatrix; side::Char = 'L', uplo::Char = 'U',
-        transA::Char = 'N', diag::Char = 'N', alpha::Number = true)
-    BLAS.trsm!(side, uplo, transA, diag, convert(eltype(B), alpha), A, B)
-    return B
-end
+    function trsm!(
+            B::AbstractMatrix, A::AbstractMatrix; side::Char = 'L', uplo::Char = 'U',
+            transA::Char = 'N', diag::Char = 'N', alpha::Number = true
+        )
+        BLAS.trsm!(side, uplo, transA, diag, convert(eltype(B), alpha), A, B)
+        return B
+    end
 
-function syrk!(C::AbstractMatrix, A::AbstractMatrix; uplo::Char = 'U', trans::Char = 'N',
-        alpha::Number = true, beta::Number = false)
-    BLAS.syrk!(uplo, trans, convert(eltype(C), alpha), A, convert(eltype(C), beta), C)
-    return C
-end
+    function syrk!(
+            C::AbstractMatrix, A::AbstractMatrix; uplo::Char = 'U', trans::Char = 'N',
+            alpha::Number = true, beta::Number = false
+        )
+        BLAS.syrk!(uplo, trans, convert(eltype(C), alpha), A, convert(eltype(C), beta), C)
+        return C
+    end
 
-function syr2k!(C::AbstractMatrix, A::AbstractMatrix, Bm::AbstractMatrix; uplo::Char = 'U',
-        trans::Char = 'N', alpha::Number = true, beta::Number = false)
-    BLAS.syr2k!(uplo, trans, convert(eltype(C), alpha), A, Bm, convert(eltype(C), beta), C)
-    return C
-end
+    function syr2k!(
+            C::AbstractMatrix, A::AbstractMatrix, Bm::AbstractMatrix; uplo::Char = 'U',
+            trans::Char = 'N', alpha::Number = true, beta::Number = false
+        )
+        BLAS.syr2k!(uplo, trans, convert(eltype(C), alpha), A, Bm, convert(eltype(C), beta), C)
+        return C
+    end
 
-function gemm!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix;
-        alpha = one(eltype(C)), beta = zero(eltype(C)), transA::Char = 'N', transB::Char = 'N')
-    BLAS.gemm!(transA, transB, convert(eltype(C), alpha), A, B, convert(eltype(C), beta), C)
-    return C
-end
+    function gemm!(
+            C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix;
+            alpha = one(eltype(C)), beta = zero(eltype(C)), transA::Char = 'N', transB::Char = 'N'
+        )
+        BLAS.gemm!(transA, transB, convert(eltype(C), alpha), A, B, convert(eltype(C), beta), C)
+        return C
+    end
 
-function ger!(alpha::Number, x::AbstractVector, y::AbstractVector, A::AbstractMatrix; conj::Bool = false)
-    BLAS.ger!(convert(eltype(A), alpha), x, y, A)
-    return A
-end
+    function ger!(alpha::Number, x::AbstractVector, y::AbstractVector, A::AbstractMatrix; conj::Bool = false)
+        BLAS.ger!(convert(eltype(A), alpha), x, y, A)
+        return A
+    end
 
 end # module OpenBLASBackend
 
@@ -68,15 +76,15 @@ end # module OpenBLASBackend
 # (PureSparse+PureBLAS's own `solve!`, unaffected).
 module PureSparseOB
 
-import LinearAlgebra
-using SparseArrays
-using ..OpenBLASBackend: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
-import PureSparse
-import PureSparse: Symbolic, FactorStats, Workspace, AbstractSparseFactor, SupernodalFactor, LDLFactor, issuccess
-import PureSparse: AbstractOrdering, AMDOrdering, GivenOrdering, symbolic
-import PureSparse: LDLT_DELTA
+    import LinearAlgebra
+    using SparseArrays
+    using ..OpenBLASBackend: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
+    import PureSparse
+    import PureSparse: Symbolic, FactorStats, Workspace, AbstractSparseFactor, SupernodalFactor, LDLFactor, issuccess
+    import PureSparse: AbstractOrdering, AMDOrdering, GivenOrdering, symbolic
+    import PureSparse: LDLT_DELTA
 
-include(joinpath(pkgdir(PureSparse), "src", "numeric", "llt.jl"))
-include(joinpath(pkgdir(PureSparse), "src", "numeric", "ldlt.jl"))
+    include(joinpath(pkgdir(PureSparse), "src", "numeric", "llt.jl"))
+    include(joinpath(pkgdir(PureSparse), "src", "numeric", "ldlt.jl"))
 
 end # module PureSparseOB

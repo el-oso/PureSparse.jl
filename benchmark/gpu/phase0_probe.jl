@@ -15,7 +15,11 @@ using LinearAlgebra
 using Chairmarks
 using Printf
 
-const HAVE_JSON = try; @eval import JSON; true; catch; false; end
+const HAVE_JSON = try
+    @eval import JSON; true
+catch
+    false
+end
 
 const T = Float64
 
@@ -34,7 +38,7 @@ function pure_gemm_nt_kernel!(C, A, B, alpha, beta, M, N, K)
     acc = zero(T)
     tx = threadIdx().x; ty = threadIdx().y
     ntiles = cld(K, TILE)
-    for t in 0:ntiles-1
+    for t in 0:(ntiles - 1)
         ka = t * TILE + ty
         @inbounds As[tx, ty] = (row <= M && ka <= K) ? A[row, ka] : zero(T)
         kb = t * TILE + tx
@@ -55,7 +59,7 @@ function pure_gemm_nt!(C, A, B, alpha, beta)
     M, K = size(A); N = size(B, 1)
     threads = (TILE, TILE)
     blocks = (cld(M, TILE), cld(N, TILE))
-    @cuda threads=threads blocks=blocks pure_gemm_nt_kernel!(C, A, B, alpha, beta, M, N, K)
+    @cuda threads = threads blocks = blocks pure_gemm_nt_kernel!(C, A, B, alpha, beta, M, N, K)
     return C
 end
 
@@ -109,11 +113,11 @@ end
 
 function pure_gemm_nt_reg!(C, A, B, alpha, beta)
     M, K = size(A); N = size(B, 1)
-    @cuda threads=(16, 16) blocks=(cld(M, BM), cld(N, BN)) pure_gemm_nt_reg_kernel!(C, A, B, alpha, beta, M, N, K)
+    @cuda threads = (16, 16) blocks = (cld(M, BM), cld(N, BN)) pure_gemm_nt_reg_kernel!(C, A, B, alpha, beta, M, N, K)
     return C
 end
 
-gflops(m, n, k, secs) = 2.0 * m * n * k / secs / 1e9
+gflops(m, n, k, secs) = 2.0 * m * n * k / secs / 1.0e9
 
 function probe_gemm(results)
     # Supernode-relevant panel shapes: tall-skinny (trailing update), K = panel width.
@@ -126,13 +130,13 @@ function probe_gemm(results)
         B = CUDA.rand(T, n, k)
         C = CUDA.zeros(T, m, n)
         # cuBLAS C = A*Bᵀ  (gemm!, 'N','T')
-        bref = @be CUDA.@sync(gemm!('N', 'T', one(T), A, B, zero(T), C)) seconds=1
+        bref = @be CUDA.@sync(gemm!('N', 'T', one(T), A, B, zero(T), C)) seconds = 1
         tref = minimum(x.time for x in bref.samples)
         # pure naive kernel
-        bpure = @be CUDA.@sync(pure_gemm_nt!(C, A, B, one(T), zero(T))) seconds=1
+        bpure = @be CUDA.@sync(pure_gemm_nt!(C, A, B, one(T), zero(T))) seconds = 1
         tpure = minimum(x.time for x in bpure.samples)
         # pure register-blocked kernel
-        breg = @be CUDA.@sync(pure_gemm_nt_reg!(C, A, B, one(T), zero(T))) seconds=1
+        breg = @be CUDA.@sync(pure_gemm_nt_reg!(C, A, B, one(T), zero(T))) seconds = 1
         treg = minimum(x.time for x in breg.samples)
         # correctness check (once) — cuBLAS reference vs both pure kernels
         gemm!('N', 'T', one(T), A, B, zero(T), C); CUDA.synchronize(); Cref = Array(C)
@@ -140,16 +144,20 @@ function probe_gemm(results)
         pure_gemm_nt_reg!(C, A, B, one(T), zero(T)); CUDA.synchronize(); Creg = Array(C)
         relerr = norm(Cpure - Cref) / max(norm(Cref), eps())
         relerr_reg = norm(Creg - Cref) / max(norm(Cref), eps())
-        r = (m=m, n=n, k=k,
-             cublas_gflops=round(gflops(m, n, k, tref), digits=1),
-             pure_gflops=round(gflops(m, n, k, tpure), digits=1),
-             reg_gflops=round(gflops(m, n, k, treg), digits=1),
-             pure_over_cublas=round(gflops(m,n,k,tpure)/gflops(m,n,k,tref), digits=3),
-             reg_over_cublas=round(gflops(m,n,k,treg)/gflops(m,n,k,tref), digits=3),
-             relerr=relerr, relerr_reg=relerr_reg)
+        r = (
+            m = m, n = n, k = k,
+            cublas_gflops = round(gflops(m, n, k, tref), digits = 1),
+            pure_gflops = round(gflops(m, n, k, tpure), digits = 1),
+            reg_gflops = round(gflops(m, n, k, treg), digits = 1),
+            pure_over_cublas = round(gflops(m, n, k, tpure) / gflops(m, n, k, tref), digits = 3),
+            reg_over_cublas = round(gflops(m, n, k, treg) / gflops(m, n, k, tref), digits = 3),
+            relerr = relerr, relerr_reg = relerr_reg,
+        )
         push!(rows, r)
-        @printf("gemm m=%6d n=%5d k=%4d  cuBLAS=%7.1f  naive=%7.1f(%.2f)  reg=%7.1f(%.2f) GF  relerr reg=%.1e\n",
-                m, n, k, r.cublas_gflops, r.pure_gflops, r.pure_over_cublas, r.reg_gflops, r.reg_over_cublas, relerr_reg)
+        @printf(
+            "gemm m=%6d n=%5d k=%4d  cuBLAS=%7.1f  naive=%7.1f(%.2f)  reg=%7.1f(%.2f) GF  relerr reg=%.1e\n",
+            m, n, k, r.cublas_gflops, r.pure_gflops, r.pure_over_cublas, r.reg_gflops, r.reg_over_cublas, relerr_reg
+        )
         CUDA.unsafe_free!(A); CUDA.unsafe_free!(B); CUDA.unsafe_free!(C)
     end
     results["gemm"] = rows
@@ -159,11 +167,11 @@ end
 noop_kernel() = nothing
 
 function probe_launch_latency(results)
-    launch() = (@cuda threads=1 blocks=1 noop_kernel(); nothing)
-    b = @be CUDA.@sync(launch()) seconds=1
+    launch() = (@cuda threads = 1 blocks = 1 noop_kernel(); nothing)
+    b = @be CUDA.@sync(launch()) seconds = 1
     lat = minimum(x.time for x in b.samples)
-    results["launch_latency_us"] = round(lat * 1e6, digits=2)
-    @printf("kernel launch latency: %.2f us\n", lat * 1e6)
+    results["launch_latency_us"] = round(lat * 1.0e6, digits = 2)
+    return @printf("kernel launch latency: %.2f us\n", lat * 1.0e6)
 end
 
 function probe_pcie(results)
@@ -174,26 +182,27 @@ function probe_pcie(results)
     try
         push!(srcs, ("pinned", CUDA.pin(Array{T}(undef, n))))
     catch e
-        @warn "pinned-buffer probe skipped" exception=e
+        @warn "pinned-buffer probe skipped" exception = e
     end
     for (nm, src) in srcs
-        bh2d = @be CUDA.@sync(copyto!(d, src)) seconds=1
-        bd2h = @be CUDA.@sync(copyto!(src, d)) seconds=1
-        h2d = bytes / minimum(x.time for x in bh2d.samples) / 1e9
-        d2h = bytes / minimum(x.time for x in bd2h.samples) / 1e9
-        results["pcie_$(nm)_h2d_GBs"] = round(h2d, digits=1)
-        results["pcie_$(nm)_d2h_GBs"] = round(d2h, digits=1)
+        bh2d = @be CUDA.@sync(copyto!(d, src)) seconds = 1
+        bd2h = @be CUDA.@sync(copyto!(src, d)) seconds = 1
+        h2d = bytes / minimum(x.time for x in bh2d.samples) / 1.0e9
+        d2h = bytes / minimum(x.time for x in bd2h.samples) / 1.0e9
+        results["pcie_$(nm)_h2d_GBs"] = round(h2d, digits = 1)
+        results["pcie_$(nm)_d2h_GBs"] = round(d2h, digits = 1)
         @printf("PCIe %-8s  H2D=%.1f GB/s  D2H=%.1f GB/s\n", nm, h2d, d2h)
     end
+    return
 end
 
 function main()
     CUDA.functional() || error("CUDA not functional on this host")
-    results = Dict{String,Any}()
+    results = Dict{String, Any}()
     dev = CUDA.device()
     results["gpu"] = name(dev)
     results["capability"] = string(CUDA.capability(dev))
-    results["total_mem_GB"] = round(CUDA.totalmem(dev) / 1e9, digits=1)
+    results["total_mem_GB"] = round(CUDA.totalmem(dev) / 1.0e9, digits = 1)
     @printf("GPU: %s  cc=%s  mem=%.1f GB\n", results["gpu"], results["capability"], results["total_mem_GB"])
     probe_launch_latency(results)
     probe_pcie(results)
@@ -201,9 +210,11 @@ function main()
     # D1 verdict — on the register-blocked kernel (the proven-fast structure), realistic widths
     ratios = [r.reg_over_cublas for r in results["gemm"] if r.k >= 128]
     med = sort(ratios)[cld(length(ratios), 2)]
-    naive_med = let v = [r.pure_over_cublas for r in results["gemm"] if r.k >= 128]; sort(v)[cld(length(v),2)]; end
-    results["D1_median_reg_over_cublas_k>=128"] = round(med, digits=3)
-    results["D1_median_naive_over_cublas_k>=128"] = round(naive_med, digits=3)
+    naive_med = let v = [r.pure_over_cublas for r in results["gemm"] if r.k >= 128]
+        sort(v)[cld(length(v), 2)]
+    end
+    results["D1_median_reg_over_cublas_k>=128"] = round(med, digits = 3)
+    results["D1_median_naive_over_cublas_k>=128"] = round(naive_med, digits = 3)
     verdict = med >= 0.8 ? "SHIP PURE" : (med >= 0.65 ? "PROMISING (tune further before deciding)" : "ESCALATE philosophy-vs-perf fork to user")
     results["D1_verdict"] = verdict
     @printf("\n=== D1: median reg-blocked/cuBLAS (k>=128) = %.2f (naive was %.2f) -> %s ===\n", med, naive_med, verdict)
@@ -216,7 +227,7 @@ function main()
             end
             println("wrote results JSON")
         catch e
-            @warn "JSON dump skipped" exception=e
+            @warn "JSON dump skipped" exception = e
         end
     else
         @info "JSON not in env; results printed above only"

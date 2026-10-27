@@ -81,7 +81,7 @@ include("frontier.jl")
             # into a freshly-allocated, uninitialized cbuf, and 0*NaN=NaN would corrupt it
             # (design.md §4.3 relies on overwrite-at-β=0). Both v2 reviewers flagged this.
             C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
         end
     end
 end
@@ -96,7 +96,7 @@ portable across KA backends. Beats cuBLAS FP64 1.14× on galen (design_gpu.md §
 function gpu_gemm_nt!(C, A, B, alpha, beta)
     M, K = size(A); N = size(B, 1)
     @assert size(C) == (M, N) "gpu_gemm_nt!: C is $(size(C)), expected ($M,$N)"
-    @assert size(B, 2) == K "gpu_gemm_nt!: A K=$K, B K=$(size(B,2)) mismatch"
+    @assert size(B, 2) == K "gpu_gemm_nt!: A K=$K, B K=$(size(B, 2)) mismatch"
     backend = get_backend(C)
     kern = _gemm_nt_4x4!(backend, (16, 16))
     kern(C, A, B, alpha, beta, M, N, K; ndrange = (cld(M, 64) * 16, cld(N, 64) * 16))
@@ -122,7 +122,7 @@ include("gpu_solve.jl")        # level-scheduled batched triangular solve (backe
 # GPUSymbolic (design_gpu.md §2.3): the CPU Symbolic + the upward-closed frontier partition
 # (§5.2) + pattern arrays uploaded ONCE to device (§4.2 — host keeps the pattern, so refactors
 # do 0 pattern H2D). Immutable, shared by reference.
-struct GPUSymbolic{Ti,VI}
+struct GPUSymbolic{Ti, VI}
     cpu::PureSparse.Symbolic{Ti}
     on_gpu::Vector{Bool}          # frontier membership per supernode (§5.2)
     gpu_order::Vector{Ti}         # GPU supernodes ascending = finalize order
@@ -146,9 +146,11 @@ device (CUDABackend / ROCBackend / …). `frontier_cutoff` is the per-supernode 
 threshold. Asserts the §10.2 upward-closure invariant. Only `T ∈ {Float32,Float64}` reach here
 (§1); callers of other `T` use the CPU path.
 """
-function gpu_symbolic(A::PureSparse.SparseArrays.SparseMatrixCSC{T,Ti};
-                      ordering, backend = _default_backend(),
-                      frontier_cutoff::Real) where {T,Ti}
+function gpu_symbolic(
+        A::PureSparse.SparseArrays.SparseMatrixCSC{T, Ti};
+        ordering, backend = _default_backend(),
+        frontier_cutoff::Real
+    ) where {T, Ti}
     cpu = PureSparse.symbolic(A; ordering)
     ns = cpu.nsuper
     on_gpu = Vector{Bool}(undef, ns)
@@ -157,8 +159,10 @@ function gpu_symbolic(A::PureSparse.SparseArrays.SparseMatrixCSC{T,Ti};
         error("gpu_symbolic: upward-closure invariant violated (design_gpu.md §10.2)")
     gpu_order = Ti[s for s in 1:ns if on_gpu[s]]
     boundary = boundary_supernodes(on_gpu, ns, cpu.rowind, cpu.rowind_ptr, cpu.snode_of)
-    bytes = gpu_device_bytes(cpu.super, cpu.rowind_ptr, boundary, cpu.nnzL,
-                             cpu.max_extend_rows, sizeof(T))
+    bytes = gpu_device_bytes(
+        cpu.super, cpu.rowind_ptr, boundary, cpu.nnzL,
+        cpu.max_extend_rows, sizeof(T)
+    )
     # one-time pattern upload (§4.2 — never re-uploaded on refactor)
     d_rowind = _dev_upload(backend, cpu.rowind)
     d_rowind_ptr = _dev_upload(backend, cpu.rowind_ptr)
@@ -166,10 +170,12 @@ function gpu_symbolic(A::PureSparse.SparseArrays.SparseMatrixCSC{T,Ti};
     d_snode_of = _dev_upload(backend, cpu.snode_of)
     d_amap = _dev_upload(backend, cpu.amap)
     xlen = Int(cpu.px[cpu.nsuper + 1]) - 1        # packed factor storage length
-    return GPUSymbolic{Ti,typeof(d_rowind)}(cpu, on_gpu, gpu_order, boundary,
-                                            Float64(frontier_cutoff),
-                                            d_rowind, d_rowind_ptr, d_super, d_snode_of,
-                                            d_amap, xlen, bytes)
+    return GPUSymbolic{Ti, typeof(d_rowind)}(
+        cpu, on_gpu, gpu_order, boundary,
+        Float64(frontier_cutoff),
+        d_rowind, d_rowind_ptr, d_super, d_snode_of,
+        d_amap, xlen, bytes
+    )
 end
 
 # ---------------------------------------------------------------------------------------

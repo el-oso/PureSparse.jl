@@ -20,7 +20,7 @@ hot path.
 function refine!(
         x::AbstractVecOrMat{T}, F::AbstractSparseFactor{T}, A::SparseMatrixCSC{T}, b::AbstractVecOrMat{T};
         iters::Int = 2,
-) where {T}
+    ) where {T}
     solve!(x, F, b)
     iters <= 0 && return x
     Asym = LinearAlgebra.Symmetric(A, :L)

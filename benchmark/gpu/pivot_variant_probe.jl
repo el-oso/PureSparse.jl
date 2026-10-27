@@ -6,8 +6,15 @@ using Base.Cartesian: @nexprs
 ext = Base.get_extension(PureSparse, :PureSparseCUDAExt)
 backend = CUDA.CUDABackend()
 
-tb(f, N=50) = (f(); CUDA.synchronize(); CUDA.@elapsed(begin
-    for _ in 1:N; f(); end end) / N)
+tb(f, N = 50) = (
+    f(); CUDA.synchronize(); CUDA.@elapsed(
+        begin
+            for _ in 1:N
+                f()
+            end
+        end
+    ) / N
+)
 
 # --- variant A: v2 factor loop only (no invert, no solve, no writeback) ---
 @kernel unsafe_indices = true function _fac_only!(@Const(A), n, sink)
@@ -173,26 +180,28 @@ end
 end
 
 rng = MersenneTwister(1)
-Mm = randn(rng, 64, 64); A = CuArray(Mm'*Mm + 64.0*I)
+Mm = randn(rng, 64, 64); A = CuArray(Mm' * Mm + 64.0 * I)
 sink = CUDA.zeros(Float64, 1)
 G = 16   # like a typical fused launch
-for (nm, k) in (("A fac_only (sqrt+div) ", _fac_only!), ("B fac_nosqrt          ", _fac_nosqrt!),
-                ("C fac_fastpiv         ", _fac_fastpiv!), ("D fac_nosweep         ", _fac_nosweep!))
-    kern = k(backend, (16,16))
-    t1 = tb(() -> kern(A, 64, sink; ndrange=(16,16)))
-    tG = tb(() -> kern(A, 64, sink; ndrange=(16*G,16)))
-    @printf("%s  G=1 %7.1f us   G=%d %7.1f us\n", nm, t1*1e6, G, tG*1e6)
+for (nm, k) in (
+        ("A fac_only (sqrt+div) ", _fac_only!), ("B fac_nosqrt          ", _fac_nosqrt!),
+        ("C fac_fastpiv         ", _fac_fastpiv!), ("D fac_nosweep         ", _fac_nosweep!),
+    )
+    kern = k(backend, (16, 16))
+    t1 = tb(() -> kern(A, 64, sink; ndrange = (16, 16)))
+    tG = tb(() -> kern(A, 64, sink; ndrange = (16 * G, 16)))
+    @printf("%s  G=1 %7.1f us   G=%d %7.1f us\n", nm, t1 * 1.0e6, G, tG * 1.0e6)
 end
 
 # accuracy of fast pivot vs sqrt/1/sqrt on host-representative values
 maxrel_s = 0.0; maxrel_y = 0.0
 for _ in 1:100000
-    d = exp(40*(rand()-0.5))
-    y = Float64(1.0f0/sqrt(Float32(d)))
-    y = y*muladd(-0.5*d*y, y, 1.5); y = y*muladd(-0.5*d*y, y, 1.5); y = y*muladd(-0.5*d*y, y, 1.5)
-    s0 = d*y; s = muladd(0.5*y, muladd(-s0,s0,d), s0)
-    yi = muladd(y, muladd(-s,y,1.0), y)
-    global maxrel_s = max(maxrel_s, abs(s - sqrt(d))/sqrt(d))
-    global maxrel_y = max(maxrel_y, abs(yi - 1/sqrt(d))*sqrt(d))
+    d = exp(40 * (rand() - 0.5))
+    y = Float64(1.0f0 / sqrt(Float32(d)))
+    y = y * muladd(-0.5 * d * y, y, 1.5); y = y * muladd(-0.5 * d * y, y, 1.5); y = y * muladd(-0.5 * d * y, y, 1.5)
+    s0 = d * y; s = muladd(0.5 * y, muladd(-s0, s0, d), s0)
+    yi = muladd(y, muladd(-s, y, 1.0), y)
+    global maxrel_s = max(maxrel_s, abs(s - sqrt(d)) / sqrt(d))
+    global maxrel_y = max(maxrel_y, abs(yi - 1 / sqrt(d)) * sqrt(d))
 end
 @printf("fast pivot accuracy: max rel err sqrt %.2e, recip %.2e\n", maxrel_s, maxrel_y)

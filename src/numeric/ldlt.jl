@@ -36,8 +36,8 @@ recomputes the symbolic analysis (CLAUDE.md requirement 7).
 """
 function ldlt(
         sym::Symbolic{Ti}, A::SparseMatrixCSC{T};
-        signs::Union{Nothing,AbstractVector{<:Integer}} = nothing,
-) where {T,Ti<:Integer}
+        signs::Union{Nothing, AbstractVector{<:Integer}} = nothing,
+    ) where {T, Ti <: Integer}
     n = sym.n
     psigns = Vector{Int8}(undef, n)
     if isnothing(signs)
@@ -53,9 +53,9 @@ function ldlt(
     xsize = Int(sym.px[sym.nsuper + 1]) - 1
     x = Vector{T}(undef, xsize)
     panels = _build_panels(x, sym)
-    F = LDLFactor{T,Ti}(
+    F = LDLFactor{T, Ti}(
         sym, x, panels, Vector{T}(undef, n), psigns,
-        Workspace{T,Ti}(sym), FactorStats(), true,
+        Workspace{T, Ti}(sym), FactorStats(), true,
     )
     ldlt!(F, A)
     return F
@@ -75,10 +75,10 @@ internally, never by the caller). Passing both `signs` and `n_pos`/`n_neg` is an
 """
 function ldlt(
         A::SparseMatrixCSC{T};
-        signs::Union{Nothing,AbstractVector{<:Integer}} = nothing,
-        n_pos::Union{Nothing,Int} = nothing, n_neg::Union{Nothing,Int} = nothing,
+        signs::Union{Nothing, AbstractVector{<:Integer}} = nothing,
+        n_pos::Union{Nothing, Int} = nothing, n_neg::Union{Nothing, Int} = nothing,
         ordering::AbstractOrdering = AMDOrdering(),
-) where {T}
+    ) where {T}
     if !isnothing(n_pos) || !isnothing(n_neg)
         isnothing(signs) || throw(ArgumentError("ldlt: pass either signs or n_pos/n_neg, not both"))
         np = something(n_pos, 0)
@@ -101,7 +101,7 @@ forces every pivot to the expected sign and above the magnitude floor
 pre-perturbation inertia (`n_pos`/`n_neg`/`n_zero`) and how much forcing occurred
 (`n_perturbed`/`max_perturbation`).
 """
-function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
+function ldlt!(F::LDLFactor{T, Ti}, A::SparseMatrixCSC{T}) where {T, Ti <: Integer}
     sym = F.sym
     check_refactor_shape(A, sym.n, sym.n, "ldlt!")
     check_refactor_nnz(A, length(sym.amap), "ldlt!")
@@ -155,199 +155,201 @@ function ldlt!(F::LDLFactor{T,Ti}, A::SparseMatrixCSC{T}) where {T,Ti<:Integer}
     F.ok = true
 
     GC.@preserve x cbuf cdbuf begin
-    @inbounds for s in 1:nsuper
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nscol = j1 - j0 + 1
-        rp0 = Int(rowind_ptr[s])
-        nsrow = Int(rowind_ptr[s + 1]) - rp0
+        @inbounds for s in 1:nsuper
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nscol = j1 - j0 + 1
+            rp0 = Int(rowind_ptr[s])
+            nsrow = Int(rowind_ptr[s + 1]) - rp0
 
-        for k in 1:nsrow
-            relmap[_row(rowind, rp0, k)] = Ti(k)
-        end
-
-        panel = F.panels[s]
-
-        # ---- 2. apply pending descendant updates: C = -L_d[R,:]·D_d·L_d[R1,:]ᵀ ----
-        d = head[s]
-        while d != zero(Ti)
-            dInt = Int(d)
-            dnext_link = next[dInt]
-            q = Int(dptr[dInt])
-            drp0 = Int(rowind_ptr[dInt])
-            nsrow_d = Int(rowind_ptr[dInt + 1]) - drp0
-            ncol_d = Int(super[dInt + 1]) - Int(super[dInt])
-            dj0 = Int(super[dInt])
-            panel_d = F.panels[dInt]
-
-            k1 = 0
-            while q + k1 <= nsrow_d && _row(rowind, drp0, q + k1) <= j1
-                k1 += 1
+            for k in 1:nsrow
+                relmap[_row(rowind, rp0, k)] = Ti(k)
             end
-            k2 = nsrow_d - (q + k1 - 1)
 
-            if k1 > 0
-                ctot = k1 + k2
-                # Contiguity fast path (same as llt.jl's): when the descendant's rows
-                # occupy a contiguous run of the ancestor's row list (identity-shift
-                # scatter), the chunked gemm accumulates straight into the panel
-                # (beta = 1 from the first chunk) and the staged scatter disappears.
-                # The gemm then also writes the never-stored/never-read strict-upper of
-                # the k1×k1 diagonal-block part — harmlessly, and with its symmetric
-                # mirror values (C's top block is L·D·Lᵀ-symmetric), not garbage; that
-                # region was already junk-written by ger!'s trailing rectangle below.
-                # Both view branches are the same SubArray type, so `C` stays concrete.
-                # Check loop doubles as the scatter's index hoist into ws.ir plus the
-                # run-structure build into ws.rs (identical for every column b of the
-                # update block; contig ⟺ a single run — see llt.jl's comment).
-                lr0 = Int(relmap[_row(rowind, drp0, q)])
-                ir[1] = Ti(lr0)
-                nr = 1
-                rs[1] = Ti(1)
-                for a in 2:ctot
-                    lra = relmap[_row(rowind, drp0, q + a - 1)]
-                    ir[a] = lra
-                    if lra != ir[a - 1] + one(Ti)
-                        nr += 1
-                        rs[nr] = Ti(a)
-                    end
+            panel = F.panels[s]
+
+            # ---- 2. apply pending descendant updates: C = -L_d[R,:]·D_d·L_d[R1,:]ᵀ ----
+            d = head[s]
+            while d != zero(Ti)
+                dInt = Int(d)
+                dnext_link = next[dInt]
+                q = Int(dptr[dInt])
+                drp0 = Int(rowind_ptr[dInt])
+                nsrow_d = Int(rowind_ptr[dInt + 1]) - drp0
+                ncol_d = Int(super[dInt + 1]) - Int(super[dInt])
+                dj0 = Int(super[dInt])
+                panel_d = F.panels[dInt]
+
+                k1 = 0
+                while q + k1 <= nsrow_d && _row(rowind, drp0, q + k1) <= j1
+                    k1 += 1
                 end
-                rs[nr + 1] = Ti(ctot + 1)
-                contig = nr == 1
-                C = contig ? view(panel, lr0:(lr0 + ctot - 1), lr0:(lr0 + k1 - 1)) :
-                    view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
-                # L·D scaled copy of the R1 rows, staged in cdbuf (design §5.1). The
-                # natural staging shape (k1, ncol_d) is NOT bounded by max_extend_rows
-                # on the column axis (a wide descendant with a short update block), so
-                # the gemm is chunked over descendant columns with width capped at
-                # cdbuf's own column capacity (= max_extend_rows): each chunk's
-                # view(cdbuf, 1:k1, 1:wk) is then in-bounds by construction (k1 ≤
-                # max_extend_rows by the same containment as `c`; wk ≤ size(cdbuf, 2)
-                # by the cap — full derivation in types.jl's Workspace docstring) and,
-                # being a view of a pre-existing Matrix, costs zero allocation — the
-                # old flat max_update_size-sized cdbuf needed a fresh `_panelview`
-                # unsafe_wrap per chunk, ldlt!'s last per-call allocation source. In
-                # the common case (ncol_d ≤ max_extend_rows) one chunk covers all of
-                # ncol_d; chunking over the contraction axis only adds gemm calls
-                # (beta = 1 accumulation from the second chunk on), never extra flops.
-                w = min(ncol_d, size(cdbuf, 2))
-                c0 = 1
-                while c0 <= ncol_d
-                    wk = min(w, ncol_d - c0 + 1)
-                    CD = view(cdbuf, 1:k1, 1:wk)
-                    for kk in 1:wk
-                        dv = dvec[dj0 + c0 + kk - 2]
-                        for a in 1:k1
-                            CD[a, kk] = panel_d[q + a - 1, c0 + kk - 1] * dv
+                k2 = nsrow_d - (q + k1 - 1)
+
+                if k1 > 0
+                    ctot = k1 + k2
+                    # Contiguity fast path (same as llt.jl's): when the descendant's rows
+                    # occupy a contiguous run of the ancestor's row list (identity-shift
+                    # scatter), the chunked gemm accumulates straight into the panel
+                    # (beta = 1 from the first chunk) and the staged scatter disappears.
+                    # The gemm then also writes the never-stored/never-read strict-upper of
+                    # the k1×k1 diagonal-block part — harmlessly, and with its symmetric
+                    # mirror values (C's top block is L·D·Lᵀ-symmetric), not garbage; that
+                    # region was already junk-written by ger!'s trailing rectangle below.
+                    # Both view branches are the same SubArray type, so `C` stays concrete.
+                    # Check loop doubles as the scatter's index hoist into ws.ir plus the
+                    # run-structure build into ws.rs (identical for every column b of the
+                    # update block; contig ⟺ a single run — see llt.jl's comment).
+                    lr0 = Int(relmap[_row(rowind, drp0, q)])
+                    ir[1] = Ti(lr0)
+                    nr = 1
+                    rs[1] = Ti(1)
+                    for a in 2:ctot
+                        lra = relmap[_row(rowind, drp0, q + a - 1)]
+                        ir[a] = lra
+                        if lra != ir[a - 1] + one(Ti)
+                            nr += 1
+                            rs[nr] = Ti(a)
                         end
                     end
-                    Lblk = view(panel_d, q:(q + ctot - 1), c0:(c0 + wk - 1))
-                    gemm!(C, Lblk, CD; transA = 'N', transB = 'T', alpha = -one(T),
-                        beta = ((contig || c0 > 1) ? one(T) : zero(T)))
-                    c0 += wk
-                end
-                if !contig
-                    # Scatter-add: full C for the below-block rows, lower triangle only
-                    # inside the diagonal block (its strict-upper is never stored/read,
-                    # same convention as llt.jl's syrk scatter). Shared llt.jl helper —
-                    # identical scatter semantics; in this branch C IS
-                    # view(cbuf, 1:ctot, 1:k1), so the helper's direct cbuf[a, b]
-                    # indexing addresses the same elements without the view wrapper.
-                    _scatter_update!(panel, cbuf, ir, rs, nr, k1, ctot)
-                end
-            end
-
-            newq = q + k1
-            if newq <= nsrow_d
-                dptr[dInt] = Ti(newq)
-                s2 = Int(snode_of[_row(rowind, drp0, newq)])
-                next[dInt] = head[s2]
-                head[s2] = d
-            end
-            d = dnext_link
-        end
-
-        # ---- 3+4. base-case unit-LDLᵀ column loop over the FULL panel height ----
-        # Right-looking within the block (Golub & Van Loan); the rank-1 ger! covers
-        # rows j+1:nsrow, i.e. the diagonal block AND the below-diagonal panel — the
-        # LDLᵀ replacement for llt.jl's potrf! + trsm! pair.
-        #
-        # Mirror note for llt.jl's width-1/2 fast paths (kernel-call bypass for
-        # trivially small diagonal blocks): for nscol == 1 this loop ALREADY has that
-        # property — the only kernel call here is ger!, which fires only for
-        # j < nscol, and the 1/d column scale is already an inline scalar loop, so
-        # the width-1 case makes zero kernel calls as-is, with the signed-
-        # regularization / inertia logic (design §5.1) on its normal path; adding a
-        # separate branch would duplicate the loop body for no saved overhead. The
-        # width-2 mirror is the inline single-column trailing update inside the loop
-        # below (see its comment) — regularization itself is never bypassed.
-        for j in 1:nscol
-            jg = j0 + j - 1
-            dj = panel[j, j]
-            adj = abs(dj)
-
-            # inertia accounting, PRE-perturbation (design §5.1 step 1)
-            if adj <= zeta * dmax
-                stats.n_zero += 1
-            elseif dj > zero(T)
-                stats.n_pos += 1
-            else
-                stats.n_neg += 1
-            end
-
-            # signed regularization (design §5.1 step 2)
-            sg = signs[jg]
-            wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
-                (sg == Int8(-1) && !(dj < zero(T)))
-            if wrongsign || adj < delta
-                target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
-                newd = target * max(delta, adj)
-                stats.n_perturbed += 1
-                pert = Float64(abs(newd - dj))
-                pert > stats.max_perturbation && (stats.max_perturbation = pert)
-                dj = newd
-            end
-
-            dvec[jg] = dj
-            adf = abs(dj)
-            adf > dmax && (dmax = adf)
-            adf < dmin && (dmin = adf)
-
-            panel[j, j] = one(T)
-            invd = inv(dj)
-            for i in (j + 1):nsrow
-                panel[i, j] *= invd
-            end
-            if j < nscol
-                if nscol == 2
-                    # Width-2 fast path (mirror of llt.jl's): the only rank-1 update
-                    # of a 2-column supernode has a single-entry y (L[2,1]), so the
-                    # ger! kernel call reduces to one fused column op — same
-                    # `A[i,2] += (-d₁·L[2,1])·L[i,1]` arithmetic (ger! hoists
-                    # α·y[j]; muladd matches its fused update), no kernel-call
-                    # overhead. Regularization/inertia above are untouched — this
-                    # replaces only the trailing update.
-                    c = -dj * panel[2, 1]
-                    for i in 2:nsrow
-                        panel[i, 2] = muladd(panel[i, 1], c, panel[i, 2])
+                    rs[nr + 1] = Ti(ctot + 1)
+                    contig = nr == 1
+                    C = contig ? view(panel, lr0:(lr0 + ctot - 1), lr0:(lr0 + k1 - 1)) :
+                        view(cbuf, 1:ctot, 1:k1)   # zero-alloc: view of a pre-existing Matrix (types.jl)
+                    # L·D scaled copy of the R1 rows, staged in cdbuf (design §5.1). The
+                    # natural staging shape (k1, ncol_d) is NOT bounded by max_extend_rows
+                    # on the column axis (a wide descendant with a short update block), so
+                    # the gemm is chunked over descendant columns with width capped at
+                    # cdbuf's own column capacity (= max_extend_rows): each chunk's
+                    # view(cdbuf, 1:k1, 1:wk) is then in-bounds by construction (k1 ≤
+                    # max_extend_rows by the same containment as `c`; wk ≤ size(cdbuf, 2)
+                    # by the cap — full derivation in types.jl's Workspace docstring) and,
+                    # being a view of a pre-existing Matrix, costs zero allocation — the
+                    # old flat max_update_size-sized cdbuf needed a fresh `_panelview`
+                    # unsafe_wrap per chunk, ldlt!'s last per-call allocation source. In
+                    # the common case (ncol_d ≤ max_extend_rows) one chunk covers all of
+                    # ncol_d; chunking over the contraction axis only adds gemm calls
+                    # (beta = 1 accumulation from the second chunk on), never extra flops.
+                    w = min(ncol_d, size(cdbuf, 2))
+                    c0 = 1
+                    while c0 <= ncol_d
+                        wk = min(w, ncol_d - c0 + 1)
+                        CD = view(cdbuf, 1:k1, 1:wk)
+                        for kk in 1:wk
+                            dv = dvec[dj0 + c0 + kk - 2]
+                            for a in 1:k1
+                                CD[a, kk] = panel_d[q + a - 1, c0 + kk - 1] * dv
+                            end
+                        end
+                        Lblk = view(panel_d, q:(q + ctot - 1), c0:(c0 + wk - 1))
+                        gemm!(
+                            C, Lblk, CD; transA = 'N', transB = 'T', alpha = -one(T),
+                            beta = ((contig || c0 > 1) ? one(T) : zero(T))
+                        )
+                        c0 += wk
                     end
+                    if !contig
+                        # Scatter-add: full C for the below-block rows, lower triangle only
+                        # inside the diagonal block (its strict-upper is never stored/read,
+                        # same convention as llt.jl's syrk scatter). Shared llt.jl helper —
+                        # identical scatter semantics; in this branch C IS
+                        # view(cbuf, 1:ctot, 1:k1), so the helper's direct cbuf[a, b]
+                        # indexing addresses the same elements without the view wrapper.
+                        _scatter_update!(panel, cbuf, ir, rs, nr, k1, ctot)
+                    end
+                end
+
+                newq = q + k1
+                if newq <= nsrow_d
+                    dptr[dInt] = Ti(newq)
+                    s2 = Int(snode_of[_row(rowind, drp0, newq)])
+                    next[dInt] = head[s2]
+                    head[s2] = d
+                end
+                d = dnext_link
+            end
+
+            # ---- 3+4. base-case unit-LDLᵀ column loop over the FULL panel height ----
+            # Right-looking within the block (Golub & Van Loan); the rank-1 ger! covers
+            # rows j+1:nsrow, i.e. the diagonal block AND the below-diagonal panel — the
+            # LDLᵀ replacement for llt.jl's potrf! + trsm! pair.
+            #
+            # Mirror note for llt.jl's width-1/2 fast paths (kernel-call bypass for
+            # trivially small diagonal blocks): for nscol == 1 this loop ALREADY has that
+            # property — the only kernel call here is ger!, which fires only for
+            # j < nscol, and the 1/d column scale is already an inline scalar loop, so
+            # the width-1 case makes zero kernel calls as-is, with the signed-
+            # regularization / inertia logic (design §5.1) on its normal path; adding a
+            # separate branch would duplicate the loop body for no saved overhead. The
+            # width-2 mirror is the inline single-column trailing update inside the loop
+            # below (see its comment) — regularization itself is never bypassed.
+            for j in 1:nscol
+                jg = j0 + j - 1
+                dj = panel[j, j]
+                adj = abs(dj)
+
+                # inertia accounting, PRE-perturbation (design §5.1 step 1)
+                if adj <= zeta * dmax
+                    stats.n_zero += 1
+                elseif dj > zero(T)
+                    stats.n_pos += 1
                 else
-                    lcol = view(panel, (j + 1):nsrow, j)      # L[j+1:end, j], full height
-                    lrow = view(panel, (j + 1):nscol, j)      # L entries inside the diag block
-                    trail = view(panel, (j + 1):nsrow, (j + 1):nscol)
-                    ger!(-dj, lcol, lrow, trail)               # A ← A - d_j·l·l_blkᵀ
+                    stats.n_neg += 1
+                end
+
+                # signed regularization (design §5.1 step 2)
+                sg = signs[jg]
+                wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
+                    (sg == Int8(-1) && !(dj < zero(T)))
+                if wrongsign || adj < delta
+                    target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
+                    newd = target * max(delta, adj)
+                    stats.n_perturbed += 1
+                    pert = Float64(abs(newd - dj))
+                    pert > stats.max_perturbation && (stats.max_perturbation = pert)
+                    dj = newd
+                end
+
+                dvec[jg] = dj
+                adf = abs(dj)
+                adf > dmax && (dmax = adf)
+                adf < dmin && (dmin = adf)
+
+                panel[j, j] = one(T)
+                invd = inv(dj)
+                for i in (j + 1):nsrow
+                    panel[i, j] *= invd
+                end
+                if j < nscol
+                    if nscol == 2
+                        # Width-2 fast path (mirror of llt.jl's): the only rank-1 update
+                        # of a 2-column supernode has a single-entry y (L[2,1]), so the
+                        # ger! kernel call reduces to one fused column op — same
+                        # `A[i,2] += (-d₁·L[2,1])·L[i,1]` arithmetic (ger! hoists
+                        # α·y[j]; muladd matches its fused update), no kernel-call
+                        # overhead. Regularization/inertia above are untouched — this
+                        # replaces only the trailing update.
+                        c = -dj * panel[2, 1]
+                        for i in 2:nsrow
+                            panel[i, 2] = muladd(panel[i, 1], c, panel[i, 2])
+                        end
+                    else
+                        lcol = view(panel, (j + 1):nsrow, j)      # L[j+1:end, j], full height
+                        lrow = view(panel, (j + 1):nscol, j)      # L entries inside the diag block
+                        trail = view(panel, (j + 1):nsrow, (j + 1):nscol)
+                        ger!(-dj, lcol, lrow, trail)               # A ← A - d_j·l·l_blkᵀ
+                    end
                 end
             end
-        end
 
-        # ---- 5. schedule s onto its first ancestor (identical to llt.jl) ----
-        if nsrow > nscol
-            dptr[s] = Ti(nscol + 1)
-            s2 = Int(snode_of[_row(rowind, rp0, nscol + 1)])
-            next[s] = head[s2]
-            head[s2] = Ti(s)
+            # ---- 5. schedule s onto its first ancestor (identical to llt.jl) ----
+            if nsrow > nscol
+                dptr[s] = Ti(nscol + 1)
+                s2 = Int(snode_of[_row(rowind, rp0, nscol + 1)])
+                next[s] = head[s2]
+                head[s2] = Ti(s)
+            end
         end
-    end
     end # GC.@preserve
 
     stats.nnzL = Int(sym.nnzL)

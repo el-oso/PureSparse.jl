@@ -50,9 +50,11 @@ function random_sqd_kkt(rng, npos::Int, nneg::Int, density::Float64)
     n = npos + nneg
     I = Int[]; J = Int[]; V = Float64[]
     rowsum = zeros(n)
-    addsym!(i, j, v) = (push!(I, i); push!(J, j); push!(V, v);
+    addsym!(i, j, v) = (
+        push!(I, i); push!(J, j); push!(V, v);
         i != j && (push!(I, j); push!(J, i); push!(V, v));
-        rowsum[i] += abs(v); i != j && (rowsum[j] += abs(v)))
+        rowsum[i] += abs(v); i != j && (rowsum[j] += abs(v))
+    )
     for j in 1:npos, i in (j + 1):npos              # H strict lower
         rand(rng) < density && addsym!(i, j, randn(rng))
     end

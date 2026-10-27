@@ -56,9 +56,13 @@ function solve_schedule(sparent::AbstractVector, px::AbstractVector, ref)
     end
     nlev = ns == 0 ? 0 : maximum(level) + 1
     cnt = zeros(Int, nlev)
-    @inbounds for s in 1:ns; cnt[level[s] + 1] += 1; end
+    @inbounds for s in 1:ns
+        cnt[level[s] + 1] += 1
+    end
     lev_ptr = Vector{Int}(undef, nlev + 1); lev_ptr[1] = 1
-    @inbounds for l in 1:nlev; lev_ptr[l + 1] = lev_ptr[l] + cnt[l]; end
+    @inbounds for l in 1:nlev
+        lev_ptr[l + 1] = lev_ptr[l] + cnt[l]
+    end
     nodes = Vector{Ti}(undef, ns); cur = lev_ptr[1:nlev]
     @inbounds for s in 1:ns
         l = level[s] + 1; nodes[cur[l]] = Ti(s); cur[l] += 1
@@ -70,8 +74,10 @@ end
 
 # One workgroup per supernode in the level. trsv is a column sweep (nscol is group-uniform →
 # barriers are uniform); the below-panel gemv+scatter strides rows over the group's threads.
-@kernel unsafe_indices = true function _solve_fwd_level!(y, @Const(xv), @Const(rowind),
-        @Const(rowind_ptr), @Const(super), @Const(px), @Const(nodes), base, unitdiag)
+@kernel unsafe_indices = true function _solve_fwd_level!(
+        y, @Const(xv), @Const(rowind),
+        @Const(rowind_ptr), @Const(super), @Const(px), @Const(nodes), base, unitdiag
+    )
     li = @index(Local, Linear)                 # 1..SOLVE_GROUP
     g = @index(Group, Linear)
     T = eltype(y)
@@ -109,8 +115,10 @@ end
     end
 end
 
-@kernel unsafe_indices = true function _solve_bwd_level!(y, @Const(xv), @Const(rowind),
-        @Const(rowind_ptr), @Const(super), @Const(px), @Const(nodes), base, unitdiag)
+@kernel unsafe_indices = true function _solve_bwd_level!(
+        y, @Const(xv), @Const(rowind),
+        @Const(rowind_ptr), @Const(super), @Const(px), @Const(nodes), base, unitdiag
+    )
     li = @index(Local, Linear)
     g = @index(Group, Linear)
     T = eltype(y)
@@ -155,8 +163,10 @@ Level-scheduled supernodal triangular solve on device: forward `L·z=b` (ascendi
 optional `z ./= dvec` (LDLᵀ D⁻¹ scale, pass `nothing` for Cholesky), backward `Lᵀ·x=z`
 (descending levels). `unitdiag=true` for the LDLᵀ unit-lower factor. One launch per level.
 """
-function batched_solve!(y, xv, d_rowind, d_rowind_ptr, d_super, sched::SolveSchedule,
-                        unitdiag::Bool, dvec)
+function batched_solve!(
+        y, xv, d_rowind, d_rowind_ptr, d_super, sched::SolveSchedule,
+        unitdiag::Bool, dvec
+    )
     backend = get_backend(y)
     fwd = _solve_fwd_level!(backend, SOLVE_GROUP)
     bwd = _solve_bwd_level!(backend, SOLVE_GROUP)

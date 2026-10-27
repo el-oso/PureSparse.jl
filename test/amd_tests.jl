@@ -125,8 +125,10 @@ end
         colptr, rowval = adj_to_full_csc(n, adj)
         # default; aggressive off; low dense_mult (forces dense-row stripping on the
         # denser patterns, up to stripping nearly every variable)
-        for alg in (AMDOrdering(), AMDOrdering(aggressive = false),
-                AMDOrdering(dense_mult = 0.1))
+        for alg in (
+                AMDOrdering(), AMDOrdering(aggressive = false),
+                AMDOrdering(dense_mult = 0.1),
+            )
             p = PureSparse.order(alg, n, colptr, rowval)
             @test p isa Vector{Int}
             @test sort(p) == 1:n

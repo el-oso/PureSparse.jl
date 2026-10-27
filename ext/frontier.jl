@@ -17,9 +17,11 @@ with Σ_{j∈s} colcount[j]² ≥ `cutoff` (the factor+update flop weight, match
 then close upward over `sparent` (0 = root). Order-independent (walks each seed's ancestor
 chain; O(nsuper) amortized).
 """
-function frontier_partition!(on_gpu::AbstractVector{Bool}, nsuper::Integer,
-                             super::AbstractVector, sparent::AbstractVector,
-                             colcount::AbstractVector, cutoff::Float64)
+function frontier_partition!(
+        on_gpu::AbstractVector{Bool}, nsuper::Integer,
+        super::AbstractVector, sparent::AbstractVector,
+        colcount::AbstractVector, cutoff::Float64
+    )
     fill!(on_gpu, false)
     @inbounds for s in 1:nsuper                       # seeds
         f = 0.0
@@ -46,9 +48,11 @@ end
 CPU supernodes (`!on_gpu[s]`) with ≥1 below-diagonal row updating a GPU supernode — the panels
 that must be uploaded once and persisted device-resident (design_gpu.md §5.3).
 """
-function boundary_supernodes(on_gpu::AbstractVector{Bool}, nsuper::Integer,
-                             rowind::AbstractVector{Ti}, rowind_ptr::AbstractVector,
-                             snode_of::AbstractVector) where {Ti}
+function boundary_supernodes(
+        on_gpu::AbstractVector{Bool}, nsuper::Integer,
+        rowind::AbstractVector{Ti}, rowind_ptr::AbstractVector,
+        snode_of::AbstractVector
+    ) where {Ti}
     b = Ti[]
     @inbounds for s in 1:nsuper
         on_gpu[s] && continue
@@ -71,9 +75,11 @@ conservative: `nsrow` includes the already-factored diagonal rows ancestors don'
 `total`. Excludes cuSOLVER workspace + pinned staging (added at factor construction from
 `bufferSize`). Used for the capacity check + loud CPU fallback.
 """
-function gpu_device_bytes(super::AbstractVector, rowind_ptr::AbstractVector,
-                          boundary::AbstractVector, nnzL::Integer,
-                          max_extend_rows::Integer, elt::Integer)
+function gpu_device_bytes(
+        super::AbstractVector, rowind_ptr::AbstractVector,
+        boundary::AbstractVector, nnzL::Integer,
+        max_extend_rows::Integer, elt::Integer
+    )
     nzval = Int(nnzL) * elt
     cbuf = Int(max_extend_rows)^2 * elt
     bound = 0
@@ -101,9 +107,11 @@ Executable check of the §10.2 upward-closure invariant: no GPU supernode has an
 a CPU supernode (`∀ GPU s, ∀ r ∈ rowind(s): on_gpu[snode_of[r]]`). True by construction for a
 correct upward closure; the test asserts it.
 """
-function frontier_invariant_holds(on_gpu::AbstractVector{Bool}, nsuper::Integer,
-                                  rowind::AbstractVector, rowind_ptr::AbstractVector,
-                                  snode_of::AbstractVector)
+function frontier_invariant_holds(
+        on_gpu::AbstractVector{Bool}, nsuper::Integer,
+        rowind::AbstractVector, rowind_ptr::AbstractVector,
+        snode_of::AbstractVector
+    )
     @inbounds for s in 1:nsuper
         on_gpu[s] || continue
         for p in rowind_ptr[s]:(rowind_ptr[s + 1] - 1)

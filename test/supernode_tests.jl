@@ -259,11 +259,12 @@ end
         truth = true_column_patterns(n, cp, rv)
 
         for (nsuper, super) in (
-            PureSparse.fundamental_supernodes(n, parent, colcount),
-            PureSparse.relaxed_amalgamation(n, PureSparse.fundamental_supernodes(n, parent, colcount)..., parent, colcount),
-        )
+                PureSparse.fundamental_supernodes(n, parent, colcount),
+                PureSparse.relaxed_amalgamation(n, PureSparse.fundamental_supernodes(n, parent, colcount)..., parent, colcount),
+            )
             rowind_ptr, rowind, snode_of, sparent, muz, mer = PureSparse.supernode_rowind(
-                n, cp, rv, parent, nsuper, super)
+                n, cp, rv, parent, nsuper, super
+            )
 
             # rowind_ptr/rowind form a valid CSC-style structure of the right total size.
             @test rowind_ptr[1] == 1

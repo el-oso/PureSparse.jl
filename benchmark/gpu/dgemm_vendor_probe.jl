@@ -23,11 +23,31 @@ using Base.Cartesian: @nexprs
 const KA = KernelAbstractions
 
 # ---- backend detection: use whichever GPU package is installed in the active project ----
-const BE = if Base.find_package("AMDGPU") !== nothing && (@isdefined(AMDGPU) || (try; @eval(using AMDGPU); true; catch; false; end))
+const BE = if Base.find_package("AMDGPU") !== nothing && (
+        @isdefined(AMDGPU) || (
+            try
+                @eval(using AMDGPU); true
+            catch
+                false
+            end
+        )
+    )
     (name = "AMD / rocBLAS", arr = AMDGPU.ROCArray, sync = AMDGPU.synchronize, dev = "gfx")
-elseif Base.find_package("oneAPI") !== nothing && (try; @eval(using oneAPI); true; catch; false; end)
+elseif Base.find_package("oneAPI") !== nothing && (
+        try
+            @eval(using oneAPI); true
+        catch
+            false
+        end
+    )
     (name = "Intel / oneMKL", arr = oneAPI.oneArray, sync = oneAPI.synchronize, dev = "xe")
-elseif Base.find_package("CUDA") !== nothing && (try; @eval(using CUDA); true; catch; false; end)
+elseif Base.find_package("CUDA") !== nothing && (
+        try
+            @eval(using CUDA); true
+        catch
+            false
+        end
+    )
     (name = "NVIDIA / cuBLAS", arr = CUDA.CuArray, sync = CUDA.synchronize, dev = "sm")
 else
     error("install exactly one of AMDGPU / oneAPI / CUDA in the active project")
@@ -68,15 +88,17 @@ end
         gr = br + (tx - 1) * 4 + (i - 1); gc = bc + (ty - 1) * 4 + (j - 1)
         if gr < M && gc < N
             C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
         end
     end
 end
 
 function pure_gemm_nt!(C, A, B)   # C = A·Bᵀ
     M, K = size(A); N = size(B, 1)
-    _gemm_nt_4x4!(get_backend(C), (16, 16))(C, A, B, 1.0, 0.0, M, N, K;
-        ndrange = (cld(M, 64) * 16, cld(N, 64) * 16))
+    _gemm_nt_4x4!(get_backend(C), (16, 16))(
+        C, A, B, 1.0, 0.0, M, N, K;
+        ndrange = (cld(M, 64) * 16, cld(N, 64) * 16)
+    )
     return C
 end
 
@@ -85,7 +107,7 @@ function gpu_ms(f, reps)
     f(); BE.sync()
     ts = Float64[]
     for _ in 1:reps
-        t0 = time_ns(); f(); BE.sync(); push!(ts, (time_ns() - t0) / 1e6)
+        t0 = time_ns(); f(); BE.sync(); push!(ts, (time_ns() - t0) / 1.0e6)
     end
     return median(ts)
 end
@@ -96,7 +118,7 @@ const REPS = 50
 println("M8 Phase-0: pure-KA FP64 gemm  vs  VENDOR DGEMM  (γ = vendor/pure = pure's speedup)")
 println("backend: ", BE.name)
 println(rpad("m=n=k", 10), rpad("relerr", 12), rpad("pure ms", 11), rpad("vendor ms", 12), "γ (>1 pure wins)")
-results = Dict{String,Any}[]
+results = Dict{String, Any}[]
 for m in SHAPES
     A = BE.arr(randn(m, m)); B = BE.arr(randn(m, m))
     Cp = BE.arr(zeros(m, m)); Cv = BE.arr(zeros(m, m))
@@ -111,8 +133,10 @@ for m in SHAPES
 end
 gs = [r["gamma"] for r in results]
 @printf("\nγ over shapes:  min %.3f  median %.3f  max %.3f\n", minimum(gs), median(gs), maximum(gs))
-println("VERDICT: γ≈1.1 → pure wins (M6, no FP64 matrix cores). γ≈0.5 → vendor uses FP64 matrix",
-        " cores (MFMA/XMX)\n         the pure KA kernel can't emit → clause-2 (pure ≥ vendor) FORECLOSED on this backend.")
+println(
+    "VERDICT: γ≈1.1 → pure wins (M6, no FP64 matrix cores). γ≈0.5 → vendor uses FP64 matrix",
+    " cores (MFMA/XMX)\n         the pure KA kernel can't emit → clause-2 (pure ≥ vendor) FORECLOSED on this backend."
+)
 
 # save datapoints (project rule: results→JSON first)
 try

@@ -23,7 +23,7 @@
 # identical entries moved. A-row scatter from the row-form of A is faer's AT scatter
 # (qr.rs:1152-1167).
 
-function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
+function _assemble_front!(F::QRFrontFactor{T, Ti}, f::Int) where {T, Ti <: Integer}
     fsym = F.fsym
     sym = fsym.base
     ws = F.ws
@@ -48,7 +48,7 @@ function _assemble_front!(F::QRFrontFactor{T,Ti}, f::Int) where {T,Ti<:Integer}
         for physp in fsym.arowptr[k]:(fsym.arowptr[k + 1] - 1)
             t += 1
             phys[t] = Ti(physp)                 # PHYSICAL row label (1..mb) — what
-                                                 # solve's shared y vector is indexed by
+            # solve's shared y vector is indexed by
             mincol[t] = ws.g2l[k]
             srcfront[t] = zero(Ti)               # 0 = A-row
             srcrow[t] = sym.rperm[physp]         # ORIGINAL row — for the row-form value lookup
@@ -162,7 +162,7 @@ end
 # child's OWN fmincol (a global column id) via a direct scan of the child's OWN column
 # list. `n_c` is small (front width), so a linear scan is acceptable here; revisit
 # with a stored per-row local-mincol cache only if profiling shows this matters.
-@inline function _child_local_mincol(F::QRFrontFactor{T,Ti}, c::Int, crow::Int) where {T,Ti<:Integer}
+@inline function _child_local_mincol(F::QRFrontFactor{T, Ti}, c::Int, crow::Int) where {T, Ti <: Integer}
     fsym = F.fsym
     crowlo = Int(fsym.frowptr2[c])
     gcol = F.fmincol[crowlo + crow - 1]

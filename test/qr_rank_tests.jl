@@ -37,7 +37,7 @@ end
     # regardless of tol, not the tol-based threshold this test means to exercise).
     # Empirically verified (not guessed): this construction's post-reflection xnorm
     # falls strictly between tol=1e-3 (still catches it) and tol=1e-4 (does not).
-    A = sparse([1.0 0.0 1.0+1e-3; 0.0 1.0 0.0; 1.0 1.0 1.0])
+    A = sparse([1.0 0.0 1.0 + 1.0e-3; 0.0 1.0 0.0; 1.0 1.0 1.0])
     F_strict = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 1.0e-2)  # catches it
     F_loose = PureSparse.qr(A; ordering = PureSparse.AMDOrdering(), tol = 1.0e-6)   # does not
     @test F_strict.stats.n_dead >= 1

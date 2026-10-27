@@ -89,7 +89,7 @@ using CUDA.CUBLAS: trsm!
         gc = bc + (ty - 1) * 4 + (j - 1)
         if gr < M && gc < N
             C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
         end
     end
 end
@@ -147,7 +147,7 @@ end
             gc = bc + (ty - 1) * 4 + (j - 1)
             if gr < M && gc < N && gr >= gc
                 C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
             end
         end
     end
@@ -638,8 +638,10 @@ function gpu_trsm_rlt!(B, L)
         jb = min(nb, n - j0 + 1)
         Bj = view(B, :, j0:(j0 + jb - 1))
         if j0 > 1
-            gpu_gemm_nt!(Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
-                         -one(T), one(T))
+            gpu_gemm_nt!(
+                Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
+                -one(T), one(T)
+            )
         end
         tk(Bj, view(L, j0:(j0 + jb - 1), j0:(j0 + jb - 1)), m, jb; ndrange = cld(m, 256) * 256)
     end
@@ -797,8 +799,10 @@ function gpu_trsm_rlt_opt!(B, L, ws::FrontWS)
         jb = min(64, n - j0 + 1)
         Bj = view(B, :, j0:(j0 + jb - 1))
         if j0 > 1
-            gpu_gemm_nt!(Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
-                         -one(T), one(T))
+            gpu_gemm_nt!(
+                Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
+                -one(T), one(T)
+            )
         end
         tm(Bj, view(ws.invD, 1:jb, 1:jb, b), m, jb; ndrange = (cld(m, 64) * 16, 16))
     end
@@ -815,9 +819,13 @@ mean_(v) = sum(v) / length(v)
 function time_op!(op!, dst, src; reps = 11)
     copyto!(dst, src); op!(dst); CUDA.synchronize()
     tc = [Float64(CUDA.@elapsed copyto!(dst, src)) for _ in 1:reps]
-    tt = [Float64(CUDA.@elapsed begin
-                      copyto!(dst, src); op!(dst)
-                  end) for _ in 1:reps]
+    tt = [
+        Float64(
+            CUDA.@elapsed begin
+                copyto!(dst, src); op!(dst)
+            end
+        ) for _ in 1:reps
+    ]
     return max(med(tt) - med(tc), 0.0)
 end
 
@@ -831,8 +839,8 @@ const BUCKETS = [
     (count = 75, shapes = [(55, 754), (43, 808), (63, 790)]),
     (count = 53, shapes = [(71, 1372), (69, 444), (152, 671)]),
     (count = 19, shapes = [(234, 1436), (209, 1219), (314, 1464)]),
-    (count = 4,  shapes = [(859, 3587), (596, 3267), (615, 4231)]),
-    (count = 2,  shapes = [(1064, 1273), (1083, 186)]),
+    (count = 4, shapes = [(859, 3587), (596, 3267), (615, 4231)]),
+    (count = 2, shapes = [(1064, 1273), (1083, 186)]),
 ]
 
 front_flops(nscol, below) = nscol^3 / 3 + Float64(below) * nscol^2
@@ -843,10 +851,12 @@ function bench()
     ws = FrontWS(T, maxblk)
     arms = [:vendor, :old, :fused, :fused2, :split_gemm, :split_base, :sep, :auto]
     @printf("\n== front op (potrf(diag view) + trsm(below view)) — REAL shape mix ==\n")
-    @printf("%6s %6s | %8s | %9s %9s %9s %9s %9s %9s %9s %9s | %s\n",
-            "nscol", "below", "GFlop",
-            "vendor", "old", "fused", "fused2", "spl_gemm", "spl_base", "sep", "auto",
-            "best(vs vend)")
+    @printf(
+        "%6s %6s | %8s | %9s %9s %9s %9s %9s %9s %9s %9s | %s\n",
+        "nscol", "below", "GFlop",
+        "vendor", "old", "fused", "fused2", "spl_gemm", "spl_base", "sep", "auto",
+        "best(vs vend)"
+    )
     results = Dict{Tuple{Int, Int}, Dict{Symbol, Float64}}()
     relerrs = Dict{Tuple{Int, Int}, Dict{Symbol, Float64}}()
     for bkt in BUCKETS, (nscol, below) in bkt.shapes
@@ -902,25 +912,31 @@ function bench()
         end
         results[(nscol, below)] = tm
         best = argmin(k -> tm[k], [a for a in arms if a != :vendor])
-        @printf("%6d %6d | %8.3f | %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f | %s %.2fx\n",
-                nscol, below, front_flops(nscol, below) / 1e9,
-                tm[:vendor] * 1e6, tm[:old] * 1e6, tm[:fused] * 1e6, tm[:fused2] * 1e6,
-                tm[:split_gemm] * 1e6, tm[:split_base] * 1e6, tm[:sep] * 1e6, tm[:auto] * 1e6,
-                best, tm[:vendor] / tm[best])
+        @printf(
+            "%6d %6d | %8.3f | %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f | %s %.2fx\n",
+            nscol, below, front_flops(nscol, below) / 1.0e9,
+            tm[:vendor] * 1.0e6, tm[:old] * 1.0e6, tm[:fused] * 1.0e6, tm[:fused2] * 1.0e6,
+            tm[:split_gemm] * 1.0e6, tm[:split_base] * 1.0e6, tm[:sep] * 1.0e6, tm[:auto] * 1.0e6,
+            best, tm[:vendor] / tm[best]
+        )
         foreach(CUDA.unsafe_free!, (src, dP, dV))
     end
     # relerr table
     @printf("\n== relerr vs vendor (gate ≤ 1e-13) ==\n")
-    @printf("%6s %6s | %10s %10s %10s %10s %10s %10s %10s\n",
-            "nscol", "below", "old", "fused", "fused2", "spl_gemm", "spl_base", "sep", "auto")
+    @printf(
+        "%6s %6s | %10s %10s %10s %10s %10s %10s %10s\n",
+        "nscol", "below", "old", "fused", "fused2", "spl_gemm", "spl_base", "sep", "auto"
+    )
     allpass = true
     for bkt in BUCKETS, sh in bkt.shapes
         re = relerrs[sh]
         vals = [re[a] for a in (:old, :fused, :fused2, :split_gemm, :split_base, :sep, :auto)]
-        allpass &= all(<=(1e-13), vals)
-        @printf("%6d %6d | %10.2e %10.2e %10.2e %10.2e %10.2e %10.2e %10.2e  %s\n",
-                sh[1], sh[2], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7],
-                all(<=(1e-13), vals) ? "PASS" : "FAIL")
+        allpass &= all(<=(1.0e-13), vals)
+        @printf(
+            "%6d %6d | %10.2e %10.2e %10.2e %10.2e %10.2e %10.2e %10.2e  %s\n",
+            sh[1], sh[2], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7],
+            all(<=(1.0e-13), vals) ? "PASS" : "FAIL"
+        )
     end
     println(allpass ? "ALL PASS" : "SOME FAIL")
     # weighted aggregate: Σ_bucket count · mean(shape time) — approximates end-to-end
@@ -931,16 +947,18 @@ function bench()
         tot[a] = sum(bkt.count * mean_([results[sh][a] for sh in bkt.shapes]) for bkt in BUCKETS)
     end
     for a in arms
-        @printf("%-10s | %12.3f | %7.2fx\n", a, tot[a] * 1e3, tot[:vendor] / tot[a])
+        @printf("%-10s | %12.3f | %7.2fx\n", a, tot[a] * 1.0e3, tot[:vendor] / tot[a])
     end
     # per-bucket breakdown for the best fixed arm + auto
     @printf("\n== per-bucket totals (ms) ==\n")
     @printf("%-12s | %9s %9s %9s %9s %9s\n", "bucket", "vendor", "old", "auto", "fused", "fused2")
     for bkt in BUCKETS
         lo, hi = extrema(first.(bkt.shapes))
-        bt(a) = bkt.count * mean_([results[sh][a] for sh in bkt.shapes]) * 1e3
-        @printf("n=%4d..%4d | %9.3f %9.3f %9.3f %9.3f %9.3f\n", lo, hi,
-                bt(:vendor), bt(:old), bt(:auto), bt(:fused), bt(:fused2))
+        bt(a) = bkt.count * mean_([results[sh][a] for sh in bkt.shapes]) * 1.0e3
+        @printf(
+            "n=%4d..%4d | %9.3f %9.3f %9.3f %9.3f %9.3f\n", lo, hi,
+            bt(:vendor), bt(:old), bt(:auto), bt(:fused), bt(:fused2)
+        )
     end
     return results
 end
@@ -972,7 +990,7 @@ function main()
     println("FUSE_M_MAX = ", FUSE_M_MAX[])
     bench()
     check_zero_alloc()
-    println("\ndone.")
+    return println("\ndone.")
 end
 
 main()

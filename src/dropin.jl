@@ -11,10 +11,10 @@
 using SparseArrays: SparseMatrixCSC
 using LinearAlgebra: Symmetric, Hermitian, PosDefException, I
 
-const _RealSparseArg{T<:Real} = Union{
+const _RealSparseArg{T <: Real} = Union{
     SparseMatrixCSC{T},
-    Symmetric{T,<:SparseMatrixCSC{T}},
-    Hermitian{T,<:SparseMatrixCSC{T}},
+    Symmetric{T, <:SparseMatrixCSC{T}},
+    Hermitian{T, <:SparseMatrixCSC{T}},
 }
 
 """
@@ -45,8 +45,10 @@ whatever `F.p` ends up being (`L·Lᵀ ≈ (A[F.p,F.p])`, verified); code that o
 `F.p` to permute/solve consistently (the overwhelming common case) is unaffected —
 only code asserting `F.p == perm` literally would observe the difference.
 """
-function LinearAlgebra.cholesky(A::_RealSparseArg{T}; check::Bool = true,
-        perm::Union{Nothing,AbstractVector{<:Integer}} = nothing, shift::Real = zero(T)) where {T<:Real}
+function LinearAlgebra.cholesky(
+        A::_RealSparseArg{T}; check::Bool = true,
+        perm::Union{Nothing, AbstractVector{<:Integer}} = nothing, shift::Real = zero(T)
+    ) where {T <: Real}
     Afull = SparseMatrixCSC(sparse(A))
     if !iszero(shift)
         Afull = Afull + T(shift) * I
@@ -78,8 +80,10 @@ inertia (the common SQD/KKT case) get materially better regularization behavior 
 `PureSparse.ldlt(A; n_pos, n_neg)` directly than from this drop-in entry point — this
 is an intentional, documented gap in drop-in fidelity, not an oversight.
 """
-function LinearAlgebra.ldlt(A::_RealSparseArg{T}; check::Bool = true,
-        perm::Union{Nothing,AbstractVector{<:Integer}} = nothing, shift::Real = zero(T)) where {T<:Real}
+function LinearAlgebra.ldlt(
+        A::_RealSparseArg{T}; check::Bool = true,
+        perm::Union{Nothing, AbstractVector{<:Integer}} = nothing, shift::Real = zero(T)
+    ) where {T <: Real}
     Afull = SparseMatrixCSC(sparse(A))
     if !iszero(shift)
         Afull = Afull + T(shift) * I
@@ -97,8 +101,8 @@ end
 # `.p`/`.L`/`.U` surface, reflecting its CURRENT post-update state, since `sparse_L`
 # below reads its live `colnnz`/`rowval`/`nzval`, not a snapshot) ---
 
-const _DropinFactor{T,Ti} =
-    Union{SupernodalFactor{T,Ti},LDLFactor{T,Ti},SimplicialLDLFactor{T,Ti}}
+const _DropinFactor{T, Ti} =
+    Union{SupernodalFactor{T, Ti}, LDLFactor{T, Ti}, SimplicialLDLFactor{T, Ti}}
 
 """
     F.p
@@ -150,7 +154,7 @@ which already stores a literal `1` on the LDLᵀ diagonal — see `numeric/ldlt.
 base-case loop) as a `SparseMatrixCSC`. Allocates — this is a one-time extraction, not
 a hot-path operation; also reachable as `F.L`.
 """
-function sparse_L(F::Union{SupernodalFactor{T,Ti},LDLFactor{T,Ti}}) where {T,Ti<:Integer}
+function sparse_L(F::Union{SupernodalFactor{T, Ti}, LDLFactor{T, Ti}}) where {T, Ti <: Integer}
     sym = F.sym
     n = sym.n
     I = Ti[]; J = Ti[]; V = T[]
@@ -176,7 +180,7 @@ end
 # extracted `L`, whose panels store literal 1s). Columns are already sorted, so the CSC
 # is built directly — no COO round-trip. Reads the LIVE arrays, so the result reflects
 # any `updowndate!` calls made since `simplicial(F)`.
-function sparse_L(G::SimplicialLDLFactor{T,Ti}) where {T,Ti<:Integer}
+function sparse_L(G::SimplicialLDLFactor{T, Ti}) where {T, Ti <: Integer}
     n = getfield(G, :sym).n
     gcolptr = getfield(G, :colptr); gcolnnz = getfield(G, :colnnz)
     growval = getfield(G, :rowval); gnzval = getfield(G, :nzval)
@@ -198,7 +202,7 @@ function sparse_L(G::SimplicialLDLFactor{T,Ti}) where {T,Ti<:Integer}
             nzval[p + k] = gnzval[s0 + k]
         end
     end
-    return SparseMatrixCSC{T,Ti}(n, n, colptr, rowval, nzval)
+    return SparseMatrixCSC{T, Ti}(n, n, colptr, rowval, nzval)
 end
 
 """

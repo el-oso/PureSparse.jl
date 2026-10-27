@@ -18,8 +18,10 @@ function laplacian2d(m::Int)
     colptr[1] = 1
     for j in 1:m, i in 1:m
         k = Int64((j - 1) * m + i)
-        for (i2, j2, v) in ((i, j - 1, -1.0), (i - 1, j, -1.0), (i, j, 4.0),
-                (i + 1, j, -1.0), (i, j + 1, -1.0))
+        for (i2, j2, v) in (
+                (i, j - 1, -1.0), (i - 1, j, -1.0), (i, j, 4.0),
+                (i + 1, j, -1.0), (i, j + 1, -1.0),
+            )
             if 1 <= i2 <= m && 1 <= j2 <= m
                 push!(rowval, Int64((j2 - 1) * m + i2))
                 push!(nzval, v)

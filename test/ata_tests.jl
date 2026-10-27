@@ -18,7 +18,7 @@ end
 
 # Adjacency-list view of a full symmetric CSC pattern (colptr/rowval, both triangles) —
 # for reuse with the same elimination-game fill simulator amd_tests.jl uses.
-function adj_of_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function adj_of_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     adj = [Set{Int}() for _ in 1:n]
     for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
         push!(adj[j], Int(rowval[p]))

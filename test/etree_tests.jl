@@ -172,14 +172,14 @@ end
         # Symmetry check: (i,j) present (i<j) in the permuted pattern iff original
         # adjacency had an edge between iperm-preimages... equivalently, reconstruct the
         # permuted adjacency directly from `adj` and compare as sets.
-        expected = Set{Tuple{Int,Int}}()
+        expected = Set{Tuple{Int, Int}}()
         for jorig in 1:n, iorig in adj[jorig]
             i, j = iperm[iorig], iperm[jorig]
             lo, hi = i < j ? (i, j) : (j, i)
             lo == hi && continue
             push!(expected, (lo, hi))
         end
-        got = Set{Tuple{Int,Int}}()
+        got = Set{Tuple{Int, Int}}()
         for j in 1:n, r in cp2[j]:(cp2[j + 1] - 1)
             push!(got, (rv2[r], j))
         end

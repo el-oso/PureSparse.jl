@@ -77,9 +77,9 @@ COLAMDOrdering(; dense_row_mult::Real = COLAMD_DENSE_ROW_MULT, dense_col_mult::R
 Identity permutation — no reordering.
 """
 struct NaturalOrdering <: AbstractOrdering end
-order(::NaturalOrdering, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti<:Integer} =
+order(::NaturalOrdering, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti <: Integer} =
     collect(Ti, 1:n)
-order_columns(::NaturalOrdering, m::Int, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti<:Integer} =
+order_columns(::NaturalOrdering, m::Int, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti <: Integer} =
     collect(Ti, 1:n)
 
 """
@@ -91,16 +91,22 @@ Use a caller-supplied permutation directly. The escape hatch for external orderi
 for symmetric- vs. column-space meaning) by both `order` and `order_columns` — the
 caller is responsible for supplying one that fits the call site.
 """
-struct GivenOrdering{Ti<:Integer} <: AbstractOrdering
+struct GivenOrdering{Ti <: Integer} <: AbstractOrdering
     perm::Vector{Ti}
 end
-function order(alg::GivenOrdering{Ti}, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti<:Integer}
-    length(alg.perm) == n || throw(DimensionMismatch(
-        "GivenOrdering: permutation has length $(length(alg.perm)), expected $n"))
+function order(alg::GivenOrdering{Ti}, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti <: Integer}
+    length(alg.perm) == n || throw(
+        DimensionMismatch(
+            "GivenOrdering: permutation has length $(length(alg.perm)), expected $n"
+        )
+    )
     return alg.perm
 end
-function order_columns(alg::GivenOrdering{Ti}, m::Int, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti<:Integer}
-    length(alg.perm) == n || throw(DimensionMismatch(
-        "GivenOrdering: permutation has length $(length(alg.perm)), expected $n"))
+function order_columns(alg::GivenOrdering{Ti}, m::Int, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti <: Integer}
+    length(alg.perm) == n || throw(
+        DimensionMismatch(
+            "GivenOrdering: permutation has length $(length(alg.perm)), expected $n"
+        )
+    )
     return alg.perm
 end

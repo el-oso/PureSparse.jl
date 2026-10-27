@@ -26,7 +26,7 @@ with elimination tree `parent` (also postordered; `parent[j]==0` marks a root). 
 """
 function column_counts(
         n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
-) where {Ti<:Integer}
+    ) where {Ti <: Integer}
     # Higher adjacency = transpose of the strict-upper pattern: column j of `hadj` holds
     # {i > j : A[i,j] ≠ 0} (row j of the upper triangle). The main pass needs row
     # structures in increasing j, which the upper CSC can't serve directly; one counting

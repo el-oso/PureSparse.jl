@@ -21,8 +21,10 @@ j+1; SuiteSparseQR does not use this restriction"). The two remaining conditions
 guarantee identical column patterns (paper, same sentence), so every pattern-dependent
 consumer of `super` (staircase logic, row structure) is unaffected by the flag.
 """
-function fundamental_supernodes(n::Int, parent::Vector{Ti}, colcount::Vector{Ti};
-        fundamental::Bool = true) where {Ti<:Integer}
+function fundamental_supernodes(
+        n::Int, parent::Vector{Ti}, colcount::Vector{Ti};
+        fundamental::Bool = true
+    ) where {Ti <: Integer}
     childcount = zeros(Ti, n)
     if fundamental
         @inbounds for j in 1:n
@@ -49,7 +51,7 @@ end
 `snode_of[j]` = the supernode containing column `j`. `sparent[s]` = the supernode
 containing `parent[last column of s]` (`0` if `s`'s last column is an etree root).
 """
-function supernode_tree(n::Int, nsuper::Int, super::Vector{Ti}, parent::Vector{Ti}) where {Ti<:Integer}
+function supernode_tree(n::Int, nsuper::Int, super::Vector{Ti}, parent::Vector{Ti}) where {Ti <: Integer}
     snode_of = Vector{Ti}(undef, n)
     @inbounds for s in 1:nsuper, j in super[s]:(super[s + 1] - 1)
         snode_of[j] = Ti(s)
@@ -64,7 +66,7 @@ end
 
 # Tier lookup for the merged-width thresholds in tuning.jl. Returns 0 (never merge) if
 # the merged width exceeds every tier.
-@inline function _amalg_tier(merged_cols::Int, amalg_cols::NTuple{3,Int})
+@inline function _amalg_tier(merged_cols::Int, amalg_cols::NTuple{3, Int})
     merged_cols <= amalg_cols[1] && return 1
     merged_cols <= amalg_cols[2] && return 2
     merged_cols <= amalg_cols[3] && return 3
@@ -75,7 +77,7 @@ end
 # absorbed supernode to the block that absorbed it (`owner[s] == s` while alive). Merges
 # only ever point a smaller index at a larger one (etree postorder ⇒ sparent > child), so
 # chains are strictly ascending and halving terminates.
-@inline function _find_owner(owner::Vector{Ti}, s::Ti) where {Ti<:Integer}
+@inline function _find_owner(owner::Vector{Ti}, s::Ti) where {Ti <: Integer}
     @inbounds while owner[s] != s
         owner[s] = owner[owner[s]]
         s = owner[s]
@@ -135,8 +137,8 @@ vs lower-triangular nonzeros) is unchanged from the single-pass version.
 """
 function relaxed_amalgamation(
         n::Int, nsuper::Int, super::Vector{Ti}, parent::Vector{Ti}, colcount::Vector{Ti};
-        amalg_cols::NTuple{3,Int} = AMALG_COLS, amalg_zmax::NTuple{3,Float64} = AMALG_ZMAX,
-) where {Ti<:Integer}
+        amalg_cols::NTuple{3, Int} = AMALG_COLS, amalg_zmax::NTuple{3, Float64} = AMALG_ZMAX,
+    ) where {Ti <: Integer}
     _, sparent = supernode_tree(n, nsuper, super, parent)
     start = Vector{Ti}(undef, nsuper)
     endc = Vector{Ti}(undef, nsuper)
@@ -215,7 +217,7 @@ descendant's propagated set can be smaller than the child's own first column).
 function supernode_rowind(
         n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
         nsuper::Int, super::Vector{Ti},
-) where {Ti<:Integer}
+    ) where {Ti <: Integer}
     # Transpose of the strict-upper pattern (same construction as column_counts): hadj
     # column c holds {i > c : A[c,i] ≠ 0} = the original below-diagonal seed for L's
     # column c (by symmetry of the unfilled pattern).

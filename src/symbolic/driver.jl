@@ -16,7 +16,7 @@ Symmetrize an arbitrary (possibly one-triangle-only, possibly with duplicate or 
 entries) sparse pattern into `pattern(A) ∪ pattern(Aᵀ)` with the diagonal removed, BOTH
 triangles stored — the input contract [`order`](@ref) expects (design.md §2.1).
 """
-function full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     idperm = collect(Ti, 1:n)
     ucolptr, urowval = symmetrized_upper(n, colptr, rowval, idperm, idperm)
     deg = zeros(Ti, n)
@@ -59,7 +59,7 @@ function assembly_map(
         A::SparseMatrixCSC, perm::Vector{Ti}, iperm::Vector{Ti},
         nsuper::Int, super::Vector{Ti}, snode_of::Vector{Ti},
         rowind_ptr::Vector{Ti}, rowind::Vector{Ti}, px::Vector{Ti},
-) where {Ti<:Integer}
+    ) where {Ti <: Integer}
     n = size(A, 1)
     colptr, rowvalA = A.colptr, A.rowval
     nz = length(rowvalA)
@@ -121,7 +121,7 @@ detection/relaxed amalgamation, row structure, panel offsets, and the numeric-lo
 assembly map. Computed once and shared by reference across every numeric factorization of
 a matrix with this sparsity pattern (design.md §1.2).
 """
-function symbolic(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering = AMDOrdering()) where {T,Ti<:Integer}
+function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrdering()) where {T, Ti <: Integer}
     n = size(A, 1)
     size(A, 2) == n || throw(DimensionMismatch("symbolic: A must be square, got $(size(A))"))
 

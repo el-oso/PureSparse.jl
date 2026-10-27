@@ -54,9 +54,11 @@ using PureSparse                       # PureSparse.ger! + LDLT_DELTA (faithful 
 # writes dvec + (thread 1) the inertia/dmax stats; the LAST-arriving group (monotonic
 # atomic counter — same ordering proof as _front_fused64!) writes the unit-lower factored
 # diagonal back.
-@kernel unsafe_indices = true function _ldl_front_fused64_v2!(A, B, n, m, @Const(sgn), dv,
-                                                              stats, delta, zeta, firstblk,
-                                                              cnt, target)
+@kernel unsafe_indices = true function _ldl_front_fused64_v2!(
+        A, B, n, m, @Const(sgn), dv,
+        stats, delta, zeta, firstblk,
+        cnt, target
+    )
     T = eltype(A)
     li = @index(Local, NTuple)            # (16,16)
     gi = @index(Group, Linear)
@@ -97,7 +99,7 @@ using PureSparse                       # PureSparse.ger! + LDLT_DELTA (faithful 
                 end
                 sg = sgn[j]
                 wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
-                            (sg == Int8(-1) && !(dj < zero(T)))
+                    (sg == Int8(-1) && !(dj < zero(T)))
                 if wrongsign || adj < delta           # signed regularization (dmax-independent)
                     tgt = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
                     newd = tgt * max(delta, adj); npert += 1
@@ -215,9 +217,11 @@ end
 # loop; then the strict upper triangle is filled with the D-SCALED transposed factor
 # Lds[k,j] = L11[j,k]·d_k, and each thread forward-substitutes one row of
 # L21·(D·L11ᵀ) = A21:  L21[i,j] = (A21[i,j] − Σ_{k<j} L21[i,k]·Lds[k,j])·(1/d_j).
-@kernel unsafe_indices = true function _ldl_front_fused64_v1!(A, B, n, m, @Const(sgn), dv,
-                                                              stats, delta, zeta, firstblk,
-                                                              cnt, target)
+@kernel unsafe_indices = true function _ldl_front_fused64_v1!(
+        A, B, n, m, @Const(sgn), dv,
+        stats, delta, zeta, firstblk,
+        cnt, target
+    )
     T = eltype(A)
     li = @index(Local, Linear)            # 1..256
     gi = @index(Group, Linear)
@@ -252,7 +256,7 @@ end
                 end
                 sg = sgn[j]
                 wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
-                            (sg == Int8(-1) && !(dj < zero(T)))
+                    (sg == Int8(-1) && !(dj < zero(T)))
                 if wrongsign || adj < delta
                     tgt = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
                     newd = tgt * max(delta, adj); npert += 1
@@ -338,8 +342,10 @@ end
 # keeping gr ≥ gc — the _syrk_trap_4x4! of ext/gpu_dense.jl with the block's signed D
 # folded into the A-side shared load (one extra multiply per staged element). This is the
 # right-looking trailing update U −= L̂·D̂·L̂ᵀ restricted to the remaining panel columns.
-@kernel unsafe_indices = true function _syrk_trap_d_4x4!(C, @Const(A), @Const(d), alpha,
-                                                         beta, M, N, K)
+@kernel unsafe_indices = true function _syrk_trap_d_4x4!(
+        C, @Const(A), @Const(d), alpha,
+        beta, M, N, K
+    )
     T = eltype(C)
     li = @index(Local, NTuple)
     gi = @index(Group, NTuple)
@@ -362,7 +368,7 @@ end
                 ml = p & 63; kl = p >> 6
                 gr = br + ml; gk = k0 + kl
                 As[ml + 1, kl + 1] = (gr < M && gk < K) ? A[gr + 1, gk + 1] * d[gk + 1] :
-                                     zero(T)
+                    zero(T)
                 gc = bc + ml
                 Bs[ml + 1, kl + 1] = (gc < N && gk < K) ? A[gc + 1, gk + 1] : zero(T)
             end
@@ -380,7 +386,7 @@ end
             gc = bc + (ty - 1) * 4 + (j - 1)
             if gr < M && gc < N && gr >= gc
                 C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
             end
         end
     end
@@ -446,8 +452,10 @@ trailing update, 1 launch]. The caller does the U_s Schur update separately.
 `mode`: `:fused` (v1 row-solve) | `:fused2` (v2 block-inverse multiply) | `:auto`
 (v2 iff panel rows ≤ LDL_FUSE_M_MAX[]).
 """
-function gpu_ldlt_front!(P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
-                         nb::Int = 64, mode::Symbol = :auto)
+function gpu_ldlt_front!(
+        P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
+        nb::Int = 64, mode::Symbol = :auto
+    )
     nsrow = size(P, 1)
     n = nscol
     @assert size(P, 2) == n && nsrow >= n
@@ -468,13 +476,17 @@ function gpu_ldlt_front!(P, nscol::Int, sgn, dv, delta, zeta, ws::LDLFrontWS;
         md = mode == :auto ? (m <= LDL_FUSE_M_MAX[] ? :fused2 : :fused) : mode
         if md == :fused2 || m == 0
             G = max(cld(m, 64), 1)
-            f2(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
-               ws.arrivals + G; ndrange = (G * 16, 16))
+            f2(
+                D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
+                ws.arrivals + G; ndrange = (G * 16, 16)
+            )
             ws.arrivals += G
         else                                          # :fused (v1)
             G = max(cld(m, 256), 1)
-            f1(D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
-               ws.arrivals + G; ndrange = G * 256)
+            f1(
+                D, Bv, jb, m, sv, dvv, ws.stats, T(delta), T(zeta), fb, ws.cnt,
+                ws.arrivals + G; ndrange = G * 256
+            )
             ws.arrivals += G
         end
         if j1 < n                         # trailing trapezoid: rows j1+1..nsrow, cols j1+1..n
@@ -491,8 +503,10 @@ end
 # lines 202–224), dense, verbatim semantics.
 # =======================================================================================
 
-function cpu_ldl_front!(P::Matrix{Float64}, signs::Vector{Int8}, delta::Float64,
-                        zeta::Float64)
+function cpu_ldl_front!(
+        P::Matrix{Float64}, signs::Vector{Int8}, delta::Float64,
+        zeta::Float64
+    )
     nsrow, nscol = size(P)
     dvec = zeros(nscol)
     np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; dmax = 0.0
@@ -536,9 +550,13 @@ function ldl_block_cpu!(block::AbstractMatrix{T}, sg, delta::T, zeta::T) where {
     np = 0; nn = 0; nz = 0; npert = 0; maxp = 0.0; dmax = zero(T)
     @inbounds for j in 1:nscol
         dj = block[j, j]; adj = abs(dj)
-        if adj <= zeta * max(dmax, delta); nz += 1
-        elseif dj > zero(T); np += 1
-        else; nn += 1 end
+        if adj <= zeta * max(dmax, delta)
+            nz += 1
+        elseif dj > zero(T)
+            np += 1
+        else
+            nn += 1
+        end
         s = sg[j]
         wrong = (s == Int8(1) && !(dj > zero(T))) || (s == Int8(-1) && !(dj < zero(T)))
         if wrong || adj < delta
@@ -548,7 +566,9 @@ function ldl_block_cpu!(block::AbstractMatrix{T}, sg, delta::T, zeta::T) where {
         end
         dvals[j] = dj; ad = abs(dj); ad > dmax && (dmax = ad)
         block[j, j] = one(T); invd = inv(dj)
-        for i in (j + 1):nscol; block[i, j] *= invd; end
+        for i in (j + 1):nscol
+            block[i, j] *= invd
+        end
         if j < nscol
             lc = view(block, (j + 1):nscol, j); tr = view(block, (j + 1):nscol, (j + 1):nscol)
             PureSparse.ger!(-dj, lc, lc, tr)
@@ -568,7 +588,9 @@ end
 function path_test(mode::Symbol, ws::LDLFrontWS)
     n = 100; below = 200; nsrow = n + below
     dl = ones(n); sg = Int8[k % 3 == 0 ? -1 : 1 for k in 1:n]
-    for k in 1:n; dl[k] = sg[k] == Int8(1) ? 1.0 : -1.0; end
+    for k in 1:n
+        dl[k] = sg[k] == Int8(1) ? 1.0 : -1.0
+    end
     dl[1] = 1.0e6;  sg[1] = Int8(1)       # sets dmax carry for block 2
     dl[2] = -2.0;   sg[2] = Int8(-1)
     dl[5] = 0.0;    sg[5] = Int8(1)       # exact zero → n_zero + perturbed (wrongsign)
@@ -577,7 +599,9 @@ function path_test(mode::Symbol, ws::LDLFrontWS)
     dl[66] = -3.0;  sg[66] = Int8(1)      # wrong sign → perturbed (raw counts n_neg)
     dl[70] = -0.5;  sg[70] = Int8(0)      # sg==0: no perturbation, counts by value
     P = zeros(nsrow, n)
-    for k in 1:n; P[k, k] = dl[k]; end
+    for k in 1:n
+        P[k, k] = dl[k]
+    end
     P[(n + 1):nsrow, :] .= randn(below, n)
     delta = PureSparse.LDLT_DELTA * 1.0e6; zeta = eps(Float64)
     Pref = copy(P)
@@ -595,11 +619,13 @@ function path_test(mode::Symbol, ws::LDLFrontWS)
     relL = norm(hp - Pref) / norm(Pref)
     relD = norm(hd - dref) / norm(dref)
     inert = (Int(st[1]), Int(st[2]), Int(st[3]))
-    ok = relL <= 1e-15 && relD <= 1e-15 && inert == (sref[1], sref[2], sref[3]) &&
-         Int(st[4]) == sref[4] && abs(st[5] - sref[5]) <= 1e-9 * max(1.0, sref[5])
-    @printf("path test mode=%-7s relL=%.1e relD=%.1e inertia=%s ref=%s npert=%d/%d  %s\n",
-            mode, relL, relD, inert, (sref[1], sref[2], sref[3]), Int(st[4]), sref[4],
-            ok ? "PASS" : "FAIL")
+    ok = relL <= 1.0e-15 && relD <= 1.0e-15 && inert == (sref[1], sref[2], sref[3]) &&
+        Int(st[4]) == sref[4] && abs(st[5] - sref[5]) <= 1.0e-9 * max(1.0, sref[5])
+    @printf(
+        "path test mode=%-7s relL=%.1e relD=%.1e inertia=%s ref=%s npert=%d/%d  %s\n",
+        mode, relL, relD, inert, (sref[1], sref[2], sref[3]), Int(st[4]), sref[4],
+        ok ? "PASS" : "FAIL"
+    )
     foreach(CUDA.unsafe_free!, (dP, d_sg, d_dv))
     return ok
 end
@@ -608,13 +634,17 @@ end
 # Validation + benchmark on the REAL KKT crown-front shapes
 # =======================================================================================
 
-const SHAPES = [(55, 754), (152, 671), (234, 1436), (314, 1464),
-                (615, 4231), (859, 3587), (1064, 1273)]
+const SHAPES = [
+    (55, 754), (152, 671), (234, 1436), (314, 1464),
+    (615, 4231), (859, 3587), (1064, 1273),
+]
 # Count weights: the measured 44³-KKT bucket counts (75/53/19/4/2 by nscol bucket, cf.
 # pure_potrf_opt.jl BUCKETS), split evenly across this file's representatives per bucket.
-const COUNTW = Dict((55, 754) => 75.0, (152, 671) => 53.0, (234, 1436) => 9.5,
-                    (314, 1464) => 9.5, (615, 4231) => 2.0, (859, 3587) => 2.0,
-                    (1064, 1273) => 2.0)
+const COUNTW = Dict(
+    (55, 754) => 75.0, (152, 671) => 53.0, (234, 1436) => 9.5,
+    (314, 1464) => 9.5, (615, 4231) => 2.0, (859, 3587) => 2.0,
+    (1064, 1273) => 2.0
+)
 
 front_flops(nscol, below) = nscol^3 / 3 + Float64(below) * nscol^2
 
@@ -648,7 +678,7 @@ function timeit(op!, dst, src; reps = 9)
         copyto!(dst, src); CUDA.synchronize()
         t0 = time_ns()
         op!(dst); CUDA.synchronize()
-        push!(ts, (time_ns() - t0) / 1e9)
+        push!(ts, (time_ns() - t0) / 1.0e9)
     end
     return med(ts)
 end
@@ -657,9 +687,11 @@ function bench(ws::LDLFrontWS)
     T = Float64
     zeta = eps(Float64)
     @printf("\n== fused pure signed-LDL front vs vendor (CPU _ldl_block! D2H/H2D + cuBLAS trsm + colscale) ==\n")
-    @printf("%6s %6s | %7s | %9s %9s | %9s %9s %9s | %8s %8s\n",
-            "nscol", "below", "GFlop", "vendor", "venddiag", "fused", "fused2", "auto",
-            "vs vend", "(auto)")
+    @printf(
+        "%6s %6s | %7s | %9s %9s | %9s %9s %9s | %8s %8s\n",
+        "nscol", "below", "GFlop", "vendor", "venddiag", "fused", "fused2", "auto",
+        "vs vend", "(auto)"
+    )
     tim = Dict{Tuple{Int, Int}, Dict{Symbol, Float64}}()
     allpass = true
     valrows = String[]
@@ -672,7 +704,9 @@ function bench(ws::LDLFrontWS)
         Pref = copy(P)
         dref, sref = cpu_ldl_front!(Pref, signs, delta, zeta)
         maskP = copy(Pref)
-        for j in 2:nscol, i in 1:(j - 1); maskP[i, j] = 0.0; end
+        for j in 2:nscol, i in 1:(j - 1)
+            maskP[i, j] = 0.0
+        end
         nrmL = norm(maskP); nrmD = norm(dref)
         src = CuArray{T}(P); dP = similar(src); dV = similar(src)
         d_sg = CuArray(signs); d_dv = CUDA.zeros(T, nscol)
@@ -694,8 +728,10 @@ function bench(ws::LDLFrontWS)
                 L21 = view(X, (nscol + 1):nsrow, 1:nscol)
                 trsm!('R', 'L', 'T', 'U', one(T), view(X, 1:nscol, 1:nscol), L21)
                 nd = cld(below * nscol, 256) * 256
-                _col_scale!(backend, 256)(L21, L21, d_dv, 0, true, below, nscol;
-                                          ndrange = nd)
+                _col_scale!(backend, 256)(
+                    L21, L21, d_dv, 0, true, below, nscol;
+                    ndrange = nd
+                )
             end
         end
         # --- validation (gate: relL ≤ 1e-9, relD ≤ 1e-9, inertia EXACT) ---
@@ -703,7 +739,9 @@ function bench(ws::LDLFrontWS)
             copyto!(dP, src); CUDA.fill!(ws.stats, 0.0)
             op!(dP); CUDA.synchronize()
             hp = Array(dP); hd = Array(d_dv)
-            for j in 2:nscol, i in 1:(j - 1); hp[i, j] = 0.0; end
+            for j in 2:nscol, i in 1:(j - 1)
+                hp[i, j] = 0.0
+            end
             relL = norm(hp - maskP) / nrmL
             relD = norm(hd - dref) / nrmD
             if name == :vendor            # vendor inertia comes from its CPU block
@@ -716,17 +754,23 @@ function bench(ws::LDLFrontWS)
                 inert = (Int(st[1]), Int(st[2]), Int(st[3])); npe = Int(st[4]); mp = st[5]
             end
             iok = inert == (sref[1], sref[2], sref[3]) && npe == sref[4]
-            mok = abs(mp - sref[5]) <= 1e-9 * max(1.0, sref[5])
-            pass = relL <= 1e-9 && relD <= 1e-9 && iok && mok
-            push!(valrows,
-                  @sprintf("%6d %6d %-7s relL=%.2e relD=%.2e inertia=%s ref=%s npert=%d/%d maxpert=%.3e/%.3e  %s",
-                           nscol, below, name, relL, relD, inert,
-                           (sref[1], sref[2], sref[3]), npe, sref[4], mp, sref[5],
-                           pass ? "PASS" : "FAIL"))
+            mok = abs(mp - sref[5]) <= 1.0e-9 * max(1.0, sref[5])
+            pass = relL <= 1.0e-9 && relD <= 1.0e-9 && iok && mok
+            push!(
+                valrows,
+                @sprintf(
+                    "%6d %6d %-7s relL=%.2e relD=%.2e inertia=%s ref=%s npert=%d/%d maxpert=%.3e/%.3e  %s",
+                    nscol, below, name, relL, relD, inert,
+                    (sref[1], sref[2], sref[3]), npe, sref[4], mp, sref[5],
+                    pass ? "PASS" : "FAIL"
+                )
+            )
             return pass
         end
-        for (op!, nm) in ((pure_auto!, :auto), (pure_f1!, :fused), (pure_f2!, :fused2),
-                          (vend!, :vendor))
+        for (op!, nm) in (
+                (pure_auto!, :auto), (pure_f1!, :fused), (pure_f2!, :fused2),
+                (vend!, :vendor),
+            )
             allpass &= validate(op!, nm)
         end
         # --- timing ---
@@ -737,11 +781,13 @@ function bench(ws::LDLFrontWS)
         tm[:fused2] = timeit(pure_f2!, dP, src)
         tm[:auto] = timeit(pure_auto!, dP, src)
         tim[(nscol, below)] = tm
-        @printf("%6d %6d | %7.3f | %9.1f %9.1f | %9.1f %9.1f %9.1f | %7.2fx\n",
-                nscol, below, front_flops(nscol, below) / 1e9,
-                tm[:vendor] * 1e6, tm[:venddiag] * 1e6,
-                tm[:fused] * 1e6, tm[:fused2] * 1e6, tm[:auto] * 1e6,
-                tm[:vendor] / tm[:auto])
+        @printf(
+            "%6d %6d | %7.3f | %9.1f %9.1f | %9.1f %9.1f %9.1f | %7.2fx\n",
+            nscol, below, front_flops(nscol, below) / 1.0e9,
+            tm[:vendor] * 1.0e6, tm[:venddiag] * 1.0e6,
+            tm[:fused] * 1.0e6, tm[:fused2] * 1.0e6, tm[:auto] * 1.0e6,
+            tm[:vendor] / tm[:auto]
+        )
         foreach(CUDA.unsafe_free!, (src, dP, dV, d_sg, d_dv))
     end
     @printf("\n== validation vs cpu_multifrontal_ldlt! column loop (gates: relL ≤ 1e-9, relD ≤ 1e-9, inertia EXACT) ==\n")
@@ -749,14 +795,20 @@ function bench(ws::LDLFrontWS)
     println(allpass ? "ALL PASS" : "SOME FAIL")
     # aggregates
     @printf("\n== aggregates over the shape mix ==\n")
-    for (wname, w, s) in (("count-weighted (44³ bucket counts)", sh -> COUNTW[sh], 1.0),
-                          ("flop-weighted (normalized)", sh -> front_flops(sh...),
-                           sum(front_flops(sh...) for sh in SHAPES) /
-                           sum(COUNTW[sh] for sh in SHAPES)))
+    for (wname, w, s) in (
+            ("count-weighted (44³ bucket counts)", sh -> COUNTW[sh], 1.0),
+            (
+                "flop-weighted (normalized)", sh -> front_flops(sh...),
+                sum(front_flops(sh...) for sh in SHAPES) /
+                    sum(COUNTW[sh] for sh in SHAPES),
+            ),
+        )
         tv = sum(w(sh) * tim[sh][:vendor] for sh in SHAPES) / s
         ta = sum(w(sh) * tim[sh][:auto] for sh in SHAPES) / s
-        @printf("%-36s vendor=%9.3f ms  pure(auto)=%9.3f ms  speedup=%5.2fx\n",
-                wname, tv * 1e3, ta * 1e3, tv / ta)
+        @printf(
+            "%-36s vendor=%9.3f ms  pure(auto)=%9.3f ms  speedup=%5.2fx\n",
+            wname, tv * 1.0e3, ta * 1.0e3, tv / ta
+        )
     end
     return allpass
 end
@@ -792,7 +844,7 @@ function main()
     ok &= bench(ws)
     check_zero_alloc(ws)
     println(ok ? "\nALL GATES PASS" : "\nGATE FAILURES — see above")
-    println("done.")
+    return println("done.")
 end
 
 main()

@@ -12,7 +12,7 @@ for each entry, its ORIGINAL position in `colptr`/`rowval`/`nzval`, so callers c
 fetch `nzval[rowpos[k]]` without a separate value copy). Column-ascending scatter
 order keeps each row's entries sorted by column, same as `csc_transpose`.
 """
-function _row_form_values(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function _row_form_values(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     deg = zeros(Ti, m)
     @inbounds for p in eachindex(rowval)
         deg[rowval[p]] += one(Ti)
@@ -48,7 +48,7 @@ no fill — the "reflector" for a length-1 pivot vector is a pure sign/scale, §
 symbolic/numeric pipeline to handle — not a bug, §2.3's "values, not just pattern"
 policy point.
 """
-function peel_column_singletons(A::SparseMatrixCSC{T,Ti}, threshold::T) where {T<:Real,Ti<:Integer}
+function peel_column_singletons(A::SparseMatrixCSC{T, Ti}, threshold::T) where {T <: Real, Ti <: Integer}
     m, n = size(A)
     rowptr, rowidx, rowpos = _row_form_values(m, n, A.colptr, A.rowval)
 
@@ -116,7 +116,7 @@ relative column order among the columns it actually still has a say over is what
 "same ordering, modulo our own preprocessing" means here.
 """
 _restrict_ordering(ordering::AbstractOrdering, ::BitVector, ::Vector) = ordering
-function _restrict_ordering(ordering::GivenOrdering{Ti}, collive::BitVector, surv_cols::Vector{Ti}) where {Ti<:Integer}
+function _restrict_ordering(ordering::GivenOrdering{Ti}, collive::BitVector, surv_cols::Vector{Ti}) where {Ti <: Integer}
     n = length(collive)
     local_of = Vector{Ti}(undef, n)
     @inbounds for (k, j) in enumerate(surv_cols)
@@ -139,8 +139,8 @@ In-place insertion sort of `colind[c0+1:c0+deg]` (and `val` in lockstep) by asce
 `colind`. A standalone function so its `while`-inside-`for` compiles as its own small
 LLVM unit — see the call site's comment in [`_qr_compose_singletons`](@ref).
 """
-function _insort_row!(colind::Vector{Ti}, val::Vector{T}, c0::Ti, deg::Ti) where {T,Ti<:Integer}
-    @inbounds for i in Ti(2):deg
+function _insort_row!(colind::Vector{Ti}, val::Vector{T}, c0::Ti, deg::Ti) where {T, Ti <: Integer}
+    return @inbounds for i in Ti(2):deg
         cj = colind[c0 + i - one(Ti)]
         vj = val[c0 + i - one(Ti)]
         jj = i - one(Ti)
@@ -174,10 +174,10 @@ special-casing for the singleton rows at all — only `solve!`'s back-substituti
 (§6.2's "PREPENDED" singleton-block solve).
 """
 function _qr_compose_singletons(
-        A::SparseMatrixCSC{T,Ti}, peel_col::Vector{Ti}, peel_row::Vector{Ti},
+        A::SparseMatrixCSC{T, Ti}, peel_col::Vector{Ti}, peel_row::Vector{Ti},
         collive::BitVector, rowlive::BitVector,
-        ordering::AbstractOrdering, tol::Union{Nothing,Real},
-) where {T,Ti<:Integer}
+        ordering::AbstractOrdering, tol::Union{Nothing, Real},
+    ) where {T, Ti <: Integer}
     m, n = size(A)
     n1 = length(peel_col)
 
@@ -338,14 +338,14 @@ function _qr_compose_singletons(
     # uninitialized garbage (confirmed: caused a real segfault via an out-of-bounds
     # `ws.rcursor[k]`-driven loop bound in solve_R!, caught by testing this task's
     # zero-alloc changes before committing).
-    ws = QRWorkspace{T,Ti}(
+    ws = QRWorkspace{T, Ti}(
         F22.ws.x, F22.ws.stamp, F22.ws.tsub, F22.ws.pack, F22.ws.rcursor,
         Vector{T}(undef, max(nb, 1)),
         Vector{T}(undef, max(n1, 1)),
         Vector{T}(undef, max(n1, 1)),
     )
 
-    return QRFactor{T,Ti}(
+    return QRFactor{T, Ti}(
         sym, F22.rcolind, F22.rval, F22.vval, F22.beta,
         r1ptr, r1colind, r1val,
         # §2.3 warm-refactor state: bsym is F22's OWN symbolic (block-local

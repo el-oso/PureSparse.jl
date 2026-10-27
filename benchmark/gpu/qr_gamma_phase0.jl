@@ -91,10 +91,18 @@ end
     end
 end
 
-pure_tn!(W, V, C, M, N, K, P) = (_gemm_tn_batched!(get_backend(W), (16, 16, 1))(W, V, C, M, N, K;
-    ndrange = (cld(M, 64) * 16, cld(N, 64) * 16, P)); KA.synchronize(get_backend(W)))
-pure_nn!(Y, V, M2, R, N, K, P) = (_gemm_nn_batched!(get_backend(Y), (16, 16, 1))(Y, V, M2, R, N, K;
-    ndrange = (cld(R, 64) * 16, cld(N, 64) * 16, P)); KA.synchronize(get_backend(Y)))
+pure_tn!(W, V, C, M, N, K, P) = (
+    _gemm_tn_batched!(get_backend(W), (16, 16, 1))(
+        W, V, C, M, N, K;
+        ndrange = (cld(M, 64) * 16, cld(N, 64) * 16, P)
+    ); KA.synchronize(get_backend(W))
+)
+pure_nn!(Y, V, M2, R, N, K, P) = (
+    _gemm_nn_batched!(get_backend(Y), (16, 16, 1))(
+        Y, V, M2, R, N, K;
+        ndrange = (cld(R, 64) * 16, cld(N, 64) * 16, P)
+    ); KA.synchronize(get_backend(Y))
+)
 
 function gpu_ms(f, reps)
     f(); CUDA.synchronize()
@@ -102,7 +110,7 @@ function gpu_ms(f, reps)
     for _ in 1:reps
         push!(ts, CUDA.@elapsed f())
     end
-    return median(ts) * 1e3
+    return median(ts) * 1.0e3
 end
 
 const RB = 192; const NB = 32; const REPS = 200
@@ -110,9 +118,11 @@ const SHAPES = [(nt, P) for nt in (256, 512, 1024, 2048) for P in (16, 32, 43)]
 
 println("M7 Phase-0c: batched WY-apply gemm  γ = cublasStridedBatched / pure-KA   (rb=$RB, nb=$NB)")
 println("GPU: ", CUDA.name(CUDA.device()))
-println(rpad("n_trail×P", 12), rpad("shape", 8),
-        rpad("errchk", 11), rpad("pure ms", 10), rpad("cublas ms", 11), "γ (cublas/pure)")
-results = Dict{String,Any}[]
+println(
+    rpad("n_trail×P", 12), rpad("shape", 8),
+    rpad("errchk", 11), rpad("pure ms", 10), rpad("cublas ms", 11), "γ (cublas/pure)"
+)
+results = Dict{String, Any}[]
 for (ntr, P) in SHAPES
     # tn:  W = Vᵀ C.  V: rb×nb×P, C: rb×ntr×P, W: nb×ntr×P
     V = CUDA.randn(Float64, RB, NB, P); Ct = CUDA.randn(Float64, RB, ntr, P)
@@ -121,38 +131,54 @@ for (ntr, P) in SHAPES
     Wc = CUDA.zeros(Float64, NB, ntr, P)
     CUDA.CUBLAS.gemm_strided_batched!('T', 'N', 1.0, V, Ct, 0.0, Wc)
     etn = norm(Array(W) - Array(Wc)) / norm(Array(Wc))
-    @assert etn < 1e-8 "tn kernel WRONG (rel err $etn) at n_trail=$ntr P=$P — refusing to time garbage"
+    @assert etn < 1.0e-8 "tn kernel WRONG (rel err $etn) at n_trail=$ntr P=$P — refusing to time garbage"
     tn_pure = gpu_ms(() -> pure_tn!(W, V, Ct, NB, ntr, RB, P), REPS)
-    tn_cub  = gpu_ms(() -> CUDA.CUBLAS.gemm_strided_batched!('T', 'N', 1.0, V, Ct, 0.0, Wc), REPS)
+    tn_cub = gpu_ms(() -> CUDA.CUBLAS.gemm_strided_batched!('T', 'N', 1.0, V, Ct, 0.0, Wc), REPS)
     # nn:  Y = V M2.   V: rb×nb×P, M2: nb×ntr×P, Y: rb×ntr×P
     M2 = CUDA.randn(Float64, NB, ntr, P); Y = CUDA.zeros(Float64, RB, ntr, P)
     pure_nn!(Y, V, M2, RB, ntr, NB, P)
     Yc = CUDA.zeros(Float64, RB, ntr, P)
     CUDA.CUBLAS.gemm_strided_batched!('N', 'N', 1.0, V, M2, 0.0, Yc)
     enn = norm(Array(Y) - Array(Yc)) / norm(Array(Yc))
-    @assert enn < 1e-8 "nn kernel WRONG (rel err $enn) at n_trail=$ntr P=$P"
+    @assert enn < 1.0e-8 "nn kernel WRONG (rel err $enn) at n_trail=$ntr P=$P"
     nn_pure = gpu_ms(() -> pure_nn!(Y, V, M2, RB, ntr, NB, P), REPS)
-    nn_cub  = gpu_ms(() -> CUDA.CUBLAS.gemm_strided_batched!('N', 'N', 1.0, V, M2, 0.0, Yc), REPS)
+    nn_cub = gpu_ms(() -> CUDA.CUBLAS.gemm_strided_batched!('N', 'N', 1.0, V, M2, 0.0, Yc), REPS)
     g_tn = tn_cub / tn_pure; g_nn = nn_cub / nn_pure
     g_wy = (tn_cub + nn_cub) / (tn_pure + nn_pure)     # combined WY-apply γ (what the front model uses)
-    push!(results, Dict("n_trail" => ntr, "P" => P, "err_tn" => etn, "err_nn" => enn,
-        "tn_pure" => tn_pure, "tn_cub" => tn_cub, "nn_pure" => nn_pure, "nn_cub" => nn_cub,
-        "gamma_tn" => g_tn, "gamma_nn" => g_nn, "gamma_wy" => g_wy))
-    println(rpad("$(ntr)×$(P)", 12), rpad("e=$(round(etn,sigdigits=1))/$(round(enn,sigdigits=1))", 16),
-            "γtn=", round(g_tn, digits = 3), "  γnn=", round(g_nn, digits = 3),
-            "  γWY=", round(g_wy, digits = 3))
+    push!(
+        results, Dict(
+            "n_trail" => ntr, "P" => P, "err_tn" => etn, "err_nn" => enn,
+            "tn_pure" => tn_pure, "tn_cub" => tn_cub, "nn_pure" => nn_pure, "nn_cub" => nn_cub,
+            "gamma_tn" => g_tn, "gamma_nn" => g_nn, "gamma_wy" => g_wy
+        )
+    )
+    println(
+        rpad("$(ntr)×$(P)", 12), rpad("e=$(round(etn, sigdigits = 1))/$(round(enn, sigdigits = 1))", 16),
+        "γtn=", round(g_tn, digits = 3), "  γnn=", round(g_nn, digits = 3),
+        "  γWY=", round(g_wy, digits = 3)
+    )
 end
 gwy = [x["gamma_wy"] for x in results]; gtn = [x["gamma_tn"] for x in results]; gnn = [x["gamma_nn"] for x in results]
-println("\nγ_WY (combined, front model uses this):  min ", round(minimum(gwy), digits = 3),
-        "  median ", round(median(gwy), digits = 3), "  max ", round(maximum(gwy), digits = 3))
-println("γ_tn (tall-K, the hard one):             min ", round(minimum(gtn), digits = 3),
-        "  median ", round(median(gtn), digits = 3), "  max ", round(maximum(gtn), digits = 3))
-println("γ_nn (small-K):                          min ", round(minimum(gnn), digits = 3),
-        "  median ", round(median(gnn), digits = 3), "  max ", round(maximum(gnn), digits = 3))
+println(
+    "\nγ_WY (combined, front model uses this):  min ", round(minimum(gwy), digits = 3),
+    "  median ", round(median(gwy), digits = 3), "  max ", round(maximum(gwy), digits = 3)
+)
+println(
+    "γ_tn (tall-K, the hard one):             min ", round(minimum(gtn), digits = 3),
+    "  median ", round(median(gtn), digits = 3), "  max ", round(maximum(gtn), digits = 3)
+)
+println(
+    "γ_nn (small-K):                          min ", round(minimum(gnn), digits = 3),
+    "  median ", round(median(gnn), digits = 3), "  max ", round(maximum(gnn), digits = 3)
+)
 println("\nInterpretation (Opus BLOCKER-1): γ_WY ≥ ~1.1 → TSQR pure win plausible; γ_WY ≈ 1.0 → budget")
 println("inverts, neither pure nor vendor-hybrid beats geqrf per-front; M7 → beat-SPQR-end-to-end only.")
 open("qr_gamma_phase0.json", "w") do io
-    JSON.print(io, Dict("gpu" => CUDA.name(CUDA.device()), "rb" => RB, "nb" => NB,
-        "reps" => REPS, "results" => results), 2)
+    JSON.print(
+        io, Dict(
+            "gpu" => CUDA.name(CUDA.device()), "rb" => RB, "nb" => NB,
+            "reps" => REPS, "results" => results
+        ), 2
+    )
 end
 println("wrote qr_gamma_phase0.json")

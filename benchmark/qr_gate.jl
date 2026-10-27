@@ -74,8 +74,10 @@ _median_time(b) = median(_times(b))
 @noinline _spqr_solve(F, b) = F \ b
 @noinline _ata_cholesky_cold(A) = PureSparse.cholesky(sparse(A' * A); ordering = PureSparse.AMDOrdering())
 
-const FAER_LIB = joinpath(homedir(), "Documents", "claude", "BlazingPorts.jl", "bench",
-    "rust_compare", "rust", "target", "release", "libblazing_compare.so")
+const FAER_LIB = joinpath(
+    homedir(), "Documents", "claude", "BlazingPorts.jl", "bench",
+    "rust_compare", "rust", "target", "release", "libblazing_compare.so"
+)
 const FAER_AVAILABLE = isfile(FAER_LIB)
 FAER_AVAILABLE || @warn "faer shared library not found at $FAER_LIB — faer context arm skipped on this host" *
     " (build via: cd \$(BlazingPorts.jl)/bench/rust_compare/rust && cargo build --release --lib)"
@@ -86,9 +88,11 @@ FAER_AVAILABLE || @warn "faer shared library not found at $FAER_LIB — faer con
     m, n = size(A)
     colptr0 = Csize_t.(A.colptr .- 1)
     rowval0 = Csize_t.(A.rowval .- 1)
-    return ccall((:faer_sparse_qr, FAER_LIB), Float64,
+    return ccall(
+        (:faer_sparse_qr, FAER_LIB), Float64,
         (Csize_t, Csize_t, Csize_t, Ptr{Csize_t}, Ptr{Csize_t}, Ptr{Float64}),
-        m, n, nnz(A), colptr0, rowval0, A.nzval)
+        m, n, nnz(A), colptr0, rowval0, A.nzval
+    )
 end
 
 # One (label, A, stratum) gate matrix, one arm ("own" or "same-perm"): cold PureSparse
@@ -96,7 +100,7 @@ end
 # AᵀA context arm.
 function bench_one(label::String, A::SparseMatrixCSC, stratum::String, arm::String)
     m, n = size(A)
-    result = Dict{String,Any}("matrix" => label, "m" => m, "n" => n, "nnz" => nnz(A), "stratum" => stratum, "arm" => arm)
+    result = Dict{String, Any}("matrix" => label, "m" => m, "n" => n, "nnz" => nnz(A), "stratum" => stratum, "arm" => arm)
     b = randn(m)
 
     # Both arms use the realistic product default (singletons on). Used to be
@@ -256,10 +260,12 @@ end
 function print_verdict(payload)
     results = payload["results"]
     println("\n=== M5 sparse QR wall-time gate (design_qr.md §9.3 D13 / design_qr_m5b.md §A5.6) — best-of PS WARM refactor vs SPQR cold, median seconds ===")
-    println(rpad("matrix", 26), rpad("stratum", 14), rpad("arm", 10), rpad("PS col warm", 13),
-        rpad("PS front warm", 15), rpad("SPQR cold", 12), rpad("PS cold(rep)", 14), "gate(best PS warm<SPQR cold)")
+    println(
+        rpad("matrix", 26), rpad("stratum", 14), rpad("arm", 10), rpad("PS col warm", 13),
+        rpad("PS front warm", 15), rpad("SPQR cold", 12), rpad("PS cold(rep)", 14), "gate(best PS warm<SPQR cold)"
+    )
     npass = 0; ntotal = 0
-    by_stratum = Dict{String,Tuple{Int,Int}}()
+    by_stratum = Dict{String, Tuple{Int, Int}}()
     for r in results
         ntotal += 1
         # D13: the gate is on the BEST of PureSparse's own WARM refactor times (§A5.6's
@@ -294,7 +300,7 @@ function print_verdict(payload)
     println("Design_qr.md §9.3 (D13-corrected) M5 closeout gate requires: EVERY stratum passes, both arms —")
     println("no fudge factor. Warm path is StrictMode @assert_noalloc-verified zero-allocation,")
     println("so this comparison carries no GC exposure on the PureSparse side.")
-    println(npass == ntotal ? "OVERALL: PASS (M5 gate met)" : "OVERALL: NOT YET PASSING")
+    return println(npass == ntotal ? "OVERALL: PASS (M5 gate met)" : "OVERALL: NOT YET PASSING")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

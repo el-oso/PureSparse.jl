@@ -53,9 +53,11 @@ function random_sqd_kkt_s(rng, npos::Int, nneg::Int, density::Float64)
     n = npos + nneg
     I_ = Int[]; J_ = Int[]; V_ = Float64[]
     rowsum = zeros(n)
-    addsym!(i, j, v) = (push!(I_, i); push!(J_, j); push!(V_, v);
+    addsym!(i, j, v) = (
+        push!(I_, i); push!(J_, j); push!(V_, v);
         i != j && (push!(I_, j); push!(J_, i); push!(V_, v));
-        rowsum[i] += abs(v); i != j && (rowsum[j] += abs(v)))
+        rowsum[i] += abs(v); i != j && (rowsum[j] += abs(v))
+    )
     for j in 1:npos, i in (j + 1):npos
         rand(rng) < density && addsym!(i, j, randn(rng))
     end
@@ -80,7 +82,7 @@ end
         K = random_spd(rng, n, density)
         F = PureSparse.ldlt(K)
         G = simplicial(F)
-        @test G isa SimplicialLDLFactor{Float64,Int}
+        @test G isa SimplicialLDLFactor{Float64, Int}
         @test PureSparse.issuccess(G)
         @test G.d == F.d
         @test relerr(reconstruct_original(G), dense_sym(K)) < 1.0e-12

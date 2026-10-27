@@ -48,8 +48,8 @@ using Preferences: @load_preference
 # tuple representation), so an `::NTuple{3,T}` typeassert on the raw result throws the
 # moment anyone actually overrides these via Preferences — `Tuple(...)` converts either
 # the Vector default or a loaded Vector override uniformly.
-const AMALG_COLS = Tuple(@load_preference("amalg_cols", [16, 64, 128]))::NTuple{3,Int}
-const AMALG_ZMAX = Tuple(@load_preference("amalg_zmax", [0.97, 0.35, 0.08]))::NTuple{3,Float64}
+const AMALG_COLS = Tuple(@load_preference("amalg_cols", [16, 64, 128]))::NTuple{3, Int}
+const AMALG_ZMAX = Tuple(@load_preference("amalg_zmax", [0.97, 0.35, 0.08]))::NTuple{3, Float64}
 
 # AMD dense-row multiplier (design.md §2.2 pt 6). Attribution: the AMD *package's*
 # documented user-guide default (`AMD_DENSE = 10`), not the 1996 paper's algorithm text
@@ -61,10 +61,10 @@ const AMD_DENSE_FLOOR = 16
 # Signed-regularization floor for LDLᵀ/SQD factorization (design.md §5.1), relative to
 # the matrix's diagonal scale (`δ_j = LDLT_DELTA * ‖A‖-scale`). QDLDL/Clarabel-style
 # default magnitude.
-const LDLT_DELTA = @load_preference("ldlt_delta", 1e-12)::Float64
+const LDLT_DELTA = @load_preference("ldlt_delta", 1.0e-12)::Float64
 
 # Per-supernode flop threshold above which the GPU path engages (design.md §8, M3).
-const GPU_FLOP_THRESHOLD = @load_preference("gpu_flop_threshold", 2e9)::Float64
+const GPU_FLOP_THRESHOLD = @load_preference("gpu_flop_threshold", 2.0e9)::Float64
 
 # Per-column slack grow factor for simplicial storage (design.md §7: "simplicial()
 # allocates each column with slack (grow-factor Preference)"). Column j gets

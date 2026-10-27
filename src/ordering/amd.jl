@@ -53,7 +53,7 @@ Returns the permutation `p` with `p[k]` = the original index eliminated at step 
 degree exceeds `max(AMD_DENSE_FLOOR, alg.dense_mult·√n)` are stripped before the main
 loop and appended last, in ascending index order (design.md §2.2 pt 6).
 """
-function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     n == 0 && return Ti[]
 
     # ---- dense-row stripping (design §2.2 pt 6) ----
@@ -423,8 +423,10 @@ end
 # slide every live slice to the front of the workspace, in address order, and return
 # the new free-tail start. Slices only ever shrink, so the move is always leftward and
 # a forward copy is safe.
-function _amd_compact!(qw::Vector{Int}, ptr::Vector{Int}, ne::Vector{Int}, na::Vector{Int},
-        state::Vector{Int8}, n::Int, free::Int)
+function _amd_compact!(
+        qw::Vector{Int}, ptr::Vector{Int}, ne::Vector{Int}, na::Vector{Int},
+        state::Vector{Int8}, n::Int, free::Int
+    )
     live = Int[]
     for v in 1:n
         ptr[v] > 0 || continue

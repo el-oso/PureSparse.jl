@@ -46,7 +46,7 @@
             gc = bc + (ty - 1) * 4 + (j - 1)
             if gr < M && gc < N && gr >= gc
                 C[gr + 1, gc + 1] = beta == zero(T) ? alpha * acc[i, j] :
-                                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
+                    muladd(alpha, acc[i, j], beta * C[gr + 1, gc + 1])
             end
         end
     end
@@ -624,8 +624,10 @@ function gpu_trsm_rlt!(B, L)
         jb = min(nb, n - j0 + 1)
         Bj = view(B, :, j0:(j0 + jb - 1))
         if j0 > 1
-            gpu_gemm_nt!(Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
-                         -one(T), one(T))
+            gpu_gemm_nt!(
+                Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
+                -one(T), one(T)
+            )
         end
         tk(Bj, view(L, j0:(j0 + jb - 1), j0:(j0 + jb - 1)), m, jb; ndrange = cld(m, 256) * 256)
     end
@@ -682,8 +684,10 @@ end
 
 # backend-generic (KernelAbstractions.zeros) so the same workspace serves CUDA/AMDGPU/oneAPI
 FrontWS(backend, ::Type{T}, maxblk::Int) where {T} =
-    FrontWS(KernelAbstractions.zeros(backend, Int32, 1),
-            KernelAbstractions.zeros(backend, T, 64, 64, maxblk))
+    FrontWS(
+    KernelAbstractions.zeros(backend, Int32, 1),
+    KernelAbstractions.zeros(backend, T, 64, 64, maxblk)
+)
 
 # Panel-rows threshold for :auto — MEASURED (galen, front_v3_check.jl): v3 (register-
 # resident fused factor+solve, cld(m,64) groups) is ~134µs/launch flat for m ≤ 2500 and
@@ -712,13 +716,17 @@ function gpu_front!(P, nscol::Int, ws::FrontWS; nb::Int = 64, mode::Symbol = :au
     n == 0 && return P
     T = eltype(P)
     if mode == :vendor                    # vendor reference arm (gate arm 4) — CUDA-only
-        _vendor_available() || error("gpu_front! mode=:vendor is a CUDA-only reference arm " *
-            "(cuSOLVER potrf/cuBLAS trsm); it is not available on $(nameof(typeof(get_backend(P)))). Use :auto/:fused.")
+        _vendor_available() || error(
+            "gpu_front! mode=:vendor is a CUDA-only reference arm " *
+                "(cuSOLVER potrf/cuBLAS trsm); it is not available on $(nameof(typeof(get_backend(P)))). Use :auto/:fused."
+        )
         diag = view(P, 1:n, 1:n)
         _, info = CUDA.CUSOLVER.potrf!('L', diag)
         info != 0 && copyto!(ws.info, Int32[Int32(info)])   # mirror the deferred-devinfo contract
-        nsrow > n && CUDA.CUBLAS.trsm!('R', 'L', 'T', 'N', one(T), diag,
-                                       view(P, (n + 1):nsrow, 1:n))
+        nsrow > n && CUDA.CUBLAS.trsm!(
+            'R', 'L', 'T', 'N', one(T), diag,
+            view(P, (n + 1):nsrow, 1:n)
+        )
         return P
     end
     backend = get_backend(P)
@@ -804,8 +812,10 @@ function gpu_trsm_rlt_opt!(B, L, ws::FrontWS)
         jb = min(64, n - j0 + 1)
         Bj = view(B, :, j0:(j0 + jb - 1))
         if j0 > 1
-            gpu_gemm_nt!(Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
-                         -one(T), one(T))
+            gpu_gemm_nt!(
+                Bj, view(B, :, 1:(j0 - 1)), view(L, j0:(j0 + jb - 1), 1:(j0 - 1)),
+                -one(T), one(T)
+            )
         end
         tm(Bj, view(ws.invD, 1:jb, 1:jb, b), m, jb; ndrange = (cld(m, 64) * 16, 16))
     end

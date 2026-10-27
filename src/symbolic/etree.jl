@@ -14,7 +14,7 @@ symmetry). This is the input etree/colcount pass needs (design §3.1).
 """
 function symmetrized_upper(
         n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, perm::Vector{Ti}, iperm::Vector{Ti},
-) where {Ti<:Integer}
+    ) where {Ti <: Integer}
     # Pass 1: count, per permuted column j, how many strict-upper entries land there.
     counts = zeros(Ti, n + 1)
     @inbounds for jorig in 1:n
@@ -86,7 +86,7 @@ Elimination tree of the symmetric pattern given by its STRICT UPPER triangle in 
 (as returned by [`symmetrized_upper`](@ref)). Liu's algorithm: one pass with a
 path-compressed `ancestor` array. `parent[j] == 0` marks a root. Design.md §3.2.
 """
-function etree(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function etree(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     parent = zeros(Ti, n)
     ancestor = zeros(Ti, n)
     @inbounds for k in 1:n
@@ -133,8 +133,8 @@ relaxed amalgamation's zero-fraction test evaluates (Ashcraft–Grimes 1989 / Ng
 1993 motivate the merge itself; the sibling-selection rule is our own reasoning on top).
 """
 function postorder(
-        n::Int, parent::Vector{Ti}, priority::Union{Nothing,Vector{Ti}} = nothing,
-) where {Ti<:Integer}
+        n::Int, parent::Vector{Ti}, priority::Union{Nothing, Vector{Ti}} = nothing,
+    ) where {Ti <: Integer}
     # Build child lists via a head/next linked-list (bucketed by parent). Head insertion
     # reverses insertion order, so inserting in DESCENDING visit order yields per-parent
     # lists in ascending visit order, which the DFS then consumes front-to-back.
@@ -187,7 +187,7 @@ function postorder(
 end
 
 # Small helper: iterate the linked list rooted at `head[start]` (does not mutate).
-function _linked_list(head::Vector{Ti}, next::Vector{Ti}, start::Int) where {Ti<:Integer}
+function _linked_list(head::Vector{Ti}, next::Vector{Ti}, start::Int) where {Ti <: Integer}
     out = Ti[]
     v = head[start]
     while v != 0
@@ -207,7 +207,7 @@ contiguous children.
 """
 function relabel_pattern(
         n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, postinv::Vector{Ti},
-) where {Ti<:Integer}
+    ) where {Ti <: Integer}
     counts = zeros(Ti, n + 1)
     @inbounds for j in 1:n
         newj = postinv[j]

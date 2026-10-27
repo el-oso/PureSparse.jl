@@ -54,12 +54,12 @@ function gemm_nt_4x4!(C, A, B, alpha, beta, M, N, K)
 end
 function launch_cuda!(C, A, B, alpha, beta)
     M, K = size(A); N = size(B, 1)
-    @cuda threads=(16,16) blocks=(cld(M,64), cld(N,64)) gemm_nt_4x4!(C, A, B, alpha, beta, M, N, K)
+    @cuda threads = (16, 16) blocks = (cld(M, 64), cld(N, 64)) gemm_nt_4x4!(C, A, B, alpha, beta, M, N, K)
     return C
 end
 
 # ---------------- KernelAbstractions port, same structure ----------------
-@kernel unsafe_indices=true function gemm_nt_4x4_ka!(C, @Const(A), @Const(B), alpha, beta, M, N, K)
+@kernel unsafe_indices = true function gemm_nt_4x4_ka!(C, @Const(A), @Const(B), alpha, beta, M, N, K)
     T = eltype(C)
     li = @index(Local, NTuple)
     gi = @index(Group, NTuple)
@@ -106,11 +106,11 @@ function launch_ka!(C, A, B, alpha, beta)
     M, K = size(A); N = size(B, 1)
     backend = KernelAbstractions.get_backend(C)
     kern = gemm_nt_4x4_ka!(backend, (16, 16))
-    kern(C, A, B, alpha, beta, M, N, K; ndrange=(cld(M, 64) * 16, cld(N, 64) * 16))
+    kern(C, A, B, alpha, beta, M, N, K; ndrange = (cld(M, 64) * 16, cld(N, 64) * 16))
     return C
 end
 
-gflops(m, n, k, secs) = 2.0 * m * n * k / secs / 1e9
+gflops(m, n, k, secs) = 2.0 * m * n * k / secs / 1.0e9
 
 function bench_grid()
     shapes = [(m, k) for m in (2000, 8000, 20000) for k in (32, 64, 128, 256, 512)]
@@ -119,28 +119,32 @@ function bench_grid()
         n = min(m, 4096)
         T = Float64
         A = CUDA.rand(T, m, k); B = CUDA.rand(T, n, k); C = CUDA.zeros(T, m, n)
-        bref = @be CUDA.@sync(gemm!('N', 'T', one(T), A, B, zero(T), C)) seconds=1
+        bref = @be CUDA.@sync(gemm!('N', 'T', one(T), A, B, zero(T), C)) seconds = 1
         tref = minimum(x.time for x in bref.samples)
-        bc_ = @be CUDA.@sync(launch_cuda!(C, A, B, one(T), zero(T))) seconds=1
+        bc_ = @be CUDA.@sync(launch_cuda!(C, A, B, one(T), zero(T))) seconds = 1
         tc = minimum(x.time for x in bc_.samples)
-        bk_ = @be CUDA.@sync(launch_ka!(C, A, B, one(T), zero(T))) seconds=1
+        bk_ = @be CUDA.@sync(launch_ka!(C, A, B, one(T), zero(T))) seconds = 1
         tk = minimum(x.time for x in bk_.samples)
         gemm!('N', 'T', one(T), A, B, zero(T), C); CUDA.synchronize(); Cref = Array(C)
         launch_cuda!(C, A, B, one(T), zero(T)); CUDA.synchronize(); Cc = Array(C)
         launch_ka!(C, A, B, one(T), zero(T)); CUDA.synchronize(); Ck = Array(C)
         rec = norm(Cc - Cref) / max(norm(Cref), eps())
         rek = norm(Ck - Cref) / max(norm(Cref), eps())
-        r = (m=m, n=n, k=k,
-             cublas=round(gflops(m,n,k,tref), digits=1),
-             cuda4x4=round(gflops(m,n,k,tc), digits=1),
-             ka4x4=round(gflops(m,n,k,tk), digits=1),
-             cuda_over_cublas=round(tref/tc, digits=3),
-             ka_over_cublas=round(tref/tk, digits=3),
-             ka_over_cuda=round(tc/tk, digits=3),
-             relerr_cuda=rec, relerr_ka=rek)
+        r = (
+            m = m, n = n, k = k,
+            cublas = round(gflops(m, n, k, tref), digits = 1),
+            cuda4x4 = round(gflops(m, n, k, tc), digits = 1),
+            ka4x4 = round(gflops(m, n, k, tk), digits = 1),
+            cuda_over_cublas = round(tref / tc, digits = 3),
+            ka_over_cublas = round(tref / tk, digits = 3),
+            ka_over_cuda = round(tc / tk, digits = 3),
+            relerr_cuda = rec, relerr_ka = rek,
+        )
         push!(rows, r)
-        @printf("m=%6d n=%5d k=%4d  cuBLAS=%6.1f  cuda=%6.1f(%.2fx)  ka=%6.1f(%.2fx, %.2fx-vs-cuda)  relerr=%.1e/%.1e\n",
-                m, n, k, r.cublas, r.cuda4x4, r.cuda_over_cublas, r.ka4x4, r.ka_over_cublas, r.ka_over_cuda, rec, rek)
+        @printf(
+            "m=%6d n=%5d k=%4d  cuBLAS=%6.1f  cuda=%6.1f(%.2fx)  ka=%6.1f(%.2fx, %.2fx-vs-cuda)  relerr=%.1e/%.1e\n",
+            m, n, k, r.cublas, r.cuda4x4, r.cuda_over_cublas, r.ka4x4, r.ka_over_cublas, r.ka_over_cuda, rec, rek
+        )
         CUDA.unsafe_free!(A); CUDA.unsafe_free!(B); CUDA.unsafe_free!(C)
     end
     return rows
@@ -154,22 +158,24 @@ function f32_spotcheck()
     launch_cuda!(C, A, B, one(T), zero(T)); CUDA.synchronize(); Cc = Array(C)
     launch_ka!(C, A, B, one(T), zero(T)); CUDA.synchronize(); Ck = Array(C)
     rec = norm(Cc - Cref) / norm(Cref); rek = norm(Ck - Cref) / norm(Cref)
-    b1 = @be CUDA.@sync(gemm!('N', 'T', one(T), A, B, zero(T), C)) seconds=1
-    b2 = @be CUDA.@sync(launch_cuda!(C, A, B, one(T), zero(T))) seconds=1
-    g1 = gflops(m,n,k, minimum(x.time for x in b1.samples))
-    g2 = gflops(m,n,k, minimum(x.time for x in b2.samples))
+    b1 = @be CUDA.@sync(gemm!('N', 'T', one(T), A, B, zero(T), C)) seconds = 1
+    b2 = @be CUDA.@sync(launch_cuda!(C, A, B, one(T), zero(T))) seconds = 1
+    g1 = gflops(m, n, k, minimum(x.time for x in b1.samples))
+    g2 = gflops(m, n, k, minimum(x.time for x in b2.samples))
     @printf("Float32 spot: cuBLAS=%.0f GF  cuda4x4=%.0f GF  relerr cuda=%.1e ka=%.1e\n", g1, g2, rec, rek)
-    return (cublas_f32=round(g1, digits=1), cuda4x4_f32=round(g2, digits=1), relerr_cuda=rec, relerr_ka=rek)
+    return (cublas_f32 = round(g1, digits = 1), cuda4x4_f32 = round(g2, digits = 1), relerr_cuda = rec, relerr_ka = rek)
 end
 
 function main()
     rows = bench_grid()
     f32 = f32_spotcheck()
-    out = Dict("grid" => rows, "f32_spotcheck" => Dict(pairs(f32)),
-               "gpu" => CUDA.name(CUDA.device()), "clock_locked_mhz" => 1920)
+    out = Dict(
+        "grid" => rows, "f32_spotcheck" => Dict(pairs(f32)),
+        "gpu" => CUDA.name(CUDA.device()), "clock_locked_mhz" => 1920
+    )
     open(joinpath(homedir(), "Documents/claude/gpu_probe/kernel_tuning_ka_final.json"), "w") do io
         JSON.print(io, out, 2)
     end
-    println("wrote kernel_tuning_ka_final.json")
+    return println("wrote kernel_tuning_ka_final.json")
 end
 main()

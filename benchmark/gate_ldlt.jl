@@ -34,7 +34,7 @@ _median_time(b) = median(_times(b))
 function bench_one(label::String, A::SparseMatrixCSC, npos::Int, nneg::Int, arm::String)
     n = size(A, 1)
     signs = vcat(fill(Int8(1), npos), fill(Int8(-1), nneg))
-    result = Dict{String,Any}("matrix" => label, "n" => n, "nnz" => nnz(A), "arm" => arm)
+    result = Dict{String, Any}("matrix" => label, "n" => n, "nnz" => nnz(A), "arm" => arm)
 
     if arm == "own"
         sym_ps = PureSparse.symbolic(A)
@@ -106,8 +106,10 @@ end
 function print_verdict(payload)
     results = payload["results"]
     println("\n=== M2 SQD/LDLT wall-time gate (design.md §9.3/§9.4) — warm numeric refactor, median seconds ===")
-    println(rpad("matrix", 20), rpad("arm", 10), rpad("PS+PureBLAS", 14), rpad("PS+OpenBLAS", 14),
-        rpad("CHOLMOD+OB", 14), rpad("n_pert", 8), "gate(1<3)")
+    println(
+        rpad("matrix", 20), rpad("arm", 10), rpad("PS+PureBLAS", 14), rpad("PS+OpenBLAS", 14),
+        rpad("CHOLMOD+OB", 14), rpad("n_pert", 8), "gate(1<3)"
+    )
     npass = 0; ntotal = 0
     for r in results
         ntotal += 1
@@ -123,7 +125,7 @@ function print_verdict(payload)
         )
     end
     println("\n$npass / $ntotal matrix-arm combinations strictly faster than CHOLMOD+OpenBLAS (warm refactor).")
-    println(npass >= cld(ntotal, 2) ? "OVERALL: PASS" : "OVERALL: NOT YET PASSING")
+    return println(npass >= cld(ntotal, 2) ? "OVERALL: PASS" : "OVERALL: NOT YET PASSING")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

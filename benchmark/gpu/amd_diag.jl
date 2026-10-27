@@ -43,7 +43,7 @@ end
 
 println("AMDGPU device: ", AMDGPU.device())
 c = KernelAbstractions.zeros(BK, Int64, 1); o = KernelAbstractions.zeros(BK, Int64, 1)
-try_kernel("(a) @atomic bare",   () -> _atom_a!(BK, 64)(c; ndrange = 64))
-try_kernel("(b) @atomic .first",  () -> _atom_b!(BK, 64)(c, o; ndrange = 64))
-try_kernel("(c) @atomic last()",  () -> _atom_c!(BK, 64)(c, o; ndrange = 64))
+try_kernel("(a) @atomic bare", () -> _atom_a!(BK, 64)(c; ndrange = 64))
+try_kernel("(b) @atomic .first", () -> _atom_b!(BK, 64)(c, o; ndrange = 64))
+try_kernel("(c) @atomic last()", () -> _atom_c!(BK, 64)(c, o; ndrange = 64))
 println("counter after runs: ", Array(c)[1])

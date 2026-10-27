@@ -28,50 +28,54 @@
     pkgroot = pkgdir(PureSparse)
     envdir = mktempdir()
     try
-        write(joinpath(envdir, "LocalPreferences.toml"), """
-        [StrictMode]
-        checks_enabled = true
-        fail_mode = "error"
-        analysis = "full"
-        """)
+        write(
+            joinpath(envdir, "LocalPreferences.toml"), """
+            [StrictMode]
+            checks_enabled = true
+            fail_mode = "error"
+            analysis = "full"
+            """
+        )
 
         script = joinpath(envdir, "run.jl")
-        write(script, """
-        using Pkg
-        Pkg.activate(@__DIR__)
-        Pkg.develop(path=raw"$pkgroot")
-        Pkg.add(["StrictMode","AllocCheck","JET","SparseArrays","Random"])
-        Pkg.instantiate()
+        write(
+            script, """
+            using Pkg
+            Pkg.activate(@__DIR__)
+            Pkg.develop(path=raw"$pkgroot")
+            Pkg.add(["StrictMode","AllocCheck","JET","SparseArrays","Random"])
+            Pkg.instantiate()
 
-        using PureSparse, StrictMode, AllocCheck, JET, SparseArrays, Random
-        import PureSparse: symbolic, cholesky, cholesky!, ldlt, ldlt!, qr, solve!, AMDOrdering
+            using PureSparse, StrictMode, AllocCheck, JET, SparseArrays, Random
+            import PureSparse: symbolic, cholesky, cholesky!, ldlt, ldlt!, qr, solve!, AMDOrdering
 
-        # If checks silently stayed off, the @assert_* macros no-op and this gate proves nothing.
-        @assert StrictMode.assert_enabled() "StrictMode checks did not enable — guarantee gate would be vacuous"
+            # If checks silently stayed off, the @assert_* macros no-op and this gate proves nothing.
+            @assert StrictMode.assert_enabled() "StrictMode checks did not enable — guarantee gate would be vacuous"
 
-        n = 40
-        A = spdiagm(-1=>fill(-1.0,n-1), 0=>fill(4.0,n), 1=>fill(-1.0,n-1))
-        sym  = symbolic(A);  F  = cholesky(sym, A)
-        symL = symbolic(A);  FL = ldlt(symL, A)
-        b = randn(n); x = similar(b); xL = similar(b)
-        cholesky!(F, A); solve!(x, F, b)
-        ldlt!(FL, A);    solve!(xL, FL, b)
-        Fq = qr(A; ordering=AMDOrdering(), tol=0, singletons=false); xq = zeros(n); solve!(xq, Fq, b)
+            n = 40
+            A = spdiagm(-1=>fill(-1.0,n-1), 0=>fill(4.0,n), 1=>fill(-1.0,n-1))
+            sym  = symbolic(A);  F  = cholesky(sym, A)
+            symL = symbolic(A);  FL = ldlt(symL, A)
+            b = randn(n); x = similar(b); xL = similar(b)
+            cholesky!(F, A); solve!(x, F, b)
+            ldlt!(FL, A);    solve!(xL, FL, b)
+            Fq = qr(A; ordering=AMDOrdering(), tol=0, singletons=false); xq = zeros(n); solve!(xq, Fq, b)
 
-        # --- the analyze-once / shared-immutable-Symbolic guarantee (req 7) ---
-        @assert_concurrency_safe cholesky(sym, A)
-        @assert_concurrency_safe ldlt(symL, A)
+            # --- the analyze-once / shared-immutable-Symbolic guarantee (req 7) ---
+            @assert_concurrency_safe cholesky(sym, A)
+            @assert_concurrency_safe ldlt(symL, A)
 
-        # --- type-stable hottest path, all three factor kinds (req 3) ---
-        @assert_typestable solve!(x, F, b)
-        @assert_typestable solve!(xL, FL, b)
-        @assert_typestable solve!(xq, Fq, b)
+            # --- type-stable hottest path, all three factor kinds (req 3) ---
+            @assert_typestable solve!(x, F, b)
+            @assert_typestable solve!(xL, FL, b)
+            @assert_typestable solve!(xq, Fq, b)
 
-        # --- QR solve is AllocCheck-clean on every path ---
-        @assert_noalloc solve!(xq, Fq, b)
+            # --- QR solve is AllocCheck-clean on every path ---
+            @assert_noalloc solve!(xq, Fq, b)
 
-        println("STRICTMODE GUARANTEES OK")
-        """)
+            println("STRICTMODE GUARANTEES OK")
+            """
+        )
 
         julia_exe = joinpath(Sys.BINDIR, Base.julia_exename())
         cmd = ignorestatus(addenv(`$julia_exe --project=$envdir $script`, "JULIA_LOAD_PATH" => nothing))

@@ -13,7 +13,7 @@ with a nonzero at original row `i`). Standard counting-sort transpose; each outp
 column is naturally produced in ascending order since the input is scanned
 column-by-column in increasing `j`, so no separate sort pass is needed.
 """
-function csc_transpose(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function csc_transpose(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     deg = zeros(Ti, m)
     @inbounds for p in eachindex(rowval)
         deg[rowval[p]] += one(Ti)
@@ -46,7 +46,7 @@ as `Workspace.relmap`, design.md §4.3 step 1) dedupes edges seen from more than
 shared row. Cost: worst-case `O(Σ_i nnz(row i)²)` time, `O(|AᵀA|)` memory (paid once
 per symbolic — the price COLAMD avoids, design_qr.md §2.2.6).
 """
-function ata_pattern(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function ata_pattern(m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     n == 0 && return (ones(Ti, 1), Ti[])
     rowptr, rowidx = csc_transpose(m, n, colptr, rowval)
     mark = zeros(Ti, n)
@@ -97,7 +97,7 @@ end
 AMDOrdering's sparse-QR column ordering (design_qr.md §2.2.6): form `pattern(AᵀA)` via
 [`ata_pattern`](@ref) and delegate to the untouched symmetric `order`.
 """
-function order_columns(alg::AMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti<:Integer}
+function order_columns(alg::AMDOrdering, m::Int, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     colptr2, rowval2 = ata_pattern(m, n, colptr, rowval)
     return order(alg, n, colptr2, rowval2)
 end

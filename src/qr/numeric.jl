@@ -13,7 +13,7 @@ which is exactly the same operation applied in different column orders. Caller m
 check `F.beta[k] != 0` first (dead/trivial reflectors are a no-op, cheaper to skip
 entirely than to call this and multiply by zero).
 """
-function _apply_reflector!(y::AbstractVector{T}, F::QRFactor{T,Ti}, k::Integer) where {T,Ti<:Integer}
+function _apply_reflector!(y::AbstractVector{T}, F::QRFactor{T, Ti}, k::Integer) where {T, Ti <: Integer}
     sym = F.sym
     vlo, vhi = sym.vptr[k], sym.vptr[k + 1] - 1
     w = zero(T)
@@ -38,7 +38,7 @@ toward `Inf`, not just a numerically-suspect answer, design_qr.md §4.4/§5.1). 
 explicit `tol` is used directly; `tol ≤ 0` disables rank detection entirely (§5.3) —
 only the B3 exact-zero guard (design_qr.md §4.4, unconditional) still applies.
 """
-function _qr_threshold(A::SparseMatrixCSC{T}, tol) where {T<:Real}
+function _qr_threshold(A::SparseMatrixCSC{T}, tol) where {T <: Real}
     isnothing(tol) || return T(tol)
     m, n = size(A)
     maxcolnorm = zero(T)
@@ -61,16 +61,16 @@ to once singletons (if any) have been peeled off and `A` has been restricted to 
 surviving `A22` submatrix (design_qr.md §2.3); it is also exactly what `qr(A)` reduces
 to when no singletons are found.
 """
-function _qr_block(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
+function _qr_block(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering, tol::Union{Nothing, Real} = nothing) where {T, Ti <: Integer}
     sym = symbolic_qr(A; ordering)
     rcolind = Vector{Ti}(undef, sym.nnzR)
     rval = zeros(T, sym.nnzR)              # zero-initialized: dead-row slots (D9) stay
-                                            # readable-as-zero without extra bookkeeping
+    # readable-as-zero without extra bookkeeping
     vval = zeros(T, sym.nnzV)
     beta = zeros(T, length(sym.parent))
-    ws = QRWorkspace{T,Ti}(sym)
+    ws = QRWorkspace{T, Ti}(sym)
     r1ptr = ones(Ti, 1)                    # n1==0: length-1 sentinel (r1ptr[1]=1, no rows)
-    F = QRFactor{T,Ti}(
+    F = QRFactor{T, Ti}(
         sym, rcolind, rval, vval, beta, r1ptr, Ti[], T[],
         sym,                                                  # bsym: n1==0, the block IS the factor
         SparseMatrixCSC(0, 0, Ti[one(Ti)], Ti[], T[]), Ti[], Ti[],  # a22buf/a22map/r1srcpos: unused
@@ -144,8 +144,10 @@ one live nonzero") is pattern-only and therefore refactor-invariant; only the
 magnitude test is value-dependent, and `qr!` re-checks it per pivot against the new
 values (see its docstring for the drop semantics when a pivot goes numerically small).
 """
-function qr(A::SparseMatrixCSC{T,Ti}; ordering::AbstractOrdering, tol::Union{Nothing,Real} = nothing,
-        singletons::Bool = true, method::Symbol = :column) where {T,Ti<:Integer}
+function qr(
+        A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering, tol::Union{Nothing, Real} = nothing,
+        singletons::Bool = true, method::Symbol = :column
+    ) where {T, Ti <: Integer}
     method in (:column, :frontal, :auto) ||
         throw(ArgumentError("qr: method must be :column, :frontal, or :auto, got :$method"))
     if method === :auto && _frontal_capable(T)
@@ -209,7 +211,7 @@ any other dead column) — and (3) runs the standard block numeric loop on the r
 `A22` buffer, writing into the factor's own (shared, block-sized) arrays. All three
 steps are zero-allocation (CLAUDE.md req 5).
 """
-function qr!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}; tol::Union{Nothing,Real} = nothing) where {T,Ti<:Integer}
+function qr!(F::QRFactor{T, Ti}, A::SparseMatrixCSC{T, Ti}; tol::Union{Nothing, Real} = nothing) where {T, Ti <: Integer}
     sym = F.sym
     check_refactor_shape(A, sym.m, sym.n, "qr!")
     n1 = sym.n1
@@ -283,7 +285,7 @@ when `n1 > 0`) and all indexing goes through `F.bsym`, the block's OWN symbolic
 field with it by reference when `n1 > 0` — see `_qr_compose_singletons`). Writes
 `rval`/`rcolind`/`vval`/`beta`/`ws` in place; the caller owns `stats`/`ok`/finiteness.
 """
-function _qr_block_numeric!(F::QRFactor{T,Ti}, A::SparseMatrixCSC{T,Ti}, tau::T) where {T,Ti<:Integer}
+function _qr_block_numeric!(F::QRFactor{T, Ti}, A::SparseMatrixCSC{T, Ti}, tau::T) where {T, Ti <: Integer}
     sym = F.bsym
     ws = F.ws
     nb = length(sym.parent)

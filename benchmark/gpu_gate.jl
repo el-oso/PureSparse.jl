@@ -50,13 +50,15 @@ if !REPORT_ONLY
 end
 
 # ---------------- stratum: large SPD grids + SQD KKTs (≥6, fit ~9 GB) ----------------
-grid3d(d) = (n = d^3; A = spzeros(n, n); lin(i, j, k) = ((k - 1) * d + (j - 1)) * d + i;
+grid3d(d) = (
+    n = d^3; A = spzeros(n, n); lin(i, j, k) = ((k - 1) * d + (j - 1)) * d + i;
     for k in 1:d, j in 1:d, i in 1:d
         p = lin(i, j, k); A[p, p] = 6.0
         i < d && (A[p, lin(i + 1, j, k)] = A[lin(i + 1, j, k), p] = -1.0)
         j < d && (A[p, lin(i, j + 1, k)] = A[lin(i, j + 1, k), p] = -1.0)
         k < d && (A[p, lin(i, j, k + 1)] = A[lin(i, j, k + 1), p] = -1.0)
-    end; A + 0.1I)
+    end; A + 0.1I
+)
 
 function stratum()
     rng = MersenneTwister(5)
@@ -81,7 +83,7 @@ const QSWEEP = (0.999, 0.995, 0.99, 0.98)
 # ============================ SPD =============================
 function bench_spd(label, A, ext)
     n = size(A, 1); b = randn(MersenneTwister(1), n)
-    r = Dict{String,Any}("matrix" => label, "n" => n, "nnz" => nnz(A), "kind" => "spd")
+    r = Dict{String, Any}("matrix" => label, "n" => n, "nnz" => nnz(A), "kind" => "spd")
 
     # --- arm 1: CPU PureSparse (factor+solve) ---
     sym = PureSparse.symbolic(A); F = PureSparse.cholesky(sym, A)
@@ -103,7 +105,7 @@ function bench_spd(label, A, ext)
             G = ext.gpu_symbolic(A; ordering = PureSparse.AMDOrdering(), frontier_cutoff = flop_cutoff(sym, q))
             ng = count(G.on_gpu); ng == 0 && continue
             M = ext.mf_symbolic(G.cpu)
-            (M.arena_peak + G.xlen) * 8 / 1e9 > 9.5 && continue
+            (M.arena_peak + G.xlen) * 8 / 1.0e9 > 9.5 && continue
             xh = Vector{Float64}(undef, G.xlen); ha = Vector{Float64}(undef, max(M.arena_peak, 1))
             da = CUDA.zeros(Float64, max(M.arena_peak, 1)); dz = CUDA.zeros(Float64, G.xlen)
             perm = G.cpu.perm; mer = max(G.cpu.max_extend_rows, 1)
@@ -142,7 +144,7 @@ end
 function bench_sqd(nt, ext)
     K = nt.K; n = size(K, 1); n1 = nt.n1
     signs0 = Int8[i ≤ n1 ? 1 : -1 for i in 1:n]; b = randn(MersenneTwister(2), n)
-    r = Dict{String,Any}("matrix" => nt.label, "n" => n, "nnz" => nnz(K), "kind" => "sqd")
+    r = Dict{String, Any}("matrix" => nt.label, "n" => n, "nnz" => nnz(K), "kind" => "sqd")
 
     # --- arm 1: CPU PureSparse ---
     sym = PureSparse.symbolic(K); F = PureSparse.ldlt(sym, K; signs = signs0)
@@ -164,7 +166,7 @@ function bench_sqd(nt, ext)
             G = ext.gpu_symbolic(K; ordering = PureSparse.AMDOrdering(), frontier_cutoff = flop_cutoff(sym, q))
             ng = count(G.on_gpu); ng == 0 && continue
             M = ext.mf_symbolic(G.cpu)
-            (M.arena_peak + G.xlen) * 8 / 1e9 > 9.5 && continue
+            (M.arena_peak + G.xlen) * 8 / 1.0e9 > 9.5 && continue
             xh = Vector{Float64}(undef, G.xlen); ha = Vector{Float64}(undef, max(M.arena_peak, 1))
             da = CUDA.zeros(Float64, max(M.arena_peak, 1)); dz = CUDA.zeros(Float64, G.xlen)
             dv = Vector{Float64}(undef, n); dd = CUDA.zeros(Float64, n)
@@ -182,8 +184,10 @@ function bench_sqd(nt, ext)
             t < best[1] && (best = (t, q, ng))
             # arm 4: identical structure, vendor fronts (CPU-diag LDL + cuBLAS) + vendor solve
             factsolve_v() = begin
-                ext.gpu_multifrontal_ldlt_hybrid!(xh, dz, ha, da, dv, dd, M, G, K, signs;
-                                                  d2h = false, frontmode = :vendor)
+                ext.gpu_multifrontal_ldlt_hybrid!(
+                    xh, dz, ha, da, dv, dd, M, G, K, signs;
+                    d2h = false, frontmode = :vendor
+                )
                 ext.gpu_upload_cpu_panels!(dz, xh, G); copyto!(d_dd, 1, dv, 1, n)
                 dy = CuArray(b[perm]); ext.gpu_solve_ldlt_vendor!(dy, dz, d_dd, G, dup, dga)
             end
@@ -214,12 +218,16 @@ function run_gate()
         push!(results, bench_sqd(nt, ext))
     end
     host = gethostname()
-    payload = Dict("host" => host, "julia_version" => string(VERSION),
-                   "gpu" => (CUDA.functional() ? string(CUDA.name(CUDA.device())) : "n/a"),
-                   "target" => TARGET, "results" => results)
+    payload = Dict(
+        "host" => host, "julia_version" => string(VERSION),
+        "gpu" => (CUDA.functional() ? string(CUDA.name(CUDA.device())) : "n/a"),
+        "target" => TARGET, "results" => results
+    )
     mkpath(joinpath(@__DIR__, "results"))
     outpath = joinpath(@__DIR__, "results", "gpu_gate_$(host).json")
-    open(outpath, "w") do io; JSON.print(io, payload, 2); end
+    open(outpath, "w") do io
+        JSON.print(io, payload, 2)
+    end
     @info "wrote $outpath"
     return payload
 end
@@ -228,9 +236,11 @@ function print_verdict(payload)
     R = payload["results"]
     println("\n=== M6 GPU wall-time gate (design_gpu.md §8, re-scoped: pure ≥ 1.0× vendor) — factor+solve, median seconds ===")
     println(@sprintf("host=%s  gpu=%s\n", payload["host"], get(payload, "gpu", "?")))
-    println(rpad("matrix", 15), rpad("n", 9), rpad("CPU-PS", 11), rpad("GPU-pure", 11),
-            rpad("GPU-vend", 11), rpad("CHOLMOD", 11), rpad("q", 7), rpad("×vsCPU", 9),
-            rpad("pure/vend", 11), rpad("c-vend", 8), "c3(<CHM)")
+    println(
+        rpad("matrix", 15), rpad("n", 9), rpad("CPU-PS", 11), rpad("GPU-pure", 11),
+        rpad("GPU-vend", 11), rpad("CHOLMOD", 11), rpad("q", 7), rpad("×vsCPU", 9),
+        rpad("pure/vend", 11), rpad("c-vend", 8), "c3(<CHM)"
+    )
     nv = 0; n3 = 0; nt = 0; maxres = 0.0
     for r in R
         haskey(r, "gpu_ps") || continue
@@ -241,18 +251,20 @@ function print_verdict(payload)
         cv = pv >= 1.0; c3 = gpu < chm
         cv && (nv += 1); c3 && (n3 += 1)
         res = get(r, "vendor_resid", NaN); isnan(res) || (maxres = max(maxres, res))
-        println(rpad(r["matrix"], 15), rpad(r["n"], 9),
-                rpad(@sprintf("%.2fms", cpu * 1e3), 11), rpad(@sprintf("%.2fms", gpu * 1e3), 11),
-                rpad(@sprintf("%.2fms", ven * 1e3), 11), rpad(@sprintf("%.2fms", chm * 1e3), 11),
-                rpad(@sprintf("%.3f", get(r, "gpu_q", 0.0)), 7),
-                rpad(@sprintf("%.2f×", spd), 9), rpad(@sprintf("%.2f×", pv), 11),
-                rpad(cv ? "PASS" : "fail", 8), c3 ? "PASS" : "fail")
+        println(
+            rpad(r["matrix"], 15), rpad(r["n"], 9),
+            rpad(@sprintf("%.2fms", cpu * 1.0e3), 11), rpad(@sprintf("%.2fms", gpu * 1.0e3), 11),
+            rpad(@sprintf("%.2fms", ven * 1.0e3), 11), rpad(@sprintf("%.2fms", chm * 1.0e3), 11),
+            rpad(@sprintf("%.3f", get(r, "gpu_q", 0.0)), 7),
+            rpad(@sprintf("%.2f×", spd), 9), rpad(@sprintf("%.2f×", pv), 11),
+            rpad(cv ? "PASS" : "fail", 8), c3 ? "PASS" : "fail"
+        )
     end
     println(@sprintf("\nclause vendor (pure ≥ 1.0× cuSOLVER/cuBLAS): %d/%d", nv, nt))
     println(@sprintf("clause 3 (GPU beats CHOLMOD+OpenBLAS):       %d/%d", n3, nt))
     println(@sprintf("max vendor-arm residual ‖Ax−b‖/‖b‖ = %.2e (gate ≤ 1e-8)", maxres))
     ok = nv == nt && n3 == nt
-    println("\nOVERALL: ", ok ? "PASS" : "NOT YET PASSING (see per-row)")
+    return println("\nOVERALL: ", ok ? "PASS" : "NOT YET PASSING (see per-row)")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

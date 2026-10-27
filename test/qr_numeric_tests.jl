@@ -119,7 +119,7 @@ end
         m = rand(rng, 2:10)
         n = rand(rng, 1:min(m, 8))
         A = sprand(rng, m, n, 0.4)
-        Abig = SparseMatrixCSC{BigFloat,Int}(A)
+        Abig = SparseMatrixCSC{BigFloat, Int}(A)
         # tol=0 in both runs: the default τ scales with eps(T), which differs
         # astronomically between Float64 and BigFloat -- comparing the FULL
         # (undropped) R in both is the fair, apples-to-apples precision check.
@@ -321,6 +321,5 @@ end
     b = Float64.(1:7)
     xcol = PureSparse.solve!(zeros(5), Fcol, b)
     xfront = PureSparse.solve!(zeros(5), Ffront, b)
-    @test norm(xcol - xfront) < 1e-10
+    @test norm(xcol - xfront) < 1.0e-10
 end
-
