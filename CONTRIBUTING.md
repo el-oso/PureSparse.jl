@@ -42,9 +42,11 @@ can cite them (for example "CONTRIBUTING.md req 5").
    Preferences.jl: overridable, not detected at runtime.
 
 5. **Zero allocations after `symbolic()`.** `cholesky!`, `ldlt!`, `qr!` and `solve!` on an
-   existing factor must satisfy `@allocated == 0`. The test suite runs with StrictMode
-   checks enabled (StrictMode's default, and required by StrictModeTest), so the gate holds
-   with the runtime checks in place; disabling them only removes code.
+   existing factor must not allocate. The authoritative gate is StrictModeTest's
+   `@test_noalloc` (AllocCheck, every path); StrictMode's own `noalloc` verdicts are
+   heuristics that only warn. `@allocated == 0` after warmup checks the executed path. The
+   suite runs with StrictMode checks enabled (the default, required by StrictModeTest);
+   disabling them only removes code. See design.md §9.1 point 7.
 
 6. **Compile-time contracts and runtime checks are separate layers.** TypeContracts.jl
    interface contracts (`src/contracts.jl`) exist only at precompile time and are removed by

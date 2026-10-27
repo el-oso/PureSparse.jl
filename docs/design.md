@@ -43,8 +43,7 @@ For milestone status, see [`../ROADMAP.md`](../ROADMAP.md).
   from StrictMode runtime pre/postcondition checks (gated on
   `StrictMode.checks_enabled()`); test items rewritten to match the correct mechanism.
 - **D7** §9.1: matrix-zoo cache download now specified as atomic temp-file-then-rename
-  under a lock file; zero-allocation gate explicitly required to run in the
-  StrictMode-checks-disabled configuration.
+  under a lock file; zero-allocation gate specified (§9.1 point 7).
 - **N4** §2.2(2): degree-bound notation corrected to subtract the whole supervariable
   `𝐢`, not the singleton `{i}`.
 - **N5** §2.2(6): dense-row threshold attributed to the AMD package user guide default
@@ -591,12 +590,16 @@ ReTestItems.jl, parallel workers. Layers:
    around first-run population and write via temp-file-then-atomic-`rename` —
    otherwise concurrent first runs race and can corrupt the cache. This is specified
    behavior, not an implementation nicety.
-7. **Zero-allocation gate:** `@allocated cholesky!(F, A2) == 0` and same for
-   `ldlt!`/`solve!` after warmup. **Test-configuration requirement:** this item must run
-   in the StrictMode-checks-*disabled* configuration — the runtime checks in layer 2 may
-   themselves allocate, and would otherwise fail the very gate they guard. The test
-   harness runs two configurations (checks-on for layers 2–5, checks-off for this gate)
-   and the CI matrix names them explicitly.
+7. **Zero-allocation gate.** The in-place entry points (`cholesky!`, `ldlt!`, `qr!`,
+   `solve!`) must not allocate. Two checks, both in the single checks-on test
+   configuration (StrictMode's default, which StrictModeTest requires):
+   - **Authoritative:** StrictModeTest's `@test_noalloc`, which proves the absence of
+     allocation on every path with AllocCheck. StrictMode's own `noalloc` verdicts are
+     static heuristics that only warn and do not count as this gate.
+   - **Measured:** `@allocated f(...) == 0` after warmup, on the path the test executes.
+   Disabling checks only removes code, so a pass here also holds for a checks-off
+   deployment. The allocating constructors (`cholesky`, `ldlt`, `qr`) are not held to
+   this gate.
 
 ### 9.2 Reference oracles
 

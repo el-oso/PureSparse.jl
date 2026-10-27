@@ -1018,7 +1018,7 @@ configuration only, design.md §9.1 layer-2 discipline) and as the §9.1 superse
 
 `qr(A; ordering, tol)` = singletons (§2.3) + `symbolic_qr` + numeric. `qr!(F, A2)` for
 pattern-identical A2: reset cursors/stats, replay §4.1 — **zero allocations**
-(CONTRIBUTING.md req 5; gated in the StrictMode-checks-disabled configuration, same as
+(CONTRIBUTING.md req 5; gated as in design.md §9.1 point 7, same as
 `cholesky!`). No assembly map is needed (unlike design.md §4.2): the scatter is a direct
 CSC walk through `riperm`, already O(nnz) with no searches. An `n1 > 0` (singleton-
 composed) factor refactors the same way — A22-buffer value refresh + this same replay
@@ -1401,8 +1401,8 @@ Int64, kwarg-default paths) — same pattern as the existing gate.
    published names; implementer verifies availability/size before pinning), plus
    synthetic generators needing no download.
 7. **Zero-alloc gate:** `@allocated qr!(F, A2) == 0` and `@allocated solve!(x, F, b)
-   == 0` after warmup, StrictMode-checks-disabled configuration (design.md §9.1 D7
-   split unchanged) — including a rank-deficient instance (the §5 path allocates
+   == 0` after warmup, plus `@test_noalloc` (design.md §9.1 point 7)
+   — including a rank-deficient instance (the §5 path allocates
    nothing by construction; prove it).
 
 ### 9.2 Baseline facts verified in this environment (2026-07-14, Julia 1.12.6)

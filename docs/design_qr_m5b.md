@@ -912,7 +912,7 @@ number with the sweep recorded, never a remembered default from any implementati
 6. **Zero-alloc gate:** `@allocated qr!(F, A2) == 0` and single-vector
    `solve!/apply_Q!/apply_Qt! == 0` for `QRFrontFactor`, including a rank-deficient
    instance (checks the counting sort, pass-up bookkeeping, and stored-T replay paths
-   allocate nothing) — StrictMode-checks-disabled configuration, as ever.
+   allocate nothing), gated as in design.md §9.1 point 7.
 7. **Trim smoke:** the §8 juliac entry gains the frontal path (method kwarg
    exercised both ways); TrimCheck `@validate` roots for the new types.
 

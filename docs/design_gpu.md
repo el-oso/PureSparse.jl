@@ -615,7 +615,7 @@ Cheap symbolic-time assertions turning §5's prose into gates:
 Trim gate extended **early**: the `juliac --trim` smoke runs against the weakdep-bearing
 `Project.toml`, proving the ext's existence doesn't perturb the trimmed CPU build (the ext is
 not in the trimmed image). Alloc/transfer discipline per §9.A, tested in the
-StrictMode-checks-disabled configuration like the CPU gate.
+same configuration as the CPU gate (design.md §9.1 point 7).
 
 ## §12 Task list
 
@@ -641,7 +641,7 @@ three §9 amendments for user sign-off.
    supernodes factor on device (pure gemm/syrk + cuSOLVER potrf interim); deferred `devinfo`
    (§4.3).
 8. make-solve-ready D2H + CPU solve (§7); numeric oracle (§10.1) full-zoo + `--check-bounds`.
-9. Alloc/transfer discipline (§9.A) in checks-disabled config.
+9. Alloc/transfer discipline (§9.A), gated as in design.md §9.1 point 7.
 10. Gate on an RTX 4070 (§8) + §8.3 stratum + context arms; frontier cutoff calibrated + documented.
 11. **M6b:** blocked device-LDL (§6) — its own kernels, oracle, zero-alloc gate; then re-gate.
 
