@@ -83,6 +83,7 @@ module PureSparseOB
     import PureSparse: Symbolic, FactorStats, Workspace, AbstractSparseFactor, SupernodalFactor, LDLFactor, issuccess
     import PureSparse: AbstractOrdering, AMDOrdering, GivenOrdering, symbolic
     import PureSparse: LDLT_DELTA
+    import PureSparse: check_refactor_shape, check_refactor_nnz, check_finite
 
     include(joinpath(pkgdir(PureSparse), "src", "numeric", "llt.jl"))
     include(joinpath(pkgdir(PureSparse), "src", "numeric", "ldlt.jl"))
