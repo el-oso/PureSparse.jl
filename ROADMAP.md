@@ -38,7 +38,7 @@ Gate (all met):
 
 - Correctness on a matrix zoo against a dense `BigFloat` oracle, cross-checked against
   CHOLMOD's output through `SparseArrays`.
-- `cholesky!` on an existing factor allocates zero bytes (checks-disabled configuration).
+- `cholesky!` on an existing factor allocates zero bytes.
 - Wall time: `median_seconds(PureSparse+PureBLAS) < median_seconds(CHOLMOD+OpenBLAS)` on the
   KKT/FEM benchmark set, under both own-ordering and same-permutation arms, strictly faster on
   at least half the set. A size sweep from n = 2 to 2048 also passes.
@@ -187,10 +187,13 @@ hardware.
 
 ## Cross-cutting work
 
-- **Toolchain migration (in progress, separate branch):** Julia 1.13 and StrictMode 0.5.
-- **`solve!` allocations:** AllocCheck's all-paths analysis finds an allocating path in the
-  Cholesky and LDLᵀ `solve!`. The tested hot path allocates zero bytes; the goal is to make
-  the whole call tree AllocCheck-clean. The QR `solve!` already passes.
+- **All-paths zero allocation:** `@allocated == 0` holds on every refactor and solve, but
+  AllocCheck's all-paths proof fails for `cholesky!`, `ldlt!`, the multifrontal `qr!` and
+  their `solve!`; the column-QR `qr!`/`solve!` pass. Most reported sites are in PureBLAS's
+  level-3 kernels (per-thread workspace creation and growth, the threaded `gemm` path) and
+  need fixing there; PureSparse's own sites are in `_panelview` and `_solve_Lt_generic!`.
+  Once clean, `test/strictmode_guarantees_tests.jl` adds `@test_noalloc` for these entry
+  points.
 - **Registration:** registration in the General registry depends on PureBLAS being
   registered first.
 - **LU:** unsymmetric sparse LU through a collaboration with PureKLU.jl. Not started.

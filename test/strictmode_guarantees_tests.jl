@@ -1,87 +1,42 @@
-# StrictMode guarantee gates (req 0.3.9): machine-checked performance/correctness guarantees on
-# the hottest paths, using StrictMode's `@assert_*` macros. These run in an ISOLATED subprocess
-# with `[StrictMode] checks_enabled = true` (+ AllocCheck/JET for the `:full` analysis extension),
-# because the guarantee macros are gated by `assert_enabled()` (⇒ `checks_enabled()`), which the
-# MAIN suite deliberately leaves OFF — PureSparse's own `strict.jl` runtime checks allocate, and
-# the zero-alloc gate (`@allocated == 0` in qr_solve_tests etc.) depends on checks-off. Writing
-# the preference to `test/LocalPreferences.toml` would contaminate every other item's precompiled
-# state, so we use a throwaway env (same isolation the dropin subprocess tests use).
+# StrictMode guarantee gates on the hottest paths. StrictModeTest's `@test_*` macros prove
+# their guarantee (AllocCheck over every path, inference plus JET) and fail the test on a
+# violation. StrictModeTest refuses to load with checks disabled, so these cannot pass
+# vacuously.
 #
-# WHAT IS ASSERTED (only guarantees that hold on CHECK-FREE targets, so the checks-on body the
-# macro analyzes is identical to the shipped checks-off path):
-#   - `@assert_concurrency_safe cholesky/ldlt(sym, A)` — the allocating factor treats its `sym`
-#     (Symbolic) argument as READ-ONLY: proof that one immutable `Symbolic` is safe to share by
-#     reference across concurrent `cholesky(sym, Aᵢ)` calls — the "analyze once, factorize many"
-#     thesis (design.md §1.2, CLAUDE.md req 7), previously asserted only in prose.
-#   - `@assert_typestable solve!(...)` — the hottest path (called hundreds of times per IPM solve)
-#     has a concrete return type + no internal instability, for all three factor kinds (req 3).
-#   - `@assert_noalloc solve!(xq, Fq, b)` — the QR solve is AllocCheck-clean on ALL paths.
+# Asserted:
+#   - `@assert_concurrency_safe cholesky/ldlt(sym, A)`: the allocating factor treats its
+#     `Symbolic` argument as read-only, so one `Symbolic` can be shared by reference across
+#     concurrent factorizations (CONTRIBUTING.md req 7).
+#   - `@test_typestable solve!(...)` for all three factor kinds (req 3).
+#   - `@test_noalloc solve!(xq, Fq, b)`: the QR solve allocates on no path.
 #
-# NOTE (follow-up, not a release blocker): `@assert_noalloc` FAILS for the Cholesky and LDLᵀ
-# `solve!` (but passes for QR) — AllocCheck finds a non-throw allocation path the happy-path
-# `@allocated == 0` gate does not exercise. The shipped hot path is alloc-free (that gate passes);
-# tightening the Chol/LDLᵀ solve tree to be AllocCheck-clean on every path is a separate task.
+# Not asserted: `@test_noalloc` on the Cholesky and LDLᵀ `solve!`. AllocCheck finds an
+# allocating path there that the `@allocated == 0` gate does not exercise (see ROADMAP.md,
+# "Cross-cutting work").
 
-@testitem "StrictMode guarantees: concurrency-safe shared Symbolic + type-stable solve (subprocess, checks-on)" begin
-    using Pkg
+@testitem "StrictMode guarantees: shared Symbolic is read-only; solve! is type-stable" begin
+    using StrictModeTest, SparseArrays, Random
+    using PureSparse.StrictMode: @assert_concurrency_safe, assert_enabled
+    import PureSparse: symbolic, cholesky, cholesky!, ldlt, ldlt!, qr, solve!, AMDOrdering
 
-    pkgroot = pkgdir(PureSparse)
-    envdir = mktempdir()
-    try
-        write(
-            joinpath(envdir, "LocalPreferences.toml"), """
-            [StrictMode]
-            checks_enabled = true
-            fail_mode = "error"
-            analysis = "full"
-            """
-        )
+    @test assert_enabled()
 
-        script = joinpath(envdir, "run.jl")
-        write(
-            script, """
-            using Pkg
-            Pkg.activate(@__DIR__)
-            Pkg.develop(path=raw"$pkgroot")
-            Pkg.add(["StrictMode","AllocCheck","JET","SparseArrays","Random"])
-            Pkg.instantiate()
+    n = 40
+    A = spdiagm(-1 => fill(-1.0, n - 1), 0 => fill(4.0, n), 1 => fill(-1.0, n - 1))
+    sym = symbolic(A); F = cholesky(sym, A)
+    symL = symbolic(A); FL = ldlt(symL, A)
+    b = randn(MersenneTwister(1), n); x = similar(b); xL = similar(b)
+    cholesky!(F, A); solve!(x, F, b)
+    ldlt!(FL, A); solve!(xL, FL, b)
+    Fq = qr(A; ordering = AMDOrdering(), tol = 0, singletons = false); xq = zeros(n)
+    solve!(xq, Fq, b)
 
-            using PureSparse, StrictMode, AllocCheck, JET, SparseArrays, Random
-            import PureSparse: symbolic, cholesky, cholesky!, ldlt, ldlt!, qr, solve!, AMDOrdering
+    @test (@assert_concurrency_safe(cholesky(sym, A)); true)
+    @test (@assert_concurrency_safe(ldlt(symL, A)); true)
 
-            # If checks silently stayed off, the @assert_* macros no-op and this gate proves nothing.
-            @assert StrictMode.assert_enabled() "StrictMode checks did not enable — guarantee gate would be vacuous"
+    @test_typestable solve!(x, F, b)
+    @test_typestable solve!(xL, FL, b)
+    @test_typestable solve!(xq, Fq, b)
 
-            n = 40
-            A = spdiagm(-1=>fill(-1.0,n-1), 0=>fill(4.0,n), 1=>fill(-1.0,n-1))
-            sym  = symbolic(A);  F  = cholesky(sym, A)
-            symL = symbolic(A);  FL = ldlt(symL, A)
-            b = randn(n); x = similar(b); xL = similar(b)
-            cholesky!(F, A); solve!(x, F, b)
-            ldlt!(FL, A);    solve!(xL, FL, b)
-            Fq = qr(A; ordering=AMDOrdering(), tol=0, singletons=false); xq = zeros(n); solve!(xq, Fq, b)
-
-            # --- the analyze-once / shared-immutable-Symbolic guarantee (req 7) ---
-            @assert_concurrency_safe cholesky(sym, A)
-            @assert_concurrency_safe ldlt(symL, A)
-
-            # --- type-stable hottest path, all three factor kinds (req 3) ---
-            @assert_typestable solve!(x, F, b)
-            @assert_typestable solve!(xL, FL, b)
-            @assert_typestable solve!(xq, Fq, b)
-
-            # --- QR solve is AllocCheck-clean on every path ---
-            @assert_noalloc solve!(xq, Fq, b)
-
-            println("STRICTMODE GUARANTEES OK")
-            """
-        )
-
-        julia_exe = joinpath(Sys.BINDIR, Base.julia_exename())
-        cmd = ignorestatus(addenv(`$julia_exe --project=$envdir $script`, "JULIA_LOAD_PATH" => nothing))
-        proc = Base.run(pipeline(cmd; stdout = Base.stdout, stderr = Base.stderr))
-        @test proc.exitcode == 0
-    finally
-        rm(envdir; recursive = true, force = true)
-    end
+    @test_noalloc solve!(xq, Fq, b)
 end

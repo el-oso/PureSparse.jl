@@ -19,12 +19,12 @@ end
     @test_throws PureSparse.StrictMode.StrictViolation PureSparse._check_finite_impl([1.0, Inf, 3.0], "test")
 end
 
-@testitem "checks_enabled() gate: public entry points are no-ops when disabled (the default)" begin
+@testitem "checks_enabled() gate: public entry points throw when enabled" begin
     using SparseArrays
-    @test !PureSparse.StrictMode.checks_enabled()   # default build has checks off
+    @test PureSparse.StrictMode.checks_enabled()   # StrictMode's default; StrictModeTest requires it
     A = sparse([1.0 0.0; 0.0 1.0])
-    # A shape/nnz mismatch that would throw via the _impl must be silently skipped here.
-    @test PureSparse.check_refactor_shape(A, 99, 99, "test") === nothing
-    @test PureSparse.check_refactor_nnz(A, 99, "test") === nothing
-    @test PureSparse.check_finite([NaN], "test") === nothing
+    @test isnothing(PureSparse.check_refactor_shape(A, 2, 2, "test"))
+    @test_throws PureSparse.StrictMode.StrictViolation PureSparse.check_refactor_shape(A, 99, 99, "test")
+    @test_throws PureSparse.StrictMode.StrictViolation PureSparse.check_refactor_nnz(A, 99, "test")
+    @test_throws PureSparse.StrictMode.StrictViolation PureSparse.check_finite([NaN], "test")
 end

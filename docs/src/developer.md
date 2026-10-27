@@ -99,24 +99,23 @@ Two **separate** mechanisms, easy to conflate:
 - **TypeContracts.jl** (`src/contracts.jl`) — compile-time interface contracts, precompile-time
   only, eliminated by the trimmer. Never a runtime mechanism.
 - **StrictMode.jl** (`src/strict.jl`) — a runtime pre/post-condition layer (shape, nnz, finiteness
-  guards) gated behind `StrictMode.checks_enabled()`. These checks may allocate; they are for
-  debugging, not the hot path, and are **off** in the perf/zero-alloc configuration.
+  guards) gated behind `StrictMode.checks_enabled()`. StrictMode turns checks **on** by
+  default; a deployment that wants the zero-cost hot path turns them off with
+  `StrictMode.disable_checks!()` (or `[preferences.StrictMode] checks_enabled = false` in its
+  `Project.toml`). The test suite runs checks-on, and the zero-alloc gate holds there.
 
-On top of that, PureSparse runs **StrictMode `@assert_*` guarantee gates** in
-`test/strictmode_guarantees_tests.jl`:
+`src/PureSparse.jl` ends with `StrictMode.@strict_policy :hot`, which applies the `:hot`
+guarantee set to every definition in the module and checks them when the package loads.
 
-- `@assert_concurrency_safe cholesky/ldlt(sym, A)` — machine-proof that the allocating factor
-  treats its `Symbolic` argument read-only, i.e. one immutable `Symbolic` is safe to share by
-  reference across concurrent factorizations (the analyze-once thesis).
-- `@assert_typestable solve!(...)` — concrete return type + no internal instability, all factor
+`test/strictmode_guarantees_tests.jl` proves guarantees on the hottest paths with StrictModeTest
+(which pulls in AllocCheck and JET, and refuses to load with checks disabled):
+
+- `@assert_concurrency_safe cholesky/ldlt(sym, A)` — the allocating factor treats its `Symbolic`
+  argument as read-only, so one `Symbolic` is safe to share by reference across concurrent
+  factorizations (the analyze-once design).
+- `@test_typestable solve!(...)` — concrete return type and no internal instability, all factor
   kinds.
-
-These macros require checks **on** (`assert_enabled()` ⇒ `checks_enabled()`), which conflicts with
-the checks-off zero-alloc gate — so they run in an **isolated subprocess** with its own
-`[StrictMode] checks_enabled = true` preference plus `AllocCheck`/`JET`, and they target only
-**check-free** functions (`solve!` and the constructors), so the analyzed body equals the shipped
-one. When adding such a guarantee, keep this constraint in mind: asserting on a function that calls
-`src/strict.jl` checks would analyze a checks-on body that is not what ships.
+- `@test_noalloc solve!(...)` — the QR solve allocates on no path.
 
 ## Trim compatibility
 

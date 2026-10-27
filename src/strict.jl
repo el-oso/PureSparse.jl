@@ -1,9 +1,10 @@
 # Runtime pre/postcondition checks layer (design.md §9.1 D6 / CLAUDE.md req 6) — separate
 # from contracts.jl's compile-time TypeContracts (see that file's header comment: this is
 # the "separate StrictMode.jl layer" it names). `StrictMode.checks_enabled()` is a
-# compile-time-baked constant (default `false`), so every check below folds away entirely
-# when disabled — zero runtime cost, matching CLAUDE.md req 5 (zero-alloc after symbolic)
-# and req 4 (no runtime-detected branching on hot paths).
+# compile-time-baked constant (default `true`; a deployment turns it off with
+# `StrictMode.disable_checks!()`), so when disabled every check below folds away entirely —
+# zero runtime cost, matching CLAUDE.md req 5 (zero-alloc after symbolic) and req 4 (no
+# runtime-detected branching on hot paths).
 #
 # M5a task 10 found this layer didn't exist anywhere in the codebase yet — not even for
 # `cholesky!`/`ldlt!` (M1/M2) despite CLAUDE.md req 6 requiring it project-wide — so this
@@ -19,17 +20,10 @@
 
 using StrictMode
 
-# Single choke point for reporting a violation, honoring StrictMode's own `fail_mode`
-# preference (`:error` throws, `:warn` warns and continues) — mirrors StrictMode's own
-# internal `_fail` (not exported; this is our own copy of the same convention using the
-# public `StrictViolation`/`fail_mode` API).
+# Single choke point for reporting a violation. Every check here is a pre- or
+# postcondition whose failure means a wrong factor, so it always throws.
 function _strict_fail(kind::Symbol, target, details::AbstractString)
-    v = StrictMode.StrictViolation(kind, target, String(details))
-    if StrictMode.fail_mode() === :warn
-        @warn sprint(showerror, v)
-        return nothing
-    end
-    throw(v)
+    throw(StrictMode.StrictViolation(kind, target, String(details)))
 end
 
 """
