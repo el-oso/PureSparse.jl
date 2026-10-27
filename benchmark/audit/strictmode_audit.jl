@@ -1,34 +1,29 @@
-# StrictMode zero-alloc guarantee for every warm-refactor entry point CONTRIBUTING.md req 5
-# already gates at runtime: cholesky!/ldlt! (M1/M2, both via the shared
-# solve!(::_PanelFactor,...)), and qr!/solve! on BOTH sparse-QR factor types — QRFactor
-# (M5a :column) and QRFrontFactor (M5b :frontal). `@assert_noalloc` (StrictMode) is
-# used here in EMPIRICAL mode (`static = false`), not the default static AllocCheck all-paths
-# proof — tried `static = true` (the default under analysis="full") first: it correctly proves
-# cholesky!'s call into PureBLAS's `trsm!` -> `_l3_apad` (workspace.jl), a lazily-grown-then-
-# cached scratch buffer (`if size(cache) < needed; grow!; end`), STILL CONTAINS the growth
-# branch in its compiled code — so static proof reports it as an allocation site regardless of
-# whether a prior warm-up call already grew the cache to steady state. This is the exact
-# false-positive class PureBLAS's own test/strictmode_tests.jl already documents and works
-# around the same way (`static = false`, see its header comment) — not a bug to fix, a
-# mismatch between "prove zero allocations under every possible history" (impossible by
-# design for any lazily-grown cache) and the actual guarantee wanted here ("zero allocations
-# in warmed steady state", which is exactly what the existing `@allocated == 0` tests already
-# verify, and what `static = false` checks here too, just via StrictMode's own assertion
-# mechanism instead of a bare `@test`).
+# Fast StrictMode audit of PureSparse's refactor-and-solve entry points. It needs no proof
+# backend; the authoritative all-paths proofs (AllocCheck, JET) run in the test suite through
+# StrictModeTest (test/strictmode_guarantees_tests.jl). Three checks, any failure exits non-zero:
 #
-# Isolated in this env (not test/) because all of these functions call StrictMode's OWN
-# runtime checks internally (check_refactor_shape/check_finite, src/strict.jl) — running with
-# checks_enabled=true globally in test/ would contaminate every existing @allocated==0 gate
-# there (see this dir's Project.toml header).
+#   1. Loading PureSparse runs its `@strict_policy :default` load check.
+#   2. Every in-place entry point allocates zero bytes in warmed steady state
+#      (`@allocated` behind a function barrier).
+#   3. A sweep of the methods the workload compiled has no type-stability or boxing failure.
+#      StrictMode's allocation verdicts are heuristics, so they are reported, not gated.
 #
 # Run:
 #   julia --project=benchmark/audit benchmark/audit/strictmode_audit.jl
 using PureSparse, SparseArrays, Random, LinearAlgebra
-using StrictMode
-using AllocCheck, JET   # StrictMode's analysis backend is a weak-dep extension — load it
+using StrictMode: StrictMode, audit, module_policy
 
-StrictMode.checks_enabled() || error("StrictMode checks disabled — set [preferences.StrictMode] checks_enabled=true")
-StrictMode.backend_available() || error("StrictMode analysis backend not loaded — need `using AllocCheck, JET`")
+StrictMode.checks_enabled() || error("StrictMode checks are disabled in this environment")
+
+function check_noalloc(f, args...)
+    f(args...)
+    n = @allocated f(args...)
+    println(rpad(string(nameof(f), "(", join(nameof.(typeof.(args)), ", "), ")"), 64), n, " bytes")
+    iszero(n) || error("$(nameof(f)) allocated $n bytes in warmed steady state")
+    return nothing
+end
+
+rng = MersenneTwister(11)
 
 rng = MersenneTwister(11)
 
@@ -55,11 +50,9 @@ xchol = zeros(n)
 PureSparse.cholesky!(Fchol, Achol)   # warm up
 PureSparse.solve!(xchol, Fchol, bchol)
 
-println("Auditing PureSparse.cholesky!(::SupernodalFactor, ::SparseMatrixCSC)...")
-@assert_noalloc static = false PureSparse.cholesky!(Fchol, Achol)
+check_noalloc(PureSparse.cholesky!, Fchol, Achol)
 
-println("Auditing PureSparse.solve!(::Vector, ::SupernodalFactor, ::Vector)...")
-@assert_noalloc static = false PureSparse.solve!(xchol, Fchol, bchol)
+check_noalloc(PureSparse.solve!, xchol, Fchol, bchol)
 
 # --- ldlt! / solve! (LDLFactor, M2) ---
 npos, nneg = 15, 10
@@ -94,11 +87,9 @@ xldlt = zeros(nl)
 PureSparse.ldlt!(Fldlt, Kldlt)   # warm up
 PureSparse.solve!(xldlt, Fldlt, bldlt)
 
-println("Auditing PureSparse.ldlt!(::LDLFactor, ::SparseMatrixCSC)...")
-@assert_noalloc static = false PureSparse.ldlt!(Fldlt, Kldlt)
+check_noalloc(PureSparse.ldlt!, Fldlt, Kldlt)
 
-println("Auditing PureSparse.solve!(::Vector, ::LDLFactor, ::Vector)...")
-@assert_noalloc static = false PureSparse.solve!(xldlt, Fldlt, bldlt)
+check_noalloc(PureSparse.solve!, xldlt, Fldlt, bldlt)
 
 # --- qr! / solve! (QRFactor, M5a :column) ---
 Aqr = sprand(rng, 60, 25, 0.15) + sparse(1:25, 1:25, 1.0, 60, 25)
@@ -113,11 +104,9 @@ xqr = zeros(Aqr.n)
 PureSparse.qr!(Fcol, Aqr2)   # warm up
 PureSparse.solve!(xqr, Fcol, bqr)
 
-println("Auditing PureSparse.qr!(::QRFactor, ::SparseMatrixCSC)...")
-@assert_noalloc static = false PureSparse.qr!(Fcol, Aqr2)
+check_noalloc(PureSparse.qr!, Fcol, Aqr2)
 
-println("Auditing PureSparse.solve!(::Vector, ::QRFactor, ::Vector)...")
-@assert_noalloc static = false PureSparse.solve!(xqr, Fcol, bqr)
+check_noalloc(PureSparse.solve!, xqr, Fcol, bqr)
 
 # --- qr! / solve! (QRFrontFactor, M5b multifrontal) ---
 A = sprand(rng, 60, 25, 0.15) + sparse(1:25, 1:25, 1.0, 60, 25)
@@ -128,10 +117,19 @@ x = zeros(A.n)
 PureSparse.qr!(F, A2)   # warm up
 PureSparse.solve!(x, F, b)
 
-println("Auditing PureSparse.qr!(::QRFrontFactor, ::SparseMatrixCSC)...")
-@assert_noalloc static = false PureSparse.qr!(F, A2)
+check_noalloc(PureSparse.qr!, F, A2)
 
-println("Auditing PureSparse.solve!(::Vector, ::QRFrontFactor, ::Vector)...")
-@assert_noalloc static = false PureSparse.solve!(x, F, b)
+check_noalloc(PureSparse.solve!, x, F, b)
 
-println("PASS: cholesky!/ldlt!/qr!(::QRFactor)/qr!(::QRFrontFactor) and their solve!s are all alloc-free in warmed steady state (StrictMode @assert_noalloc, empirical mode).")
+fs = audit(PureSparse; sweep = true, guarantees = module_policy(PureSparse))
+gating = filter(f -> f.status === :fail && f.guarantee in (:typestable, :noboxing), fs)
+heuristic = count(f -> f.status === :fail && f.guarantee === :noalloc, fs)
+println(
+    "sweep: ", length(fs), " findings; ", length(gating), " type-stability/boxing failures; ",
+    heuristic, " allocation heuristics (reported only)"
+)
+for f in gating
+    println("  ", f.guarantee, "  ", f.func, f.signature, " — ", f.reason)
+end
+isempty(gating) || error("type-stability or boxing failures in PureSparse")
+println("PASS")
