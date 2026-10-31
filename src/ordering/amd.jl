@@ -95,7 +95,10 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
         (i == j || state[j] == _AMD_DENSE || state[i] == _AMD_DENSE) && continue
         nzkeep += 1
     end
-    cap = nzkeep + n + 1                     # initial pattern + elbow room of n
+    # Elbow room ≥ the initial pattern: live storage never exceeds the initial pattern, so
+    # every compaction frees at least `nzkeep + n` slots and its O(live + n log n) cost is
+    # amortized over at least that many new L_p entries.
+    cap = 2 * nzkeep + n + 1
     qw = Vector{Int}(undef, cap)
     free = 1
     @inbounds for j in 1:n
@@ -151,13 +154,20 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
         mindeg = d
         nvp = nv[p]
 
-        # ---- ensure tail space for L_p (≤ one entry per live supervariable) ----
-        need = nondense - nelim
+        # ---- ensure tail space for L_p ----
+        # L_p ⊆ A_p ∪ ⋃_{e∈E_p} L_e, so the sum of those list lengths bounds |L_p|. The
+        # looser bound "every remaining variable" exceeds the elbow room on almost every
+        # pivot and turns compaction into the dominant cost.
+        need = na[p]
+        @inbounds for q in ptr[p]:(ptr[p] + ne[p] - 1)
+            e = qw[q]
+            state[e] == _AMD_ELT && (need += na[e])
+        end
         if cap - free + 1 < need
             free = _amd_compact!(qw, ptr, ne, na, state, n, free)
             if cap - free + 1 < need
-                # Unreachable by the storage invariant (live ≤ initial pattern, so the
-                # post-compaction tail is ≥ n+1 ≥ need); defensive fallback only.
+                # The post-compaction tail is ≥ n+1 (live storage ≤ initial pattern), but
+                # the list-length bound can exceed it when the L_e overlap; grow.
                 cap = free + need + n
                 resize!(qw, cap)
             end
