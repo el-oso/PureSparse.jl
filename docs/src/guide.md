@@ -23,9 +23,8 @@ S = PureSparse.symbolic(A)          # ordering + etree + supernodes; allocates o
 F = PureSparse.cholesky(S, A)       # numeric factorization into a fresh factor
 PureSparse.issuccess(F)             # true iff every pivot was SPD
 
-A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .+ 1e-3 .* randn(nnz(A)))
-PureSparse.cholesky!(F, A2)         # same sparsity PATTERN, new values — refactor in
-                                     # place, zero allocations after warmup
+A2 = A + 0.5I                       # new values, same sparsity pattern
+PureSparse.cholesky!(F, A2)         # refactor in place, zero allocations after warmup
 ```
 
 `PureSparse.cholesky(A)` (without a pre-built `S`) is the one-shot convenience form:

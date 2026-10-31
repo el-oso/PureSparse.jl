@@ -5,52 +5,78 @@
 [![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://el-oso.github.io/PureSparse.jl/dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A pure-Julia supernodal sparse Cholesky/LDLᵀ solver, part of the **Pure Julia Ecosystem** —
-pure-Julia replacements for Julia's non-Julia default libraries (siblings:
+A pure-Julia sparse direct solver: sparse Cholesky, LDLᵀ and QR, replacing SuiteSparse's
+CHOLMOD and SuiteSparseQR. It is part of the **Pure Julia Ecosystem**, pure-Julia
+replacements for Julia's non-Julia default libraries (siblings:
 [PureBLAS.jl](https://github.com/el-oso/PureBLAS.jl),
-[PureFFT.jl](https://github.com/el-oso/PureFFT.jl)). PureSparse replaces SuiteSparse's
-CHOLMOD. It is a **clean-room reimplementation** — design and code are derived only from
-published academic papers, never from CHOLMOD's source (see
-[`docs/design.md` §11](docs/design.md) for the full provenance policy).
+[PureFFT.jl](https://github.com/el-oso/PureFFT.jl)). All dense work runs through PureBLAS.jl.
 
-Dense per-supernode work (`potrf!`/`trsm!`/`syrk!`/`syr2k!`/`gemm!`) runs entirely through
-[PureBLAS.jl](https://github.com/el-oso/PureBLAS.jl) — no OpenBLAS, no LAPACK.
+PureSparse is a **clean-room implementation**: its design and code derive only from
+published papers, never from SuiteSparse source. See
+[Provenance](https://el-oso.github.io/PureSparse.jl/dev/provenance/) and
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-**Status:** Milestone 1 in progress (AMD ordering + symbolic analysis + supernodal LLᵀ +
-solve). See [`ROADMAP.md`](ROADMAP.md) for milestone status and
-[`docs/design.md`](docs/design.md) for the full design document.
+## Features
 
-## Scope
+- AMD and COLAMD fill-reducing orderings, or a user-supplied permutation.
+- Supernodal LLᵀ for symmetric positive definite matrices.
+- Supernodal and simplicial LDLᵀ for symmetric quasi-definite matrices, such as
+  interior-point KKT systems, with fixed pivots, signed regularization and inertia counts.
+- Rank-k update and downdate of a simplicial factor.
+- Sparse QR (left-looking and multifrontal) for least squares, minimum-norm and
+  rank-deficient problems.
+- An opt-in drop-in (`PureSparse.activate!()`, then restart Julia) that routes
+  `LinearAlgebra.cholesky` and `ldlt` on sparse matrices to PureSparse instead of CHOLMOD.
+- GPU factorization through package extensions: CUDA, with AMD ROCm in progress.
+- Analyze once, factorize many times: refactoring a matrix with the same sparsity pattern
+  reuses the symbolic analysis, and `cholesky!`, `ldlt!`, `qr!` and `solve!` allocate
+  nothing.
+- Generic over element types (`Float32`, ForwardDiff duals, ...) and compatible with
+  `juliac --trim`.
 
-- Fill-reducing ordering: Approximate Minimum Degree (AMD), pure Julia from scratch, behind
-  an extensible ordering interface (nested dissection / METIS-style / user-supplied
-  permutations can plug in later).
-- Supernodal LLᵀ factorization for SPD systems.
-- Supernodal + simplicial LDLᵀ for symmetric quasi-definite (SQD) systems — the primary
-  downstream target is **interior-point optimizers**, which factor the same KKT sparsity
-  pattern every iteration ("analyze once, factorize many times").
-- Rank-k update/downdate (Davis–Hager) on the simplicial representation.
-- GPU backend (CUDA.jl weak-dependency extension, in-package).
+Status by milestone, with open work: [`ROADMAP.md`](ROADMAP.md). Performance against
+CHOLMOD and SuiteSparseQR:
+[Benchmarking](https://el-oso.github.io/PureSparse.jl/dev/benchmarking/).
 
-## Native API (sketch — M1 in progress)
+## Installation
+
+PureSparse requires Julia 1.13 or later. It is not yet registered; install it from GitHub
+(PureBLAS.jl is fetched automatically):
 
 ```julia
-using PureSparse
-
-S = symbolic(A; ordering = AMDOrdering())    # analysis, once per sparsity pattern
-F = cholesky(A; ordering)                     # symbolic + numeric
-cholesky!(F, A2)                              # refactor, same pattern, zero allocations
-x = F \ b
+using Pkg
+Pkg.add(url = "https://github.com/el-oso/PureSparse.jl")
 ```
 
-## Develop & test
+## Example
+
+```julia
+using PureSparse, SparseArrays, LinearAlgebra
+
+A = sprand(1000, 1000, 0.005)
+A = A + A' + 1000I                    # symmetric positive definite
+b = randn(1000)
+
+F = PureSparse.cholesky(A)            # ordering, symbolic analysis and factorization
+x = F \ b
+
+A2 = A + 0.5I                         # new values, same sparsity pattern
+PureSparse.cholesky!(F, A2)           # refactor without allocating
+solve!(x, F, b)                       # solve in place without allocating
+```
+
+`PureSparse.ldlt` and `PureSparse.qr(A; ordering = COLAMDOrdering())` follow the same
+pattern. The names are qualified because `LinearAlgebra` exports `cholesky`, `ldlt` and
+`qr` too. See the [Guide](https://el-oso.github.io/PureSparse.jl/dev/guide/).
+
+## Contributing
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) first: it lists the requirements every change
+must meet, how to run the tests and how to benchmark.
 
 ```bash
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=test test/runtests.jl                      # full suite
+git clone https://github.com/el-oso/PureSparse.jl
+cd PureSparse.jl
+julia --project=test -e 'using Pkg; Pkg.instantiate()'
+julia --project=test --check-bounds=yes test/runtests.jl
 ```
-
-Correctness oracle and performance gate: Julia's built-in `SparseArrays`/`SuiteSparse`
-CHOLMOD wrapper (black-box output comparison only — never CHOLMOD's source). See
-[`docs/design.md` §9](docs/design.md) for the full testing/benchmarking methodology and
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the project's hard requirements.

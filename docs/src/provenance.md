@@ -30,7 +30,7 @@ re-derived before implementation began — see `docs/design.md` §0).
 | Left-looking supernodal LLᵀ | Ng–Peyton 1993; Rothberg–Gupta 1993 |
 | SQD / LDLᵀ regularization (M2) | Vanderbei 1995; Stellato et al. (OSQP/QDLDL); the Clarabel paper |
 | Update/downdate (M2) | Davis–Hager, *Modifying a Sparse Cholesky Factorization*, SIAM J. Matrix Anal. Appl., 1999, and the 2001 multiple-rank follow-up |
-| GPU hybrid design (M3) | Rennich et al. 2016 (concept only) |
+| GPU hybrid design (M6) | Rennich et al. 2016 (concept only) |
 | Workspace-size bounds | independent derivation from the left-looking update schedule |
 
 See `docs/design.md` §11 (in the repository) for the full policy and the design review

@@ -15,26 +15,36 @@ minimum-norm, rank-revealing) — all dense per-supernode/per-front work goes th
 design and code derive only from published academic papers and independent reasoning —
 CHOLMOD source is never read, in any form. See [Provenance & Licensing](provenance.md).
 
-**Status: M1 (Cholesky), M2 (LDLᵀ + update/downdate), M4 (drop-in), and M5 (sparse QR)
-are closed** — each against its own non-negotiable wall-time gate (median PureSparse+PureBLAS
-faster than the SuiteSparse+OpenBLAS baseline, own-ordering **and** under an identical
-permutation), verified on clock-locked hardware and cross-checked against dense `BigFloat`
-and SuiteSparse output oracles. See [Benchmarking](benchmarking.md) for the numbers. M6 (GPU,
-CUDA weak-dep extension — renumbered from the original M3) is the remaining milestone.
+**Status:** Cholesky, LDLᵀ with update/downdate, the `LinearAlgebra` drop-in, sparse QR and
+CUDA GPU factorization are complete. Each CPU milestone passed a wall-time gate: median
+PureSparse+PureBLAS time below SuiteSparse+OpenBLAS, both with each library's own ordering
+and with an identical permutation, measured on fixed-clock hardware. Results are
+cross-checked against dense `BigFloat` factorizations and SuiteSparse's output. AMD ROCm
+support is in progress. See [Benchmarking](benchmarking.md) for the numbers and `ROADMAP.md`
+in the repository for open work.
+
+PureSparse requires Julia 1.13 or later and is not yet registered:
 
 ```julia
-using PureSparse, SparseArrays
+using Pkg
+Pkg.add(url = "https://github.com/el-oso/PureSparse.jl")
+```
+
+```julia
+using PureSparse, SparseArrays, LinearAlgebra
 
 A = sprand(1000, 1000, 0.005)
-A = A + A' + 1000I   # symmetric, diagonally dominant -> SPD
+A = A + A' + 1000I                    # symmetric positive definite
+b = randn(1000)
 
-F = PureSparse.cholesky(A)        # symbolic analysis + numeric factorization
-x = F \ randn(1000)               # solve
+F = PureSparse.cholesky(A)            # ordering, symbolic analysis and factorization
+x = F \ b
 
-# Refactorize the same sparsity pattern with new values (analyze once, factor many times —
-# the workload interior-point optimizers need), zero allocations after warmup:
-A2 = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, A.nzval .+ 1e-3 .* randn(nnz(A)))
+# Refactor the same sparsity pattern with new values (analyze once, factorize many times,
+# the workload of interior-point optimizers). Neither call allocates.
+A2 = A + 0.5I
 PureSparse.cholesky!(F, A2)
+solve!(x, F, b)
 ```
 
 See the [Guide](guide.md) for the full workflow (custom orderings, split solves,
