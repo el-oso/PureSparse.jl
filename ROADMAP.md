@@ -198,6 +198,19 @@ hardware.
   0.1.2 (Zen 3, fixed clock; faster than CHOLMOD at every size). The named-matrix gates
   (`gate.jl`, `gate_ldlt.jl`, `qr_gate.jl`, `gpu_gate.jl`) and the Zen 4 size sweep still
   report results from earlier toolchains.
+- **Analysis time:** on 2D and 3D Laplacians, symbolic analysis is slower than faer's
+  and CHOLMOD's. AMD is the largest single stage (roughly 40% of analysis);
+  its remaining cost is spread across the main elimination
+  loop. The preliminary column-count pass used only for sibling ordering is another
+  candidate.
+- **Tree-level parallelism:** the numeric factorization runs supernodes sequentially, so
+  extra threads only help inside large dense kernels. Matrices with many small
+  supernodes, such as 2D and 3D grids, do not speed up with threads. Independent subtrees
+  of the elimination tree could be factored in parallel; this needs a design.
+- **Threaded kernels slow the factorization down:** on a 30×30×30 Laplacian,
+  `cholesky!` with 4 PureBLAS threads takes about 1.4 times as long as with 1, although
+  the dominant kernels run alone at the same shapes get faster with 4 threads (except
+  `syrk!` at 900×300). The cause inside the factorization is not yet identified.
 - **Registration:** registration in the General registry depends on PureBLAS being
   registered first.
 - **LU:** unsymmetric sparse LU through a collaboration with PureKLU.jl. Not started.
