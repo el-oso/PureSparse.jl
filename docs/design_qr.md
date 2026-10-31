@@ -786,8 +786,7 @@ Consequences, all for free:
   with a marker array; |S| ≤ |A|. Feed the strict-upper part through the existing
   `symmetrized_upper`-shaped entry points unchanged.
 - Postorder: existing `postorder` + `relabel_pattern`, composed into `cperm` exactly as
-  design.md §3.2 does. (No amalgamation priority needed in M5a — no supernodes; M5b
-  reuses the priority mechanism when fronts arrive, §7.1.)
+  design.md §3.2 does, children visited in ascending column order.
 
 ### 3.3 R structure
 
