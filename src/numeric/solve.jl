@@ -160,11 +160,11 @@ function _solve_L_cached!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: 
             if nsrow > nscol
                 Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
                 nex = nsrow - nscol
-                upd = view(ws.c, 1:nex, 1:1)
-                gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
+                upd = view(ws.c, 1:nex, 1)
+                gemv!(upd, Lbelow, view(yblk, :, 1); trans = 'N', alpha = -one(T), beta = zero(T))
                 for a in 1:nex
                     ra = _row(rowind, rp0, nscol + a)
-                    y[ra] += upd[a, 1]
+                    y[ra] += upd[a]
                 end
             end
         end
@@ -193,11 +193,11 @@ function _solve_L_generic!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <:
 
             if nsrow > nscol
                 Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-                upd = Matrix{T}(undef, nsrow - nscol, 1)
-                gemm!(upd, Lbelow, yblk; transA = 'N', transB = 'N', alpha = -one(T), beta = zero(T))
+                upd = Vector{T}(undef, nsrow - nscol)
+                gemv!(upd, Lbelow, view(yblk, :, 1); trans = 'N', alpha = -one(T), beta = zero(T))
                 for a in 1:(nsrow - nscol)
                     ra = _row(rowind, rp0, nscol + a)
-                    y[ra] += upd[a, 1]
+                    y[ra] += upd[a]
                 end
             end
         end
@@ -276,12 +276,12 @@ function _solve_Lt_cached!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <:
             if nsrow > nscol
                 Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
                 nex = nsrow - nscol
-                gathered = view(ws.c, 1:nex, 1:1)
+                gathered = view(ws.c, 1:nex, 1)
                 for a in 1:nex
                     ra = _row(rowind, rp0, nscol + a)
-                    gathered[a, 1] = y[ra]
+                    gathered[a] = y[ra]
                 end
-                gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
+                gemv!(view(yblk, :, 1), Lbelow, gathered; trans = 'T', alpha = -one(T), beta = one(T))
             end
             trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
         end
@@ -309,12 +309,12 @@ function _solve_Lt_generic!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <
 
             if nsrow > nscol
                 Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
-                gathered = Matrix{T}(undef, nsrow - nscol, 1)
+                gathered = Vector{T}(undef, nsrow - nscol)
                 for a in 1:(nsrow - nscol)
                     ra = _row(rowind, rp0, nscol + a)
-                    gathered[a, 1] = y[ra]
+                    gathered[a] = y[ra]
                 end
-                gemm!(yblk, Lbelow, gathered; transA = 'T', transB = 'N', alpha = -one(T), beta = one(T))
+                gemv!(view(yblk, :, 1), Lbelow, gathered; trans = 'T', alpha = -one(T), beta = one(T))
             end
             trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
         end
