@@ -295,7 +295,7 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
             di = min(nleft - nv[i], deg[i] + lpext, asum + lpext + esum)
             deg[i] = max(di, 0)
             # Hash(i) = ((Σ_{j∈A_i} j + Σ_{e∈E_i} e) mod (n−1)) + 1   (paper §5)
-            h = mod(hsum, hmod) + 1
+            h = rem(hsum, hmod) + 1           # hsum ≥ 0: node ids are positive
             if hhead[h] == 0
                 push!(hbuckets, h)
             end
@@ -314,12 +314,16 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
             while i != 0
                 prevj = i
                 j = hnext[i]
+                marked = false              # i's lists are marked lazily, once per i
                 while j != 0
                     same = ne[i] == ne[j] && na[i] == na[j]
                     if same
-                        tag = _amd_bump_tag!(mk, tag)
-                        @inbounds for r in ptr[i]:(ptr[i] + ne[i] + na[i] - 1)
-                            mk[qw[r]] = tag
+                        if !marked
+                            tag = _amd_bump_tag!(mk, tag)
+                            @inbounds for r in ptr[i]:(ptr[i] + ne[i] + na[i] - 1)
+                                mk[qw[r]] = tag
+                            end
+                            marked = true
                         end
                         @inbounds for r in ptr[j]:(ptr[j] + ne[j] + na[j] - 1)
                             if mk[qw[r]] != tag

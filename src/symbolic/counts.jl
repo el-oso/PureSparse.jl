@@ -17,21 +17,13 @@
 # find-root of the previous leaf is exactly the LCA with the current node.
 
 """
-    column_counts(n, colptr, rowval, parent) -> colcount::Vector{Ti}
+    lower_pattern(n, colptr, rowval) -> (hptr, hadj)
 
-`colcount[j] = |{i ≥ j : L[i,j] ≠ 0}|` for the Cholesky factor of the symmetric matrix
-whose STRICT UPPER triangle (postordered) is given by `colptr`/`rowval` (1-based CSC),
-with elimination tree `parent` (also postordered; `parent[j]==0` marks a root). Design.md
-§3.3. O(nnz·α(nnz,n)), computed without forming L.
+Transpose of a strict-upper CSC pattern: column `c` of `hadj` holds the sorted rows
+`{i > c : A[c,i] ≠ 0}`, which by symmetry is column `c`'s below-diagonal pattern. One
+counting transpose; rows come out sorted because columns are scanned in order.
 """
-function column_counts(
-        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
-    ) where {Ti <: Integer}
-    # Higher adjacency = transpose of the strict-upper pattern: column j of `hadj` holds
-    # {i > j : A[i,j] ≠ 0} (row j of the upper triangle). The main pass needs row
-    # structures in increasing j, which the upper CSC can't serve directly; one counting
-    # transpose provides them (rows come out sorted ascending since columns are scanned
-    # in order).
+function lower_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     nz = Int(colptr[n + 1]) - 1
     cnt = zeros(Ti, n)
     @inbounds for p in 1:nz
@@ -51,6 +43,25 @@ function column_counts(
             cnt[r] += one(Ti)
         end
     end
+    return hptr, hadj
+end
+
+"""
+    column_counts(n, colptr, rowval, parent[, lower]) -> colcount::Vector{Ti}
+
+`colcount[j] = |{i ≥ j : L[i,j] ≠ 0}|` for the Cholesky factor of the symmetric matrix
+whose STRICT UPPER triangle (postordered) is given by `colptr`/`rowval` (1-based CSC),
+with elimination tree `parent` (also postordered; `parent[j]` is `0` for a root).
+Design.md §3.3. O(nnz·α(nnz,n)), computed without forming L. `lower` is
+[`lower_pattern`](@ref)`(n, colptr, rowval)`; pass it when the caller already has it.
+"""
+function column_counts(
+        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
+        lower::Tuple{Vector{Ti}, Vector{Ti}} = lower_pattern(n, colptr, rowval),
+    ) where {Ti <: Integer}
+    # The main pass needs row structures of the upper triangle in increasing j, which the
+    # upper CSC can't serve directly; its transpose does.
+    hptr, hadj = lower
 
     # First-descendant pass. The pattern is already postordered, so node j's postorder
     # index IS j: `first_[q]` = smallest node in subtree(q). Climb from each j installing

@@ -3,6 +3,27 @@
 # presentation in Davis, *Direct Methods for Sparse Linear Systems* (SIAM, 2006), ch. 4 —
 # never CHOLMOD source (CONTRIBUTING.md req 1).
 
+# Sort `v[lo:hi]` in place. Pattern columns are short (a handful of entries for the
+# matrices this package targets), where an inline insertion sort beats the per-call
+# overhead of `sort!` on a view; longer runs fall back to `sort!`.
+@inline function _sort_segment!(v::Vector{Ti}, lo::Integer, hi::Integer) where {Ti <: Integer}
+    len = hi - lo + 1
+    if len > 32
+        sort!(view(v, lo:hi))
+        return v
+    end
+    for k in (lo + 1):hi
+        x = v[k]
+        m = k - 1
+        while m >= lo && v[m] > x
+            v[m + 1] = v[m]
+            m -= 1
+        end
+        v[m + 1] = x
+    end
+    return v
+end
+
 """
     symmetrized_upper(n, colptr, rowval, perm, iperm) -> (colptr2, rowval2)
 
@@ -53,8 +74,7 @@ function symmetrized_upper(
     write_ptr[1] = one(Ti)
     @inbounds for j in 1:n
         lo, hi = colptr2[j], colptr2[j + 1] - 1
-        seg = view(rowval2, lo:hi)
-        sort!(seg)
+        _sort_segment!(rowval2, lo, hi)
         w = write_ptr[j]
         prev = zero(Ti)
         first = true
@@ -77,6 +97,46 @@ function symmetrized_upper(
     # already overwrote those positions during compaction of later columns).
     resize!(rowval2, write_ptr[n + 1] - 1)
     return write_ptr, rowval2
+end
+
+"""
+    permuted_upper(n, colptr, rowval, iperm) -> (colptr2, rowval2)
+
+[`symmetrized_upper`](@ref) for a pattern that is already symmetric, diagonal-free and
+duplicate-free (the output of [`full_symmetric_pattern`](@ref)): each edge is stored
+once per endpoint, so the endpoint whose permuted column is the larger one yields the
+strict-upper entry and no deduplication pass is needed.
+"""
+function permuted_upper(
+        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, iperm::Vector{Ti},
+    ) where {Ti <: Integer}
+    counts = zeros(Ti, n)
+    @inbounds for jorig in 1:n
+        j = iperm[jorig]
+        for p in colptr[jorig]:(colptr[jorig + 1] - 1)
+            iperm[rowval[p]] < j && (counts[j] += one(Ti))
+        end
+    end
+    colptr2 = Vector{Ti}(undef, n + 1)
+    colptr2[1] = one(Ti)
+    @inbounds for j in 1:n
+        colptr2[j + 1] = colptr2[j] + counts[j]
+    end
+    fill!(counts, zero(Ti))
+    rowval2 = Vector{Ti}(undef, colptr2[n + 1] - 1)
+    @inbounds for jorig in 1:n
+        j = iperm[jorig]
+        for p in colptr[jorig]:(colptr[jorig + 1] - 1)
+            i = iperm[rowval[p]]
+            i < j || continue
+            rowval2[colptr2[j] + counts[j]] = i
+            counts[j] += one(Ti)
+        end
+    end
+    @inbounds for j in 1:n
+        _sort_segment!(rowval2, colptr2[j], colptr2[j + 1] - 1)
+    end
+    return colptr2, rowval2
 end
 
 """
@@ -152,9 +212,28 @@ function postorder(
         # Descending (priority, column) insertion ⇒ ascending (priority, column) visit
         # order ⇒ last-visited sibling = max priority, ties broken by largest column
         # (identical to the no-priority behavior when priorities are uniform).
-        ins = sort!(collect(Ti, 1:n); by = j -> (priority[j], j), rev = true)
-        @inbounds for j in ins
-            p = parent[j] == 0 ? n + 1 : parent[j]
+        # Counting sort by priority (a column count, so 1 ≤ priority ≤ n), stable in
+        # column; walking the sorted order backwards gives the descending insertion.
+        pmax = 0
+        for j in 1:n
+            pmax = max(pmax, Int(priority[j]))
+        end
+        bucket = zeros(Int, pmax + 2)
+        @inbounds for j in 1:n
+            bucket[Int(priority[j]) + 2] += 1
+        end
+        @inbounds for d in 2:(pmax + 2)
+            bucket[d] += bucket[d - 1]
+        end
+        ins = Vector{Ti}(undef, n)
+        @inbounds for j in 1:n
+            d = Int(priority[j]) + 1
+            ins[bucket[d] + 1] = Ti(j)
+            bucket[d] += 1
+        end
+        @inbounds for k in n:-1:1
+            j = ins[k]
+            p = iszero(parent[j]) ? n + 1 : parent[j]
             next[j] = head[p]
             head[p] = j
         end
@@ -198,6 +277,23 @@ function _linked_list(head::Vector{Ti}, next::Vector{Ti}, start::Int) where {Ti 
 end
 
 """
+    relabel_parent(n, parent, postinv) -> parent2
+
+Elimination tree in the postordered numbering: `parent2[postinv[j]] = postinv[parent[j]]`
+(roots stay `0`). Equal to `etree` of the relabeled pattern, since a symmetric
+permutation that is a postorder of the tree leaves the tree itself unchanged
+(design.md §3.2).
+"""
+function relabel_parent(n::Int, parent::Vector{Ti}, postinv::Vector{Ti}) where {Ti <: Integer}
+    parent2 = Vector{Ti}(undef, n)
+    @inbounds for j in 1:n
+        p = parent[j]
+        parent2[postinv[j]] = iszero(p) ? zero(Ti) : postinv[p]
+    end
+    return parent2
+end
+
+"""
     relabel_pattern(colptr, rowval, postinv) -> (colptr2, rowval2)
 
 Relabel a strict-upper CSC pattern by the postorder (`postinv[oldlabel] = newlabel`),
@@ -235,7 +331,7 @@ function relabel_pattern(
         end
     end
     @inbounds for j in 1:n
-        sort!(view(rowval2, colptr2[j]:(colptr2[j + 1] - 1)))
+        _sort_segment!(rowval2, colptr2[j], colptr2[j + 1] - 1)
     end
     return colptr2, rowval2
 end

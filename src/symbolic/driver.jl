@@ -17,11 +17,11 @@ entries) sparse pattern into `pattern(A) ∪ pattern(Aᵀ)` with the diagonal re
 triangles stored — the input contract [`order`](@ref) expects (design.md §2.1).
 """
 function full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
-    idperm = collect(Ti, 1:n)
-    ucolptr, urowval = symmetrized_upper(n, colptr, rowval, idperm, idperm)
+    # Pass 1: every off-diagonal entry (i, j) lands in both column i and column j.
     deg = zeros(Ti, n)
-    @inbounds for j in 1:n, p in ucolptr[j]:(ucolptr[j + 1] - 1)
-        i = urowval[p]
+    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        i = rowval[p]
+        i == Ti(j) && continue
         deg[i] += one(Ti)
         deg[j] += one(Ti)
     end
@@ -30,18 +30,36 @@ function full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) 
     @inbounds for j in 1:n
         colptr2[j + 1] = colptr2[j] + deg[j]
     end
+    # Pass 2: scatter, reusing `deg` as the per-column write cursor.
     rowval2 = Vector{Ti}(undef, colptr2[n + 1] - 1)
-    cursor = copy(colptr2)
-    @inbounds for j in 1:n, p in ucolptr[j]:(ucolptr[j + 1] - 1)
-        i = urowval[p]
-        rowval2[cursor[i]] = Ti(j)
-        cursor[i] += one(Ti)
-        rowval2[cursor[j]] = i
-        cursor[j] += one(Ti)
+    fill!(deg, zero(Ti))
+    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        i = rowval[p]
+        i == Ti(j) && continue
+        rowval2[colptr2[i] + deg[i]] = Ti(j)
+        deg[i] += one(Ti)
+        rowval2[colptr2[j] + deg[j]] = i
+        deg[j] += one(Ti)
     end
+    # Pass 3: sort each column and drop duplicates in place (an entry stored in both
+    # triangles, or stored twice, arrives twice). Column j's deduplicated run starts
+    # where column j-1's ended, so the result is already contiguous.
+    w = one(Ti)
     @inbounds for j in 1:n
-        sort!(view(rowval2, colptr2[j]:(colptr2[j + 1] - 1)))
+        lo, hi = colptr2[j], colptr2[j + 1] - one(Ti)
+        _sort_segment!(rowval2, lo, hi)
+        colptr2[j] = w
+        prev = zero(Ti)
+        for k in lo:hi
+            v = rowval2[k]
+            v == prev && continue
+            rowval2[w] = v
+            w += one(Ti)
+            prev = v
+        end
     end
+    colptr2[n + 1] = w
+    resize!(rowval2, w - 1)
     return colptr2, rowval2
 end
 
@@ -63,36 +81,36 @@ function assembly_map(
     n = size(A, 1)
     colptr, rowvalA = A.colptr, A.rowval
     nz = length(rowvalA)
-    lo_arr = zeros(Ti, nz)
-    hi_arr = zeros(Ti, nz)
-    keep = falses(nz)
-    scount = zeros(Ti, nsuper)
+    # Bucket the lower-triangle entries by destination supernode (counting sort on
+    # `snode_of[lo]`); `amap` doubles as the per-entry destination column `lo` until the
+    # per-supernode pass below overwrites it with the final offset.
+    amap = zeros(Ti, nz)
+    hi_arr = Vector{Ti}(undef, nz)
+    scount = zeros(Ti, nsuper + 1)
     @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
         i = rowvalA[p]
         i >= j || continue
         ni, nj = iperm[i], iperm[j]
-        lo, hi = ni < nj ? (ni, nj) : (nj, ni)
-        keep[p] = true
-        lo_arr[p] = lo
+        lo, hi = minmax(ni, nj)
+        amap[p] = lo
         hi_arr[p] = hi
-        scount[snode_of[lo]] += one(Ti)
+        scount[snode_of[lo] + 1] += one(Ti)
     end
-    sptr = Vector{Ti}(undef, nsuper + 1)
-    sptr[1] = one(Ti)
+    scount[1] = one(Ti)
     @inbounds for s in 1:nsuper
-        sptr[s + 1] = sptr[s] + scount[s]
+        scount[s + 1] += scount[s]
     end
-    bucket_p = Vector{Ti}(undef, sptr[nsuper + 1] - 1)
-    cursor = copy(sptr)
-    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
-        keep[p] || continue
-        s = snode_of[lo_arr[p]]
-        bucket_p[cursor[s]] = Ti(p)
-        cursor[s] += one(Ti)
+    bucket_p = Vector{Ti}(undef, scount[nsuper + 1] - 1)
+    @inbounds for p in 1:nz
+        lo = amap[p]
+        iszero(lo) && continue
+        s = snode_of[lo]
+        bucket_p[scount[s]] = Ti(p)
+        scount[s] += one(Ti)
     end
 
-    amap = zeros(Ti, nz)
     relmap = zeros(Ti, n)
+    bp = 1
     @inbounds for s in 1:nsuper
         j0 = super[s]
         nrow = Int(rowind_ptr[s + 1] - rowind_ptr[s])
@@ -101,9 +119,11 @@ function assembly_map(
             relmap[rowind[r]] = Ti(k)
             k += 1
         end
-        for bp in sptr[s]:(sptr[s + 1] - 1)
+        # scount[s] is now the end of bucket s (one past its last entry).
+        while bp < scount[s]
             p = bucket_p[bp]
-            lo, hi = lo_arr[p], hi_arr[p]
+            bp += 1
+            lo, hi = amap[p], hi_arr[p]
             local_row = Int(relmap[hi])
             local_col = Int(lo - j0) + 1
             amap[p] = px[s] + Ti((local_col - 1) * nrow + (local_row - 1))
@@ -132,7 +152,7 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
         amd_iperm[p] = Ti(k)
     end
 
-    ucolptr, urowval = symmetrized_upper(n, A.colptr, A.rowval, amd_perm, amd_iperm)
+    ucolptr, urowval = permuted_upper(n, fcolptr, frowval, amd_iperm)
     parent0 = etree(n, ucolptr, urowval)
 
     # Merge-aware postorder (design §3.5): relaxed amalgamation requires column
@@ -154,7 +174,7 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
     # amalgamation needs a principled sibling order as its substrate.
     _, postinv_pre = postorder(n, parent0)
     cp_pre, rv_pre = relabel_pattern(n, ucolptr, urowval, postinv_pre)
-    cc_pre = column_counts(n, cp_pre, rv_pre, etree(n, cp_pre, rv_pre))
+    cc_pre = column_counts(n, cp_pre, rv_pre, relabel_parent(n, parent0, postinv_pre))
     colcount0 = Vector{Ti}(undef, n)
     @inbounds for j in 1:n
         colcount0[j] = cc_pre[postinv_pre[j]]
@@ -171,14 +191,22 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
     end
 
     cp2, rv2 = relabel_pattern(n, ucolptr, urowval, postinv)
-    parent = etree(n, cp2, rv2)
-    colcount = column_counts(n, cp2, rv2, parent)
+    parent = relabel_parent(n, parent0, postinv)
+    lower = lower_pattern(n, cp2, rv2)
+    colcount = column_counts(n, cp2, rv2, parent, lower)
 
     nsuper0, super0 = fundamental_supernodes(n, parent, colcount)
     nsuper, super = relaxed_amalgamation(n, nsuper0, super0, parent, colcount)
 
+    # |rowind(s)| = ncols(s) + colcount[last column of s] − 1 exactly (the block's rows
+    # are its columns plus the last column's below-diagonal pattern; derivation in the
+    # `relaxed_amalgamation` docstring).
+    rowind_length = 0
+    @inbounds for s in 1:nsuper
+        rowind_length += Int(super[s + 1] - super[s]) + Int(colcount[super[s + 1] - 1]) - 1
+    end
     rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows =
-        supernode_rowind(n, cp2, rv2, parent, nsuper, super)
+        supernode_rowind(n, cp2, rv2, parent, nsuper, super, lower; rowind_length)
 
     px = Vector{Ti}(undef, nsuper + 1)
     px[1] = one(Ti)

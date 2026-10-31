@@ -192,7 +192,7 @@ function relaxed_amalgamation(
 end
 
 """
-    supernode_rowind(n, colptr, rowval, parent, nsuper, super)
+    supernode_rowind(n, colptr, rowval, parent, nsuper, super[, lower]; rowind_length)
         -> (rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows)
 
 Row structure of L per (post-amalgamation) supernode (design.md §3.6):
@@ -207,8 +207,9 @@ Algorithm: one ascending (postorder) pass with a per-supernode stamped marker ar
 (`mark`) for O(1) dedup, avoiding an O(n) clear between supernodes. For supernode `s`:
 add its own columns, then the below-diagonal entries of those columns read from the
 UPPER-triangle transpose (`hadj`/`hptr` — by symmetry, "row `c` has an entry in column
-`i>c`" ⟺ "column `c` has an entry at row `i>c`", exactly the seed pattern needed, and the
-same transpose construction `column_counts` uses), then each child's rowind with the
+`i>c`" ⟺ "column `c` has an entry at row `i>c`", exactly the seed pattern needed; `lower`
+is [`lower_pattern`](@ref)`(n, colptr, rowval)`, shared with `column_counts` when the
+caller passes it), then each child's rowind with the
 child's OWN columns excluded (they are always the smallest entries of a child's sorted
 rowind — every propagated row is an etree-ancestor of the child's diagonal columns, and
 postorder gives ancestors strictly increasing column index, so nothing from a
@@ -217,29 +218,11 @@ descendant's propagated set can be smaller than the child's own first column).
 function supernode_rowind(
         n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
         nsuper::Int, super::Vector{Ti},
+        lower::Tuple{Vector{Ti}, Vector{Ti}} = lower_pattern(n, colptr, rowval);
+        rowind_length::Int = Int(colptr[n + 1]) - 1 + n,
     ) where {Ti <: Integer}
-    # Transpose of the strict-upper pattern (same construction as column_counts): hadj
-    # column c holds {i > c : A[c,i] ≠ 0} = the original below-diagonal seed for L's
-    # column c (by symmetry of the unfilled pattern).
-    nz = Int(colptr[n + 1]) - 1
-    cnt = zeros(Ti, n)
-    @inbounds for p in 1:nz
-        cnt[rowval[p]] += one(Ti)
-    end
-    hptr = Vector{Ti}(undef, n + 1)
-    hptr[1] = one(Ti)
-    @inbounds for r in 1:n
-        hptr[r + 1] = hptr[r] + cnt[r]
-    end
-    hadj = Vector{Ti}(undef, nz)
-    fill!(cnt, zero(Ti))
-    @inbounds for c in 1:n
-        for p in colptr[c]:(colptr[c + 1] - 1)
-            r = rowval[p]
-            hadj[hptr[r] + cnt[r]] = Ti(c)
-            cnt[r] += one(Ti)
-        end
-    end
+    # Below-diagonal seed of L's column c: hadj column c = {i > c : A[c,i] ≠ 0}.
+    hptr, hadj = lower
 
     snode_of, sparent = supernode_tree(n, nsuper, super, parent)
     child_head = zeros(Ti, nsuper)
@@ -255,17 +238,21 @@ function supernode_rowind(
     mark = zeros(Int, n)
     rowind_ptr = Vector{Ti}(undef, nsuper + 1)
     rowind_ptr[1] = one(Ti)
+    # Each supernode's rows are written straight into `rowind` and sorted in place;
+    # `rowind_length` is the final length when the caller knows it (Σ_s ncols(s) +
+    # colcount[last column of s] − 1), otherwise a lower bound.
     rowind = Ti[]
+    sizehint!(rowind, rowind_length)
     max_update_size = 0
     max_extend_rows = 0
 
     @inbounds for s in 1:nsuper
         j0, j1 = super[s], super[s + 1] - one(Ti)
-        rows = Ti[]
+        r0 = length(rowind) + 1
         for c in j0:j1
             if mark[c] != s
                 mark[c] = s
-                push!(rows, c)
+                push!(rowind, c)
             end
         end
         for c in j0:j1
@@ -273,7 +260,7 @@ function supernode_rowind(
                 i = hadj[p]
                 if mark[i] != s
                     mark[i] = s
-                    push!(rows, i)
+                    push!(rowind, i)
                 end
             end
         end
@@ -284,13 +271,13 @@ function supernode_rowind(
                 i = rowind[p]
                 if i > c_last && mark[i] != s
                     mark[i] = s
-                    push!(rows, i)
+                    push!(rowind, i)
                 end
             end
             c = child_next[c]
         end
-        sort!(rows)
-        append!(rowind, rows)
+        _sort_segment!(rowind, r0, length(rowind))
+        rows = view(rowind, r0:length(rowind))
         rowind_ptr[s + 1] = Ti(length(rowind) + 1)
 
         nrow_s = length(rows)
