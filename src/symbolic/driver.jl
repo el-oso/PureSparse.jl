@@ -134,17 +134,64 @@ function assembly_map(
 end
 
 """
-    symbolic(A::SparseMatrixCSC; ordering::AbstractOrdering=AMDOrdering()) -> Symbolic
+    upper_assembly_map(A, iperm) -> (ucolptr, urowval, amap)
+
+The permuted upper triangle of `A` (diagonal included) as a CSC pattern in factor
+order — column `k` holds the rows `i <= k` of `P·A·Pᵀ`, in arrival order — together with
+the map from every stored entry of `A` to its slot in that pattern (the simplicial
+path's assembly map, design.md §4.5; sentinel `0` for an upper-triangle entry of `A`,
+which is never read, as in [`assembly_map`](@ref)). Each stored lower-triangle entry
+gets its own slot, so a numeric load fills every slot without clearing.
+"""
+function upper_assembly_map(A::SparseMatrixCSC, iperm::Vector{Ti}) where {Ti <: Integer}
+    n = size(A, 1)
+    colptr, rowvalA = A.colptr, A.rowval
+    ucolptr = zeros(Ti, n + 1)
+    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        i = rowvalA[p]
+        i >= j || continue
+        ucolptr[max(iperm[i], iperm[j]) + 1] += one(Ti)
+    end
+    ucolptr[1] = one(Ti)
+    @inbounds for k in 1:n
+        ucolptr[k + 1] += ucolptr[k]
+    end
+    next = ucolptr[1:n]
+    urowval = Vector{Ti}(undef, Int(ucolptr[n + 1]) - 1)
+    amap = zeros(Ti, length(rowvalA))
+    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        i = rowvalA[p]
+        i >= j || continue
+        lo, hi = minmax(iperm[i], iperm[j])
+        q = next[hi]
+        next[hi] = q + one(Ti)
+        urowval[q] = lo
+        amap[p] = q
+    end
+    return ucolptr, urowval, amap
+end
+
+"""
+    symbolic(A::SparseMatrixCSC; ordering::AbstractOrdering=AMDOrdering(), method=:auto) -> Symbolic
 
 Full symbolic analysis of `A` (read via its lower triangle, design.md driver docstring
-above): fill-reducing ordering, elimination tree, column counts, supernode
-detection/relaxed amalgamation, row structure, panel offsets, and the numeric-load
-assembly map. Computed once and shared by reference across every numeric factorization of
-a matrix with this sparsity pattern (design.md §1.2).
+above): fill-reducing ordering, elimination tree, column counts, then either supernode
+detection/relaxed amalgamation, row structure, panel offsets and the panel assembly map
+(supernodal path) or the exact pattern of `L` by columns and by rows and the
+permuted-upper assembly map (simplicial path, design.md §4.5). Computed once and shared by reference across
+every numeric factorization of a matrix with this sparsity pattern (design.md §1.2).
+
+`method` is `:auto` (simplicial when the mean work per stored entry of `L`,
+`flops / nnzL`, is at or below the `simplicial_ratio` preference, see `tuning.jl`),
+`:simplicial`, or `:supernodal`.
 """
-function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrdering()) where {T, Ti <: Integer}
+function symbolic(
+        A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrdering(), method::Symbol = :auto,
+    ) where {T, Ti <: Integer}
     n = size(A, 1)
     size(A, 2) == n || throw(DimensionMismatch("symbolic: A must be square, got $(size(A))"))
+    (method === :auto || method === :simplicial || method === :supernodal) ||
+        throw(ArgumentError("symbolic: method must be :auto, :simplicial, or :supernodal (got $method)"))
 
     fcolptr, frowval = full_symmetric_pattern(n, A.colptr, A.rowval)
     amd_perm = order(ordering, n, fcolptr, frowval)
@@ -175,6 +222,23 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
     # pattern (design.md §3.1), so that is the only permuted pattern formed.
     hptr, hadj = permuted_lower(n, fcolptr, frowval, perm, iperm)
     colcount = column_counts_lower(n, parent, hptr, hadj)
+    nnzL = Int(nnz_l(colcount))
+    flops = Float64(chol_flops(colcount))
+
+    # Path choice (design.md §4.5) from the column counts alone, before any supernode
+    # work; the comparison is written without a division so an empty matrix is well
+    # defined.
+    if method === :simplicial || (method === :auto && flops <= SIMPLICIAL_RATIO * nnzL)
+        ucolptr, urowval, amap = upper_assembly_map(A, iperm)
+        lcolptr, lrowval, lrowptr, lcolval = l_pattern(n, parent, colcount, ucolptr, urowval)
+        one_ = Ti[one(Ti)]   # length-1 pointer arrays: `super[nsuper + 1]`-style reads stay valid
+        return Symbolic{Ti}(
+            n, perm, iperm, parent, colcount,
+            0, one_, one_, Ti[], Ti[], Ti[], one_, amap,
+            true, lcolptr, lrowval, lrowptr, lcolval, ucolptr, urowval,
+            0, 0, nnzL, flops,
+        )
+    end
 
     nsuper0, super0 = fundamental_supernodes(n, parent, colcount)
     nsuper, super = relaxed_amalgamation(n, nsuper0, super0, parent, colcount)
@@ -202,7 +266,8 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
     return Symbolic{Ti}(
         n, perm, iperm, parent, colcount,
         nsuper, super, rowind_ptr, rowind, snode_of, sparent, px, amap,
+        false, Ti[], Ti[], Ti[], Ti[], Ti[], Ti[],
         max_update_size, max_extend_rows,
-        Int(nnz_l(colcount)), Float64(chol_flops(colcount)),
+        nnzL, flops,
     )
 end

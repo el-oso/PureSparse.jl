@@ -76,6 +76,16 @@ Analysis-time pass (symbolic analysis measured against faer's `SymbolicLlt` on t
 - **S5** §3.4/§3.5: supernode partition arrays are allocated at their upper bound and
   trimmed, not grown.
 
+Simplicial path (§4.5):
+
+- **P1** `symbolic` chooses between the supernodal path and a column-by-column path
+  over the exact pattern of `L` from the work-per-nonzero predictor `flops / nnzL`,
+  with a measured threshold (`simplicial_ratio`, §1.4) and a `method` override. The
+  choice is a `Bool` in `Symbolic`; the factor types are unchanged, so `cholesky(A)`
+  and `ldlt(A)` stay type-stable. The simplicial numeric phase is up-looking, the
+  solves are two scatter sweeps over `L` held by columns and by rows, and the
+  rank-1 update/downdate conversion accepts either mode.
+
 Unchanged (verified sound by review): AMD core mechanics (§2.2 points 1–2, 4–6 as
 corrected), etree/symbolic pipeline, the §4.3 left-looking `relmap` schedule
 (hand-traced), every PureBLAS kernel mapping in §4.3/§5.1 (signatures and β=0 overwrite
@@ -176,8 +186,13 @@ end
 
 `SimplicialLDLFactor{T,Ti}` (M2): plain CSC-pattern L (columns individually addressable),
 `d::Vector{T}`, plus the etree — the representation Davis–Hager update/downdate operates
-on. Produced by `simplicial(F::LDLFactor)` (one-time conversion, allocates) or directly by
-a simplicial factorization path for small/very-sparse problems.
+on. Produced by `simplicial(F::LDLFactor)` (one-time conversion, allocates) from a factor
+in either mode.
+
+`Symbolic` further carries `simplicial::Bool` and, in simplicial mode, the exact pattern
+of `L` by columns (`lcolptr`/`lrowval`) and by rows (`lrowptr`/`lcolval`) plus the
+permuted upper triangle of `A` (`ucolptr`/`urowval`); the two factor types carry the
+matching values `lx`/`ltx`. See §4.5.
 
 ### 1.3 Module layout
 
@@ -189,9 +204,11 @@ src/
   symbolic/etree.jl    # §3.2
   symbolic/counts.jl   # §3.3
   symbolic/supernodes.jl # §3.4–3.6
+  symbolic/pattern.jl  # §4.5, exact pattern of L by columns and rows
   numeric/llt.jl       # §4
   numeric/ldlt.jl      # §5
   numeric/solve.jl     # §4.4, split solves
+  simplicial/numeric.jl # §4.5, up-looking LLᵀ/LDLᵀ and scatter solves
   simplicial/updown.jl # §7
   contracts.jl         # TypeContracts declarations (compile-time only)
   strict.jl            # StrictMode-gated runtime checks
@@ -210,6 +227,7 @@ each with a keyword-argument override on `symbolic`/`cholesky`:
 | `amalg_zmax` | `(0.9, 0.15, 0.03)` | max zero-fraction allowed per tier (§3.5) |
 | `amd_dense_mult` | `10.0` | dense-row multiplier (§2.2 pt 6) |
 | `ldlt_delta` | `1e-12` (rel.) | signed-regularization floor (§5.1) |
+| `simplicial_ratio` | measured, see `tuning.jl` | `flops / nnzL` at or below which `symbolic` takes the simplicial path (§4.5) |
 | `gpu_flop_threshold` | `2e9` | per-supernode flop count above which GPU path engages (§8) |
 
 **Provenance note (B2):** `amalg_cols`/`amalg_zmax` are free heuristics with *no* claimed
@@ -502,6 +520,121 @@ Forward solve walks supernodes ascending: dense `trsv!`/`trsm!` on the diagonal 
 gemm forms. Split solves are exported (§6) — needed by iterative refinement, by SQD
 consumers wanting `L`-only preconditioning, and by §7.
 
+### 4.5 Simplicial path and the automatic choice
+
+A factor whose `L` carries little dense work per stored entry gains nothing from
+supernodes: amalgamation pads it with explicit zeros and every solve pays a
+dense-kernel call per supernode, each on a block a few columns wide. Such factors
+(narrow banded matrices, small grids) are factored and solved column by column over
+the exact pattern of `L`.
+The CHOLMOD *User Guide* documents that CHOLMOD likewise switches between its
+simplicial and supernodal factorizations on a work-per-nonzero ratio; that fact is the
+only thing taken from it (§11) — the predictor's form here follows from the column
+counts PureSparse already has, and the threshold is PureSparse's own measurement.
+
+**Switch criterion.** `symbolic` computes `nnzL = Σⱼ colcount[j]` and `flops = Σⱼ
+colcount[j]²` from the column counts (§3.3) before any supernode work. Their quotient
+`flops / nnzL` is the mean number of multiply-adds spent per stored entry of `L`, i.e.
+how much dense work each nonzero is amortized over; it is independent of `n` and of
+the ordering's quality. The simplicial path is taken when
+
+`flops ≤ simplicial_ratio · nnzL`
+
+(written without a division so an empty matrix is well defined), with
+`simplicial_ratio` a Preferences-backed tunable (§1.4). `method = :simplicial` or
+`:supernodal` on `symbolic`/`cholesky`/`ldlt` overrides the choice; `:auto` is the
+default. The GPU extension always asks for `:supernodal` — its engine is built on the
+supernode partition.
+
+**Threshold.** The value of `simplicial_ratio` is the crossover measured with
+`benchmark/simplicial_threshold.jl`: both paths are forced on a set of SPD matrices
+whose predictor spans roughly 3 to 500 (banded matrices of growing bandwidth, 2D and
+3D grid Laplacians of growing size, random sparse SPD matrices), and the warm
+refactorization, the warm single-vector solve and the analysis are timed for each. The
+switch is set on refactor+solve, the quantity the target users pay per iteration
+(§1.2: hundreds of refactorizations per analysis). On the Zen 5c core the runs were
+pinned to (four runs, shared machine), the simplicial path wins refactor+solve for
+every matrix with a predictor of at most 9, 2D grids keep winning to about 18, the
+first losses are banded matrices at 13 and 17 (their long chain supernodes suit the
+supernodal path), and from 25 on every matrix loses. The refactorization is what
+crosses over early: the up-looking factorization reads every column of `L` once per
+nonzero of its row structure, so its memory traffic is `Σ colcount²`, which the
+supernodal blocking reuses from cache instead; at the 2D 100×100 Laplacian (predictor
+55) it is 1.85–2.03× slower, which no solve gain repays. The default is the integer
+above the last predictor that wins in every run and below the first observed loss:
+**10**. The 2D 100×100 Laplacian therefore stays supernodal; the simplicial solve
+alone would beat the supernodal one there, but the supernodal solve's small-block
+`trsv` kernel (PureBLAS) is the right place to close that gap. A solve-dominated
+workload can raise the preference (the simplicial solve alone stays ahead on 2D grids
+to a predictor of about 70) or pass `method = :simplicial`. The measured table is in
+`src/tuning.jl`.
+
+**Symbolic analysis in simplicial mode.** After the ordering, the etree, the postorder
+and the column counts (§3.1–§3.3) — which both modes share — the simplicial mode
+computes, instead of §3.4–§3.6:
+
+- `ucolptr`/`urowval`: the permuted upper triangle of `A` with its diagonal, as a CSC
+  pattern in factor order (column `k` holds the rows `i ≤ k` of `P·A·Pᵀ`), together
+  with the assembly map `amap` from every stored entry of `A` to its slot — the §4.2
+  replay aimed at a value buffer `ux` instead of the panels.
+- `lcolptr`/`lrowval`: the exact pattern of `L` by columns, each column's diagonal
+  first and its rows ascending; and `lrowptr`/`lcolval`: the same pattern by rows,
+  each row's diagonal last, the other columns in an order in which every column
+  precedes its etree ancestors. Both come from one pass over the rows: the structure of
+  row `k` of `L` is the row subtree of the etree (Liu 1990, §3–§4; Davis 2006, ch. 4),
+  climbed from every row index of column `k` of the upper triangle until a node already
+  reached for row `k`. Appending `k` to each reached column in row order sorts the
+  columns; the climbed paths, each a descendant-to-ancestor chain, are stacked with the
+  latest path first, which is the stored row order and a topological order of the
+  etree. The supernode fields are left at `nsuper = 0` with length-1 pointer arrays.
+
+The analysis therefore never forms supernodes, and its cost is the shared pipeline plus
+`O(nnz(A) + nnz(L))` for the two patterns.
+
+**Factor storage.** `SupernodalFactor` and `LDLFactor` hold, in simplicial mode, the
+values of `L` twice: `lx` in the by-column pattern and `ltx` in the by-row pattern,
+both of length `nnz(L)`, with the diagonal stored (its value for LLᵀ, `1` for LDLᵀ) and
+`d` separate for LDLᵀ as in §5. `Workspace` adds the value buffer `ux`, a per-column
+write cursor, and `invdiag`, the reciprocal of each pivot (`1/L[j,j]`, or `1/d[j]`),
+so that the per-entry divisions of the factorization and the solves are
+multiplications; the dense scatter vector is the workspace's `rhs`. The panel fields
+are empty. Nothing is allocated after `symbolic` (requirement 5).
+
+**Numeric factorization: up-looking** (Davis 2006, ch. 4; the LDLᵀ form as in QDLDL,
+Stellato et al.). Row `k` of `L` is one sparse triangular solve, `L[k, 1:k-1]ᵀ =
+L[1:k-1, 1:k-1]⁻¹ a_k` with `a_k` the upper triangle of column `k` of `P·A·Pᵀ`,
+followed by `L[k,k]² = a_kk − ‖L[k, 1:k-1]‖²` (LDLᵀ: `d_k = a_kk − Σᵢ L[k,i]² dᵢ`). The
+solve runs over the row structure in the stored topological order, scattering column
+`i`'s already-computed entries (rows `< k`, a prefix of the column tracked by the
+cursor) into the dense vector, which is all-zero between rows. Each `L[k,i]` is written
+to its by-column slot (appended, so columns fill in row order) and its by-row slot. The
+LDLᵀ pivot goes through the same inertia accounting and signed regularization as the
+supernodal base case (§5.1, shared code), and a non-positive LLᵀ pivot sets `F.ok =
+false` with the exact failing column in `stats.fail_col`. Total work is `Σⱼ
+colcount[j]²/2` multiply-adds, as for the supernodal path. This is sparse per-entry
+arithmetic, not dense block work, so it does not go through PureBLAS (CONTRIBUTING.md
+requirement 9 concerns dense kernels).
+
+**Solves.** Both triangular sweeps are scatter loops: the forward sweep down the
+columns of `L` (`lx`), the backward sweep along its rows (`ltx`, i.e. the columns of
+`Lᵀ`). Holding `L` by rows is what makes the backward sweep a scatter; as a per-column
+dot product over the by-column storage its accumulator serializes the floating-point
+adds, measured at 1.5–2× the scatter form. `solve_D!` is unchanged. The split solves,
+`\`, `refine!`, `sparse_L`, `det`/`logdet` and `simplicial(F::LDLFactor)` all work on
+either mode (`simplicial` copies the exact pattern instead of the padded supernodal
+one).
+
+**Type stability.** `cholesky(A)` returns `SupernodalFactor{T,Ti}` and `ldlt(A)`
+returns `LDLFactor{T,Ti}` whatever the choice: the mode is a `Bool` field of
+`Symbolic`, read at run time by `cholesky!`/`ldlt!`/`solve!`, which branch once per
+call into the supernodal or the simplicial kernels. The alternatives were rejected
+because they cannot make an automatic choice type-stable: a type parameter fixed by
+the `Symbolic` would make `symbolic(A)`, and hence `cholesky(A)`, return one of two
+types depending on the data; separate entry points would push the choice onto the
+caller. One branch per call is free, the unused path's fields are empty vectors, and
+every downstream consumer (drop-in, GPU, update/downdate) keeps dispatching on the two
+factor types it already knows.
+
 ---
 
 ## §5 LDLᵀ and quasi-definite systems
@@ -551,10 +684,10 @@ continues.
 ## §6 User-facing API
 
 ```julia
-S = symbolic(A; ordering=AMDOrdering())     # analysis, allocates
-F = cholesky(A; ordering)                    # symbolic + numeric
+S = symbolic(A; ordering=AMDOrdering(), method=:auto)   # analysis, allocates; method ∈ :auto/:simplicial/:supernodal (§4.5)
+F = cholesky(A; ordering, method)            # symbolic + numeric
 cholesky!(F, A2)                             # refactor, same pattern, zero alloc
-F = ldlt(A; signs) ; ldlt!(F, A2)
+F = ldlt(A; signs, method) ; ldlt!(F, A2)
 x = F \ b ; solve!(x, F, b) ; ldiv!(x, F, b)
 solve_L!(x, F, b); solve_D!(x, F, b); solve_Lt!(x, F, b)
 G = simplicial(F::LDLFactor)                 # -> SimplicialLDLFactor (M2)
@@ -749,6 +882,7 @@ performance via SparseArrays; benchmarking against binaries.
 | Fundamental supernodes | Liu–Ng–Peyton 1993 |
 | Relaxed amalgamation | Ashcraft–Grimes 1989; Ng–Peyton 1993 (concept); thresholds: own derivation, §3.5 |
 | Left-looking supernodal LLᵀ | Ng–Peyton 1993; Rothberg–Gupta 1993 |
+| Simplicial path (§4.5): row structure, up-looking LLᵀ/LDLᵀ | Liu 1990 §3–§4; Davis book ch. 4; QDLDL (Stellato et al.) for the LDLᵀ recurrence; switch-on-a-ratio fact: CHOLMOD *User Guide*; threshold: own measurement |
 | SQD / LDLᵀ regularization | Vanderbei 1995; Stellato et al. (OSQP/QDLDL); Clarabel paper |
 | Update/downdate | Davis–Hager 1999, 2001 |
 | GPU hybrid | Rennich et al. 2016 (concept) |

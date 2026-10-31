@@ -10,6 +10,12 @@ function dense_unit_L(F)
     sym = F.sym
     n = sym.n
     L = zeros(eltype(F.x), n, n)
+    if sym.simplicial   # exact-pattern CSC storage (design.md §4.5)
+        for j in 1:n, p in Int(sym.lcolptr[j]):(Int(sym.lcolptr[j + 1]) - 1)
+            L[Int(sym.lrowval[p]), j] = F.lx[p]
+        end
+        return L
+    end
     for s in 1:sym.nsuper
         j0 = Int(sym.super[s]); j1 = Int(sym.super[s + 1]) - 1
         nscol = j1 - j0 + 1
@@ -95,10 +101,11 @@ end
 @testitem "ldlt: L·D·Lᵀ reconstructs P·K·Pᵀ and matches the dense oracle (SQD, no perturbation)" setup = [LDLTHelpers] begin
     using Random, LinearAlgebra, SparseArrays
     rng = MersenneTwister(71)
-    for (npos, nneg) in ((1, 1), (3, 2), (10, 6), (30, 20), (45, 30)), density in (0.0, 0.05, 0.2)
+    for method in (:supernodal, :simplicial), (npos, nneg) in ((1, 1), (3, 2), (10, 6), (30, 20), (45, 30)), density in (0.0, 0.05, 0.2)
         K = random_sqd_kkt(rng, npos, nneg, density)
-        F = PureSparse.ldlt(K; n_pos = npos, n_neg = nneg)
+        F = PureSparse.ldlt(K; n_pos = npos, n_neg = nneg, method)
         @test PureSparse.issuccess(F)
+        @test F.sym.simplicial == (method === :simplicial)
         @test F.stats.n_perturbed == 0        # natural pivots already have the right signs
         L = dense_unit_L(F)
         PKP = permuted_dense(F, K)
@@ -113,9 +120,9 @@ end
 @testitem "ldlt: BigFloat precision oracle on small SQD matrices" setup = [LDLTHelpers] begin
     using Random, LinearAlgebra
     rng = MersenneTwister(72)
-    for (npos, nneg) in ((2, 1), (3, 3), (5, 4))
+    for method in (:supernodal, :simplicial), (npos, nneg) in ((2, 1), (3, 3), (5, 4))
         K = random_sqd_kkt(rng, npos, nneg, 0.4)
-        F = PureSparse.ldlt(K; n_pos = npos, n_neg = nneg)
+        F = PureSparse.ldlt(K; n_pos = npos, n_neg = nneg, method)
         PKP = permuted_dense(F, K)
         Lref, dref = oracle_unit_ldl(BigFloat.(PKP))
         @test relerr(dense_unit_L(F), Float64.(Lref)) < 1.0e-12
@@ -126,9 +133,9 @@ end
 @testitem "ldlt: inertia matches SQD construction (n_pos/n_neg/n_zero)" setup = [LDLTHelpers] begin
     using Random, SparseArrays, LinearAlgebra
     rng = MersenneTwister(73)
-    for (npos, nneg) in ((4, 3), (12, 8), (25, 25)), density in (0.05, 0.3)
+    for method in (:supernodal, :simplicial), (npos, nneg) in ((4, 3), (12, 8), (25, 25)), density in (0.05, 0.3)
         K = random_sqd_kkt(rng, npos, nneg, density)
-        F = PureSparse.ldlt(K; n_pos = npos, n_neg = nneg)
+        F = PureSparse.ldlt(K; n_pos = npos, n_neg = nneg, method)
         @test F.stats.n_pos == npos
         @test F.stats.n_neg == nneg
         @test F.stats.n_zero == 0
@@ -202,8 +209,8 @@ end
     # which would otherwise silently invalidate the hand-derived values below).
     K = sparse([1, 2, 2], [1, 1, 2], [-2.0, 1.0, 3.0], 2, 2)
     nat_order = PureSparse.GivenOrdering([1, 2])
-    @assert PureSparse.symbolic(K; ordering = nat_order).nsuper == 1   # one width-2 supernode
-    F = PureSparse.ldlt(K; signs = [1, 1], ordering = nat_order)
+    @assert PureSparse.symbolic(K; ordering = nat_order, method = :supernodal).nsuper == 1   # one width-2 supernode
+    F = PureSparse.ldlt(K; signs = [1, 1], ordering = nat_order, method = :supernodal)
     @test PureSparse.issuccess(F)
     @test F.stats.n_perturbed == 1
     d = F.d[Int.(F.sym.iperm)]
@@ -271,11 +278,11 @@ end
     # blocks) to also exercise wide-descendant/short-update-block pairs — the small-k1
     # case whose chunk width used to exceed max_extend_rows under the old flat
     # max_update_size-sized `cd` staging buffer.
-    for (npos, nneg, dens) in ((20, 15, 0.3), (60, 8, 0.25))
+    for method in (:supernodal, :simplicial), (npos, nneg, dens) in ((20, 15, 0.3), (60, 8, 0.25))
         n = npos + nneg
         K = random_sqd_kkt(rng, npos, nneg, dens)
         signs = vcat(fill(1, npos), fill(-1, nneg))
-        F = PureSparse.ldlt(K; signs)
+        F = PureSparse.ldlt(K; signs, method)
         PureSparse.ldlt!(F, K)   # warm up (any first-touch allocation happens here)
         allocs = @allocated PureSparse.ldlt!(F, K)
         # History: 1120 bytes remained after M1 task 7 fixed the shared `c` update
@@ -306,6 +313,7 @@ end
     @test F1.signs == F2.signs
     @test F1.d == F2.d
     @test F1.x == F2.x
+    @test F1.lx == F2.lx
 end
 
 @testitem "ldlt: argument validation" setup = [LDLTHelpers] begin

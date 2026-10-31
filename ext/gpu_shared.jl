@@ -151,7 +151,7 @@ function gpu_symbolic(
         ordering, backend = _default_backend(),
         frontier_cutoff::Real
     ) where {T, Ti}
-    cpu = PureSparse.symbolic(A; ordering)
+    cpu = PureSparse.symbolic(A; ordering, method = :supernodal)   # the engine is supernodal
     ns = cpu.nsuper
     on_gpu = Vector{Bool}(undef, ns)
     frontier_partition!(on_gpu, ns, cpu.super, cpu.sparent, cpu.colcount, Float64(frontier_cutoff))

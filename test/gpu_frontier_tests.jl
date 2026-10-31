@@ -38,7 +38,7 @@
     ]
 
     for A in mats
-        S = PureSparse.symbolic(A)
+        S = PureSparse.symbolic(A; method = :supernodal)
         ns = S.nsuper
         on_gpu = Vector{Bool}(undef, ns)
 
@@ -96,7 +96,7 @@ end
 
     rng = MersenneTwister(0xB0)
     A = sprand(rng, 600, 600, 0.008); A = A + A' + 1200I
-    S = PureSparse.symbolic(A)
+    S = PureSparse.symbolic(A; method = :supernodal)
     ns = S.nsuper
     on_gpu = Vector{Bool}(undef, ns)
     elt = sizeof(Float64)

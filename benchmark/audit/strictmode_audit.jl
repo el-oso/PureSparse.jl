@@ -91,6 +91,22 @@ check_noalloc(PureSparse.ldlt!, Fldlt, Kldlt)
 
 check_noalloc(PureSparse.solve!, xldlt, Fldlt, bldlt)
 
+# --- the simplicial path of the same two factor types (design.md §4.5) ---
+Fchol_s = PureSparse.cholesky(Achol; method = :simplicial)
+Fldlt_s = PureSparse.ldlt(Kldlt; signs, method = :simplicial)
+PureSparse.cholesky!(Fchol_s, Achol)   # warm up
+PureSparse.solve!(xchol, Fchol_s, bchol)
+PureSparse.ldlt!(Fldlt_s, Kldlt)
+PureSparse.solve!(xldlt, Fldlt_s, bldlt)
+
+check_noalloc(PureSparse.cholesky!, Fchol_s, Achol)
+
+check_noalloc(PureSparse.solve!, xchol, Fchol_s, bchol)
+
+check_noalloc(PureSparse.ldlt!, Fldlt_s, Kldlt)
+
+check_noalloc(PureSparse.solve!, xldlt, Fldlt_s, bldlt)
+
 # --- qr! / solve! (QRFactor, M5a :column) ---
 Aqr = sprand(rng, 60, 25, 0.15) + sparse(1:25, 1:25, 1.0, 60, 25)
 ordering = PureSparse.COLAMDOrdering()

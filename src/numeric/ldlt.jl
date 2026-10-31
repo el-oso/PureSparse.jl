@@ -50,11 +50,12 @@ function ldlt(
             psigns[k] = Int8(sg)      # signs given in ORIGINAL order; store permuted (factor order)
         end
     end
-    xsize = Int(sym.px[sym.nsuper + 1]) - 1
+    xsize = Int(sym.px[sym.nsuper + 1]) - 1      # 0 in simplicial mode
     x = Vector{T}(undef, xsize)
     panels = _build_panels(x, sym)
+    nl = sym.simplicial ? sym.nnzL : 0
     F = LDLFactor{T, Ti}(
-        sym, x, panels, Vector{T}(undef, n), psigns,
+        sym, x, panels, Vector{T}(undef, nl), Vector{T}(undef, nl), Vector{T}(undef, n), psigns,
         Workspace{T, Ti}(sym), FactorStats(), true,
     )
     ldlt!(F, A)
@@ -63,7 +64,7 @@ end
 
 """
     ldlt(A::SparseMatrixCSC; signs=nothing, n_pos=nothing, n_neg=nothing,
-         ordering=AMDOrdering()) -> LDLFactor
+         ordering=AMDOrdering(), method=:auto) -> LDLFactor
 
 One-shot symbolic analysis + numeric LDLᵀ factorization (design.md §6). Either pass
 `signs` (expected pivot signs in `A`'s ORIGINAL column order — see the `Symbolic` method
@@ -72,12 +73,13 @@ leading, the convenience pair `n_pos`/`n_neg`: it builds `signs` as `n_pos` lead
 followed by `n_neg` trailing `-1`s **in original column order** (which composes cleanly
 with any fill-reducing ordering, because the permutation is applied to `signs`
 internally, never by the caller). Passing both `signs` and `n_pos`/`n_neg` is an error.
+`method` is passed to [`symbolic`](@ref) (design.md §4.5).
 """
 function ldlt(
         A::SparseMatrixCSC{T};
         signs::Union{Nothing, AbstractVector{<:Integer}} = nothing,
         n_pos::Union{Nothing, Int} = nothing, n_neg::Union{Nothing, Int} = nothing,
-        ordering::AbstractOrdering = AMDOrdering(),
+        ordering::AbstractOrdering = AMDOrdering(), method::Symbol = :auto,
     ) where {T}
     if !isnothing(n_pos) || !isnothing(n_neg)
         isnothing(signs) || throw(ArgumentError("ldlt: pass either signs or n_pos/n_neg, not both"))
@@ -87,8 +89,35 @@ function ldlt(
             throw(ArgumentError("ldlt: n_pos + n_neg = $(np + nn) must equal n = $(size(A, 1))"))
         signs = vcat(fill(Int8(1), np), fill(Int8(-1), nn))
     end
-    sym = symbolic(A; ordering)
+    sym = symbolic(A; ordering, method)
     return ldlt(sym, A; signs)
+end
+
+# One pivot of the signed regularization (design.md §5.1), shared by the supernodal and
+# the simplicial LDLᵀ: classifies the pre-perturbation pivot into the inertia counts
+# (zero when `|d| <= zeta·dmax`, `dmax` the largest |pivot| so far), then forces the
+# expected sign `sg` (+1/-1; 0 = keep the observed sign) and the magnitude floor `delta`,
+# recording the forcing in `stats`. Returns the pivot to store.
+@inline function _signed_pivot!(stats::FactorStats, dj::T, sg::Int8, delta::T, zeta, dmax::T) where {T}
+    adj = abs(dj)
+    if adj <= zeta * dmax
+        stats.n_zero += 1
+    elseif dj > zero(T)
+        stats.n_pos += 1
+    else
+        stats.n_neg += 1
+    end
+    wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
+        (sg == Int8(-1) && !(dj < zero(T)))
+    if wrongsign || adj < delta
+        target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
+        newd = target * max(delta, adj)
+        stats.n_perturbed += 1
+        pert = Float64(abs(newd - dj))
+        pert > stats.max_perturbation && (stats.max_perturbation = pert)
+        dj = newd
+    end
+    return dj
 end
 
 """
@@ -105,6 +134,7 @@ function ldlt!(F::LDLFactor{T, Ti}, A::SparseMatrixCSC{T}) where {T, Ti <: Integ
     sym = F.sym
     check_refactor_shape(A, sym.n, sym.n, "ldlt!")
     check_refactor_nnz(A, length(sym.amap), "ldlt!")
+    sym.simplicial && return _ldlt_simplicial!(F, A)
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr
@@ -285,30 +315,9 @@ function ldlt!(F::LDLFactor{T, Ti}, A::SparseMatrixCSC{T}) where {T, Ti <: Integ
             # below (see its comment) — regularization itself is never bypassed.
             for j in 1:nscol
                 jg = j0 + j - 1
-                dj = panel[j, j]
-                adj = abs(dj)
-
-                # inertia accounting, PRE-perturbation (design §5.1 step 1)
-                if adj <= zeta * dmax
-                    stats.n_zero += 1
-                elseif dj > zero(T)
-                    stats.n_pos += 1
-                else
-                    stats.n_neg += 1
-                end
-
-                # signed regularization (design §5.1 step 2)
-                sg = signs[jg]
-                wrongsign = (sg == Int8(1) && !(dj > zero(T))) ||
-                    (sg == Int8(-1) && !(dj < zero(T)))
-                if wrongsign || adj < delta
-                    target = sg == Int8(0) ? (signbit(dj) ? -one(T) : one(T)) : T(sg)
-                    newd = target * max(delta, adj)
-                    stats.n_perturbed += 1
-                    pert = Float64(abs(newd - dj))
-                    pert > stats.max_perturbation && (stats.max_perturbation = pert)
-                    dj = newd
-                end
+                # inertia accounting on the pre-perturbation pivot, then signed
+                # regularization (design.md §5.1 steps 1-2)
+                dj = _signed_pivot!(stats, panel[j, j], signs[jg], delta, zeta, dmax)
 
                 dvec[jg] = dj
                 adf = abs(dj)

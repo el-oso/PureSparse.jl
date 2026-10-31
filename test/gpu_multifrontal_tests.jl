@@ -29,7 +29,7 @@
         ),
     ]
     for A in mats
-        S = PureSparse.symbolic(A)
+        S = PureSparse.symbolic(A; method = :supernodal)
         M = mf_symbolic(S)
         ns = S.nsuper
         nscolf(s) = Int(S.super[s + 1]) - Int(S.super[s])
@@ -132,7 +132,7 @@ end
         ),
     ]
     for (label, A) in mats
-        S = PureSparse.symbolic(A)
+        S = PureSparse.symbolic(A; method = :supernodal)
         F = PureSparse.cholesky(S, A); @assert PureSparse.issuccess(F)
         M = mf_symbolic(S)
         xlen = Int(S.px[S.nsuper + 1]) - 1
@@ -165,7 +165,7 @@ end
             (kkt(150, 80, 0.04)..., "kkt_150_80"), (kkt(300, 150, 0.02)..., "kkt_300_150"),
             (kkt(80, 80, 0.08)..., "kkt_80_80"),
         ]
-        F = PureSparse.ldlt(K; n_pos = n1, n_neg = n2); @test PureSparse.issuccess(F)
+        F = PureSparse.ldlt(K; n_pos = n1, n_neg = n2, method = :supernodal); @test PureSparse.issuccess(F)
         S = F.sym; M = mf_symbolic(S)
         xlen = Int(S.px[S.nsuper + 1]) - 1
         xh = Vector{Float64}(undef, xlen); ar = Vector{Float64}(undef, max(M.arena_peak, 1)); dv = Vector{Float64}(undef, S.n)

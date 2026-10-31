@@ -95,21 +95,27 @@ factorization of matrices sharing `sym`'s sparsity pattern, prefer [`cholesky!`]
 a factor obtained once from this — it never allocates.
 """
 function cholesky(sym::Symbolic{Ti}, A::SparseMatrixCSC{T}) where {T, Ti <: Integer}
-    xsize = Int(sym.px[sym.nsuper + 1]) - 1
+    xsize = Int(sym.px[sym.nsuper + 1]) - 1      # 0 in simplicial mode
     x = Vector{T}(undef, xsize)
     panels = _build_panels(x, sym)
-    F = SupernodalFactor{T, Ti}(sym, x, panels, Workspace{T, Ti}(sym), FactorStats(), true)
+    nl = sym.simplicial ? sym.nnzL : 0
+    F = SupernodalFactor{T, Ti}(
+        sym, x, panels, Vector{T}(undef, nl), Vector{T}(undef, nl),
+        Workspace{T, Ti}(sym), FactorStats(), true,
+    )
     cholesky!(F, A)
     return F
 end
 
 """
-    cholesky(A::SparseMatrixCSC; ordering=AMDOrdering()) -> SupernodalFactor
+    cholesky(A::SparseMatrixCSC; ordering=AMDOrdering(), method=:auto) -> SupernodalFactor
 
-One-shot symbolic analysis + numeric factorization (design.md §6).
+One-shot symbolic analysis + numeric factorization (design.md §6). `method` selects the
+supernodal or the simplicial path, or lets [`symbolic`](@ref) choose (design.md §4.5);
+the returned type is the same either way.
 """
-function cholesky(A::SparseMatrixCSC{T}; ordering::AbstractOrdering = AMDOrdering()) where {T}
-    sym = symbolic(A; ordering)
+function cholesky(A::SparseMatrixCSC{T}; ordering::AbstractOrdering = AMDOrdering(), method::Symbol = :auto) where {T}
+    sym = symbolic(A; ordering, method)
     return cholesky(sym, A)
 end
 
@@ -125,6 +131,7 @@ function cholesky!(F::SupernodalFactor{T, Ti}, A::SparseMatrixCSC{T}) where {T, 
     sym = F.sym
     check_refactor_shape(A, sym.n, sym.n, "cholesky!")
     check_refactor_nnz(A, length(sym.amap), "cholesky!")
+    sym.simplicial && return _cholesky_simplicial!(F, A)
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr

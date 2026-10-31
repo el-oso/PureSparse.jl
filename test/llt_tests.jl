@@ -21,6 +21,12 @@ function dense_L(F)
     sym = F.sym
     n = sym.n
     L = zeros(eltype(F.x), n, n)
+    if sym.simplicial   # exact-pattern CSC storage (design.md §4.5)
+        for j in 1:n, p in Int(sym.lcolptr[j]):(Int(sym.lcolptr[j + 1]) - 1)
+            L[Int(sym.lrowval[p]), j] = F.lx[p]
+        end
+        return L
+    end
     for s in 1:sym.nsuper
         j0 = Int(sym.super[s]); j1 = Int(sym.super[s + 1]) - 1
         nscol = j1 - j0 + 1
@@ -72,10 +78,11 @@ end
 @testitem "cholesky!: L*L' reconstructs P*A*P' (dense reconstruction oracle)" setup = [LLTHelpers] begin
     using Random, LinearAlgebra, SparseArrays
     rng = MersenneTwister(61)
-    for n in (1, 2, 3, 5, 10, 30, 60), density in (0.0, 0.05, 0.2, 0.5)
+    for method in (:supernodal, :simplicial), n in (1, 2, 3, 5, 10, 30, 60), density in (0.0, 0.05, 0.2, 0.5)
         A = random_spd_matrix(rng, n, density)
-        F = PureSparse.cholesky(A)
+        F = PureSparse.cholesky(A; method)
         @test PureSparse.issuccess(F)
+        @test F.sym.simplicial == (method === :simplicial)
         L = dense_L(F)
         PAP = permuted_dense(F, A)
         @test relerr(L * L', PAP) < 1.0e-9
@@ -114,9 +121,15 @@ end
     rng = MersenneTwister(63)
     n = 50
     A = random_spd_matrix(rng, n, 0.08)
-    sym = PureSparse.symbolic(A)
+    for method in (:supernodal, :simplicial)
+        sym = PureSparse.symbolic(A; method)
+        F = PureSparse.cholesky(sym, A)
+        PureSparse.cholesky!(F, A)   # warm up (any first-touch allocation happens here)
+        @test iszero(@allocated PureSparse.cholesky!(F, A))
+    end
+    sym = PureSparse.symbolic(A; method = :supernodal)
     F = PureSparse.cholesky(sym, A)
-    PureSparse.cholesky!(F, A)   # warm up (any first-touch allocation happens here)
+    PureSparse.cholesky!(F, A)
     allocs = @allocated PureSparse.cholesky!(F, A)
     # History: 7392 -> 2576 bytes after caching F.panels (built once, reused across
     # calls instead of re-`unsafe_wrap`ping every supernode's panel/panel_d every
@@ -160,7 +173,7 @@ end
         end
         A
     end
-    F64 = PureSparse.cholesky(A64)
+    F64 = PureSparse.cholesky(A64; method = :supernodal)
     @test PureSparse.issuccess(F64)
     L64 = dense_L(F64)
     PAP64 = permuted_dense(F64, A64)
@@ -172,22 +185,23 @@ end
     # exercising BOTH fast-path widths in one factorization.
     A1 = sparse([1, 2, 2], [1, 1, 2], [1.0, 0.3, 2.0], 2, 2)
     Aiso = blockdiag(sparse([1.0;;]), A1)
-    @assert [s2 - s1 for (s1, s2) in zip(PureSparse.symbolic(Aiso).super, PureSparse.symbolic(Aiso).super[2:end])] == [1, 2]
-    Fiso = PureSparse.cholesky(Aiso)
+    sym_iso = PureSparse.symbolic(Aiso; method = :supernodal)
+    @assert [s2 - s1 for (s1, s2) in zip(sym_iso.super, sym_iso.super[2:end])] == [1, 2]
+    Fiso = PureSparse.cholesky(Aiso; method = :supernodal)
     @test PureSparse.issuccess(Fiso)
     Liso = dense_L(Fiso)
     @test relerr(Liso * Liso', permuted_dense(Fiso, Aiso)) < 1.0e-10
 
     # (c) failure signaling still correct through both fast-path widths.
     Aneg1 = sparse(Diagonal([-1.0]))
-    @test !PureSparse.issuccess(PureSparse.cholesky(Aneg1))
+    @test !PureSparse.issuccess(PureSparse.cholesky(Aneg1; method = :supernodal))
     # width-2, negative SECOND pivot (Schur complement goes negative: d2 = 0.5 - 2^2/4 < 0)
     Aneg2b = sparse([1, 2, 2], [1, 1, 2], [4.0, 2.0, 0.5], 2, 2)
-    Fneg2b = PureSparse.cholesky(Aneg2b)
+    Fneg2b = PureSparse.cholesky(Aneg2b; method = :supernodal)
     @test !PureSparse.issuccess(Fneg2b)
     # width-2, negative FIRST pivot
     Aneg2a = sparse([1, 2, 2], [1, 1, 2], [-4.0, 2.0, 5.0], 2, 2)
-    Fneg2a = PureSparse.cholesky(Aneg2a)
+    Fneg2a = PureSparse.cholesky(Aneg2a; method = :supernodal)
     @test !PureSparse.issuccess(Fneg2a)
 end
 
@@ -228,9 +242,9 @@ end
 @testitem "cholesky!: BigFloat precision oracle on small matrices" setup = [LLTHelpers] begin
     using Random, LinearAlgebra, SparseArrays
     rng = MersenneTwister(66)
-    for n in (3, 5, 8)
+    for method in (:supernodal, :simplicial), n in (3, 5, 8)
         A = random_spd_matrix(rng, n, 0.4)
-        F = PureSparse.cholesky(A)
+        F = PureSparse.cholesky(A; method)
         L = dense_L(F)
         PAP = permuted_dense(F, A)
         Lbig = LinearAlgebra.cholesky(Symmetric(BigFloat.(PAP), :L)).L

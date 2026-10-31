@@ -157,6 +157,8 @@ a hot-path operation; also reachable as `F.L`.
 function sparse_L(F::Union{SupernodalFactor{T, Ti}, LDLFactor{T, Ti}}) where {T, Ti <: Integer}
     sym = F.sym
     n = sym.n
+    # Simplicial mode already holds L as a sorted exact-pattern CSC (types.jl).
+    sym.simplicial && return SparseMatrixCSC{T, Ti}(n, n, copy(sym.lcolptr), copy(sym.lrowval), copy(F.lx))
     I = Ti[]; J = Ti[]; V = T[]
     @inbounds for s in 1:sym.nsuper
         j0 = Int(sym.super[s]); j1 = Int(sym.super[s + 1]) - 1
@@ -210,11 +212,18 @@ end
     det(F::SupernodalFactor) -> Real
 
 `logdet(P·A·Pᵀ) = 2·Σ log(L_jj)` (permutation-invariant: `det(P) = ±1`, squared away).
-Reads the diagonal directly off each supernode's cached panel — no extraction needed.
+Reads the diagonal directly off each supernode's cached panel, or off the first slot of
+each column in simplicial mode — no extraction needed.
 """
 function LinearAlgebra.logdet(F::SupernodalFactor{T}) where {T}
     sym = F.sym
     acc = zero(T)
+    if sym.simplicial
+        @inbounds for j in 1:sym.n
+            acc += log(F.lx[sym.lcolptr[j]])
+        end
+        return 2acc
+    end
     @inbounds for s in 1:sym.nsuper
         nscol = Int(sym.super[s + 1]) - Int(sym.super[s])
         panel = F.panels[s]

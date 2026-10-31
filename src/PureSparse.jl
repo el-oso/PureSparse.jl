@@ -26,6 +26,7 @@ const _ANALYSIS = "symbolic analysis allocates its outputs"
 @strict_exempt :noalloc reason = _ANALYSIS include("ordering/colamd.jl")
 @strict_exempt :noalloc reason = _ANALYSIS include("symbolic/etree.jl")
 @strict_exempt :noalloc reason = _ANALYSIS include("symbolic/counts.jl")
+@strict_exempt :noalloc reason = _ANALYSIS include("symbolic/pattern.jl")
 @strict_exempt :noalloc reason = _ANALYSIS include("symbolic/supernodes.jl")
 @strict_exempt :noalloc reason = _ANALYSIS include("symbolic/driver.jl")
 @strict_exempt :noalloc reason = _ANALYSIS include("qr/symbolic.jl")
@@ -37,6 +38,7 @@ include("qr/frontal.jl")  # M5b multifrontal numeric+solve (design_qr_m5b.md §A
 include("numeric/llt.jl")
 include("numeric/ldlt.jl")
 include("numeric/solve.jl")
+include("simplicial/numeric.jl")
 include("simplicial/updown.jl")
 include("refine.jl")
 @strict_exempt reason = "cold: writes a preference" include("dropin_toggle.jl")   # activate!/deactivate! — always available, see tuning.jl's DROPIN_ACTIVE

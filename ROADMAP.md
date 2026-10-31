@@ -198,6 +198,18 @@ hardware.
   0.1.2 (Zen 3, fixed clock; faster than CHOLMOD at every size). The named-matrix gates
   (`gate.jl`, `gate_ldlt.jl`, `qr_gate.jl`, `gpu_gate.jl`) and the Zen 4 size sweep still
   report results from earlier toolchains.
+- **Simplicial path (`docs/design.md` §4.5):** `symbolic` chooses between the supernodal
+  path and a column-by-column path over the exact pattern of `L` from the work-per-nonzero
+  predictor `flops / nnzL` (`simplicial_ratio` preference, default 10, the measured
+  refactor+solve crossover from `benchmark/simplicial_threshold.jl`;
+  `method = :simplicial`/`:supernodal` overrides). The simplicial numeric phase is
+  up-looking, the solves are two scatter sweeps over `L` by columns and by rows. The
+  simplicial refactorization streams `Σ colcount²` entries where the supernodal panels
+  reuse cache, so it wins only on very sparse factors (narrow banded matrices, small
+  grids); on the 2D 100×100 Laplacian (predictor 55, supernodal) it would be about 2×
+  slower while its solve alone would be about 0.6× the supernodal solve. Open: the
+  predictor does not separate banded matrices (lose from a predictor of about 13) from
+  grids (win to about 18); the gate matrices all stay supernodal at the default.
 - **Analysis time:** on a Zen 5c core at 3.5 GHz, single thread, `symbolic()` takes
   about 2.8 ms on the 2D 100×100 Laplacian and 18 ms on the 3D 30×30×30 Laplacian,
   against 2.9 ms and 26 ms for faer 0.24's `SymbolicLlt::try_new`. The 2D margin is

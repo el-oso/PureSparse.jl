@@ -81,6 +81,9 @@ module PureSparseOB
     using ..OpenBLASBackend: potrf!, trsm!, syrk!, syr2k!, gemm!, ger!
     import PureSparse
     import PureSparse: Symbolic, FactorStats, Workspace, AbstractSparseFactor, SupernodalFactor, LDLFactor, issuccess
+    # The simplicial path (design.md §4.5) calls no dense kernel, so the re-included
+    # entry points branch into PureSparse's own kernels for it.
+    import PureSparse: _cholesky_simplicial!, _ldlt_simplicial!
     import PureSparse: AbstractOrdering, AMDOrdering, GivenOrdering, symbolic
     import PureSparse: LDLT_DELTA
     import PureSparse: check_refactor_shape, check_refactor_nnz, check_finite

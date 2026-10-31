@@ -312,7 +312,7 @@ end
     end
     A = sparse(I, J, V, n, n)   # lower triangle stored, as `symbolic` reads it
 
-    S = PureSparse.symbolic(A)
+    S = PureSparse.symbolic(A; method = :supernodal)
 
     # Ground-truth per-column L-patterns on the PERMUTED pattern (S.super/S.rowind live
     # in the final AMD∘postorder labeling S.perm).

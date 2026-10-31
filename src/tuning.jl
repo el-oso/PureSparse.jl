@@ -63,6 +63,47 @@ const AMD_DENSE_FLOOR = 16
 # default magnitude.
 const LDLT_DELTA = @load_preference("ldlt_delta", 1.0e-12)::Float64
 
+# Simplicial-versus-supernodal switch (design.md §4.5): `symbolic(A)` takes the simplicial
+# path when `flops / nnzL` (= Σ colcount² / Σ colcount, the mean multiply-adds per stored
+# entry of L, both already computed from the column counts) is at or below this value.
+# Provenance: the CHOLMOD *User Guide* documents that it switches on such a ratio, which is
+# the only thing taken from it; the number here is PureSparse's own measurement
+# (benchmark/simplicial_threshold.jl, Zen 5c core pinned, single thread, four runs on a
+# shared machine; simplicial-to-supernodal time ratios of the warm refactorization,
+# the warm single-vector solve, and their sum, medians; the sum is the quantity the
+# switch is set on, since the target users refactorize many times per analysis):
+#
+#   matrix              flops/nnzL   refactor   solve      refactor+solve
+#   banded bw 2..4        3..5       0.17-0.59  0.23-0.89  0.19-0.64
+#   banded bw 8           9          0.70-0.99  0.47-1.04  0.74-0.83   (one run 1.5)
+#   banded bw 12         13          1.36       1.28       1.35
+#   laplacian2d 20x20    13          0.57       0.62       0.58
+#   banded bw 16         17          0.84-2.1   0.36-1.43  0.73-2.0    (wins in 1 of 4)
+#   laplacian2d 30x30    18          0.57-1.0   0.38-0.78  0.58-0.95
+#   laplacian2d 40x40    25          1.05       0.86       1.03
+#   laplacian2d 50x50    29          1.1-1.2    0.56-0.88  1.0-1.11
+#   banded bw 24..32    25..33       2.4-4.1    0.98-1.54  2.3-3.7
+#   laplacian2d 70x70    40          1.55-1.66  0.61-0.82  1.4-1.5
+#   laplacian3d 8^3      43          1.3-1.65   0.59-0.75  1.25-1.5
+#   laplacian2d 100x100  55          1.85-2.03  0.58-1.04  1.66-1.92
+#   banded bw 64         65          3.6-5.1    1.27-2.08  3.4-4.7
+#   laplacian2d 140x140  71          2.2-2.7    0.67-0.89  2.0-2.5
+#   laplacian3d, random 102-649      4-12       1.0-3.3    3.8-11
+#
+# The up-looking simplicial factorization streams every column of L once per nonzero
+# of its row structure (Σ colcount² of traffic) where the supernodal panels reuse
+# cache, so its refactorization falls behind early; the simplicial solve, with no
+# padding and no per-supernode kernel calls, stays ahead longer on grids than on
+# banded matrices (long chain supernodes suit the supernodal solve). Refactor+solve is
+# faster on the simplicial path for every matrix with a predictor of at most 9 in
+# every run, grids keep winning to about 18, and the first losses are banded bw 12
+# (13) and bw 16 (17); from 25 on every matrix loses. The default is the integer
+# above the last predictor that wins in every run (9) and below the first observed
+# loss (13): 10. A solve-dominated workload (one factorization, many right-hand
+# sides) can raise this preference — the simplicial solve alone beats the supernodal
+# one on 2D grids up to a predictor of about 70 — or pass `method = :simplicial`.
+const SIMPLICIAL_RATIO = @load_preference("simplicial_ratio", 10.0)::Float64
+
 # Per-supernode flop threshold above which the GPU path engages (design.md §8, M3).
 const GPU_FLOP_THRESHOLD = @load_preference("gpu_flop_threshold", 2.0e9)::Float64
 

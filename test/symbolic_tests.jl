@@ -48,7 +48,10 @@ end
     rng = MersenneTwister(51)
     for n in (1, 2, 5, 10, 30, 60), density in (0.0, 0.05, 0.2, 0.5)
         A = random_symmetric_matrix(rng, n, density)
-        sym = PureSparse.symbolic(A)
+        sym = PureSparse.symbolic(A; method = :supernodal)
+        @test !sym.simplicial
+        @test isempty(sym.lcolptr) && isempty(sym.lrowval) && isempty(sym.lrowptr) &&
+            isempty(sym.lcolval) && isempty(sym.ucolptr) && isempty(sym.urowval)
 
         @test sym.n == n
         @test sort(sym.perm) == collect(1:n)
@@ -80,13 +83,28 @@ end
         rng2 = MersenneTwister(hash((n, density)))
         Alower = random_symmetric_matrix(rng2, n, density; store = :lower)
 
-        symf = PureSparse.symbolic(Afull)
-        syml = PureSparse.symbolic(Alower)
+        symf = PureSparse.symbolic(Afull; method = :supernodal)
+        syml = PureSparse.symbolic(Alower; method = :supernodal)
 
         @test symf.perm == syml.perm
         @test symf.super == syml.super
         @test symf.rowind == syml.rowind
         @test symf.colcount == syml.colcount
+
+        symfs = PureSparse.symbolic(Afull; method = :simplicial)
+        symls = PureSparse.symbolic(Alower; method = :simplicial)
+        @test symfs.perm == symls.perm
+        @test symfs.lcolptr == symls.lcolptr
+        @test symfs.lrowval == symls.lrowval
+        @test symfs.lrowptr == symls.lrowptr
+        @test symfs.lcolval == symls.lcolval
+        @test symfs.ucolptr == symls.ucolptr
+        # the permuted-upper columns are in arrival order, which differs between the
+        # two storages; the column SETS agree
+        for k in 1:n
+            r = Int(symfs.ucolptr[k]):(Int(symfs.ucolptr[k + 1]) - 1)
+            @test sort(symfs.urowval[r]) == sort(symls.urowval[r])
+        end
     end
 end
 
@@ -95,7 +113,7 @@ end
     rng = MersenneTwister(53)
     for n in (1, 2, 5, 10, 30, 60), density in (0.0, 0.05, 0.2, 0.5)
         A = random_symmetric_matrix(rng, n, density)
-        sym = PureSparse.symbolic(A)
+        sym = PureSparse.symbolic(A; method = :supernodal)
 
         xsize = sym.px[sym.nsuper + 1] - 1
         x = zeros(Float64, xsize)

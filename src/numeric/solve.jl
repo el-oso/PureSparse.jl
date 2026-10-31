@@ -4,10 +4,12 @@
 # multi-RHS (`b::AbstractMatrix`) form allocates an `n×nrhs` scratch, unavoidably (caller-
 # chosen, unbounded `nrhs`); see the `solve!` docstring below for the full rationale.
 #
-# Both supernodal factor types share the identical panel layout (design.md §1.2), so the
-# L/Lᵀ sweeps are written once over this union; the only difference is the diagonal:
-# LLᵀ panels store L's true diagonal (trsm diag='N'), LDLᵀ panels store unit-lower L
-# (trsm diag='U') plus the separate D solved by `solve_D!`.
+# Both factor types share the identical panel layout (design.md §1.2), so the L/Lᵀ
+# sweeps are written once over this union; the only difference is the diagonal: LLᵀ
+# panels store L's true diagonal (trsm diag='N'), LDLᵀ panels store unit-lower L (trsm
+# diag='U') plus the separate D solved by `solve_D!`. A factor in simplicial mode
+# (`F.sym.simplicial`, design.md §4.5) takes the CSC sweeps of `simplicial/numeric.jl`
+# from inside `_solve_L!`/`_solve_Lt!`; `solve!`'s permutation staging is shared.
 const _PanelFactor{T, Ti} = Union{SupernodalFactor{T, Ti}, LDLFactor{T, Ti}}
 _diagchar(::SupernodalFactor) = 'N'
 _diagchar(::LDLFactor) = 'U'
@@ -122,6 +124,7 @@ function _solve_D!(y::Matrix{T}, F::LDLFactor{T, Ti}) where {T, Ti <: Integer}
 end
 
 function _solve_L!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
+    F.sym.simplicial && return _solve_L_csc!(y, F)
     # `y` is `F.ws.rhs` on every internal `solve!` call (the actual hot path CONTRIBUTING.md req 5
     # gates) — `_solve_L_cached!` then uses the SAME pre-wrapped/preallocated buffers
     # `panels`/`c` already use elsewhere, zero allocation. `solve_L!` is also exported
@@ -211,6 +214,7 @@ end
 
 function _solve_L!(y::Matrix{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
+    sym.simplicial && return _solve_L_csc!(y, F)
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr
@@ -248,6 +252,7 @@ function _solve_L!(y::Matrix{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer
 end
 
 function _solve_Lt!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
+    F.sym.simplicial && return _solve_Lt_csc!(y, F)
     # See `_solve_L!`'s comment: same cached-vs-generic split, same reason (type-stable
     # `yblk`/`gathered` in each branch, not a Union between SubArray and fresh Matrix).
     if y === F.ws.rhs
@@ -328,6 +333,7 @@ end
 
 function _solve_Lt!(y::Matrix{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: Integer}
     sym = F.sym
+    sym.simplicial && return _solve_Lt_csc!(y, F)
     nsuper = sym.nsuper
     super = sym.super
     rowind_ptr = sym.rowind_ptr

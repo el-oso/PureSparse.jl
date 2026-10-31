@@ -5,9 +5,17 @@
 """
     Symbolic{Ti<:Integer}
 
-Fill-reducing permutation, elimination tree, column counts, and supernode partition of a
-sparse symmetric pattern. Computed once by [`symbolic`](@ref) and reused across many
-numeric factorizations of matrices sharing that pattern. Never holds numeric values.
+Fill-reducing permutation, elimination tree, column counts, and either the supernode
+partition or the exact column pointers of `L`, for a sparse symmetric pattern. Computed
+once by [`symbolic`](@ref) and reused across many numeric factorizations of matrices
+sharing that pattern. Never holds numeric values.
+
+`simplicial` selects which numeric path every factor built on this analysis takes
+(design.md §4.5): `false` is the supernodal path (design.md §4), `true` the
+column-by-column path over the exact pattern of `L`. The fields of the other path are
+left empty (no supernodes and length-1 pointer arrays in simplicial mode; empty
+`lcolptr`/`lrowval`/`lrowptr`/`lcolval`/`ucolptr`/`urowval` in supernodal mode), so a
+factor's storage is sized for the path it uses and nothing else.
 """
 struct Symbolic{Ti <: Integer}
     n::Int
@@ -16,17 +24,28 @@ struct Symbolic{Ti <: Integer}
     parent::Vector{Ti}            # elimination tree (postordered), per-column
     colcount::Vector{Ti}          # nnz per column of L
 
-    # --- supernode partition ---
+    # --- supernode partition (supernodal path) ---
     nsuper::Int
     super::Vector{Ti}             # super[s] = first column of supernode s (length nsuper+1)
     rowind_ptr::Vector{Ti}        # CSC-style pointers into rowind, length nsuper+1
     rowind::Vector{Ti}            # concatenated row patterns, one block per supernode
     snode_of::Vector{Ti}          # column -> supernode, length n
     sparent::Vector{Ti}           # supernode elimination tree, length nsuper (0 = root)
-    px::Vector{Ti}                # per-supernode offset into x, length nsuper+1 (design §4.1)
+    px::Vector{Ti}                # per-supernode offset into x, length nsuper+1 (design.md §4.1)
 
     # --- assembly ---
-    amap::Vector{Ti}              # nnz(tril(permuted A)) -> destination offset in x (design §4.2)
+    amap::Vector{Ti}              # nnz(A) -> destination slot: in x (supernodal, design.md §4.2)
+    # or in Workspace.ux (simplicial, design.md §4.5); 0 for an
+    # upper-triangle entry of A, which is never read
+
+    # --- simplicial path (design.md §4.5) ---
+    simplicial::Bool
+    lcolptr::Vector{Ti}           # exact pattern of L by columns (CSC): column j is
+    lrowval::Vector{Ti}           # lcolptr[j]:lcolptr[j+1]-1, its diagonal first, rows ascending
+    lrowptr::Vector{Ti}           # the same pattern by rows (CSC of Lᵀ): row k is
+    lcolval::Vector{Ti}           # lrowptr[k]:lrowptr[k+1]-1, columns ascending, diagonal last
+    ucolptr::Vector{Ti}           # permuted upper triangle of A with its diagonal, as a CSC
+    urowval::Vector{Ti}           # pattern: column k holds the rows i <= k of P·A·Pᵀ (unsorted)
 
     # --- workspace sizing, derived independently from the §4.3 schedule (B1: these are
     # NOT CHOLMOD's maxcsize/maxesize fields — renamed and re-derived per design.md §0 B1) ---
@@ -130,7 +149,8 @@ struct Workspace{T, Ti <: Integer}
     dptr::Vector{Ti}              # length nsuper, per-descendant progress cursor into rowind
     rhs::Vector{T}                # permuted-RHS scratch for solve!, length n — zero-alloc single-
     # vector solves (multi-RHS still allocates: nrhs is unbounded,
-    # not knowable ahead of time)
+    # not knowable ahead of time). The simplicial numeric phase
+    # uses it as the dense row-k scatter vector (design.md §4.5).
     rhs_blocks::Vector{Matrix{T}} # rhs_blocks[s] = unsafe_wrap(rhs @ super[s], nscol_s x 1), built
     # ONCE — the `_solve_L!`/`_solve_Lt!` single-vector sweeps always
     # call with `y === this Workspace's own rhs` (`solve!`'s top-level
@@ -139,6 +159,13 @@ struct Workspace{T, Ti <: Integer}
     # factor) this can be cached exactly the same way: same technique,
     # same lifetime argument (`rhs`'s identity never changes after
     # this constructor runs, so the wraps never dangle).
+    cursor::Vector{Ti}            # simplicial path: per-column write cursor into lx, length n
+    # (else 0)
+    ux::Vector{T}                 # simplicial path: values of the permuted upper triangle of A,
+    # assembled through `Symbolic.amap`, length(sym.urowval)
+    invdiag::Vector{T}            # simplicial path: 1/L[j,j] (LLᵀ) or 1/d[j] (LDLᵀ), length n;
+    # the per-entry divisions of the up-looking solve and of the
+    # triangular solves become multiplications
 end
 
 function Workspace{T, Ti}(sym::Symbolic) where {T, Ti <: Integer}
@@ -161,6 +188,9 @@ function Workspace{T, Ti}(sym::Symbolic) where {T, Ti <: Integer}
         Vector{Ti}(undef, sym.nsuper),
         rhs,
         rhs_blocks,
+        Vector{Ti}(undef, sym.simplicial ? sym.n : 0),
+        Vector{T}(undef, length(sym.urowval)),
+        Vector{T}(undef, sym.simplicial ? sym.n : 0),
     )
 end
 
@@ -177,9 +207,15 @@ abstract type AbstractSparseFactor{T} end
 """
     SupernodalFactor{T,Ti} <: AbstractSparseFactor{T}
 
-Supernodal LLᵀ factor (SPD path, design.md §4). Dense column-major panels for every
-supernode, stored contiguously in `x`. Produced by [`cholesky`](@ref)/refactored in place
-by [`cholesky!`](@ref) (zero allocations after the first call).
+LLᵀ factor (SPD path). Produced by [`cholesky`](@ref)/refactored in place by
+[`cholesky!`](@ref) (zero allocations after the first call). Its storage follows
+`sym.simplicial` (design.md §4.5):
+
+- supernodal (design.md §4): dense column-major panels for every supernode, stored
+  contiguously in `x`; `lx`/`ltx` are empty;
+- simplicial: the values of `L` in the exact pattern held by `sym`, by columns in `lx`
+  (`sym.lcolptr`/`sym.lrowval`) and by rows in `ltx` (`sym.lrowptr`/`sym.lcolval`);
+  `x`/`panels` are empty.
 """
 mutable struct SupernodalFactor{T, Ti <: Integer} <: AbstractSparseFactor{T}
     sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
@@ -191,6 +227,8 @@ mutable struct SupernodalFactor{T, Ti <: Integer} <: AbstractSparseFactor{T}
     # allocation-free; a fresh unsafe_wrap per call, while still far
     # cheaper than the reshape(view(...)) compile-tax trap it replaced,
     # still allocates a small Array header each time)
+    lx::Vector{T}                  # simplicial path: values of L by columns, length sym.nnzL
+    ltx::Vector{T}                 # simplicial path: values of L by rows, length sym.nnzL
     ws::Workspace{T, Ti}
     stats::FactorStats
     ok::Bool
@@ -199,14 +237,16 @@ end
 """
     LDLFactor{T,Ti} <: AbstractSparseFactor{T}
 
-Supernodal LDLᵀ factor for symmetric quasi-definite systems (design.md §5). Same panel
-layout as [`SupernodalFactor`](@ref) (unit-lower L, explicit 1s on the diagonal of each
-panel) plus a separate diagonal `d` and the caller's expected pivot `signs`.
+LDLᵀ factor for symmetric quasi-definite systems (design.md §5). Same storage as
+[`SupernodalFactor`](@ref) in either mode (unit-lower L with explicit 1s on its
+diagonal) plus a separate diagonal `d` and the caller's expected pivot `signs`.
 """
 mutable struct LDLFactor{T, Ti <: Integer} <: AbstractSparseFactor{T}
     sym::Symbolic{Ti}              # sym.px gives per-supernode offsets into x (shared, not duplicated)
     x::Vector{T}
     panels::Vector{Matrix{T}}      # built-once panel wrappers, same caching as SupernodalFactor.panels
+    lx::Vector{T}                  # simplicial path: values of unit-lower L by columns
+    ltx::Vector{T}                 # simplicial path: values of unit-lower L by rows
     d::Vector{T}                   # diagonal of D, permuted, length n
     signs::Vector{Int8}            # expected pivot signs (+1/-1/0=free), permuted, length n
     ws::Workspace{T, Ti}

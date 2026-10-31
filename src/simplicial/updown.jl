@@ -9,10 +9,11 @@
 """
     simplicial(F::LDLFactor{T,Ti}; grow = SIMPLICIAL_GROW) -> SimplicialLDLFactor{T,Ti}
 
-One-time conversion of a supernodal [`LDLFactor`](@ref) into the per-column simplicial
+One-time conversion of an [`LDLFactor`](@ref) into the slack-padded per-column
 representation that [`updowndate!`](@ref) operates on (design.md §1.2/§6). **Allocates**
 — this is a cold/setup path; the subsequent `updowndate!`/split-solve calls on the
-result do not allocate.
+result do not allocate. A factor in simplicial mode (`F.sym.simplicial`) is copied from
+its exact-pattern CSC; the pattern note below concerns the supernodal source.
 
 Each column is stored with slack capacity `min(n - j, max(len, ceil(grow*(len + 1))))`
 (`len` = the column's initial strictly-lower count) so that update fill can be absorbed
@@ -44,18 +45,26 @@ function simplicial(F::LDLFactor{T, Ti}; grow::Real = SIMPLICIAL_GROW) where {T,
     super = sym.super
     rowind_ptr = sym.rowind_ptr
     rowind = sym.rowind
+    _cap(len::Int, j::Int) = min(n - j, max(len, ceil(Int, grow * (len + 1))))
 
-    # slot layout: capacity per column from its strictly-lower supernodal count
+    # slot layout: capacity per column from its strictly-lower stored count
     colptr = Vector{Ti}(undef, n + 1)
     colptr[1] = one(Ti)
-    @inbounds for s in 1:sym.nsuper
-        j0 = Int(super[s])
-        j1 = Int(super[s + 1]) - 1
-        nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
-        for j in j0:j1
-            len = nsrow - (j - j0 + 1)          # rows strictly below j in rowind(s)
-            cap = min(n - j, max(len, ceil(Int, grow * (len + 1))))
-            colptr[j + 1] = colptr[j] + Ti(cap)
+    if sym.simplicial
+        lcolptr = sym.lcolptr
+        @inbounds for j in 1:n
+            len = Int(lcolptr[j + 1]) - Int(lcolptr[j]) - 1   # exact strictly-lower count
+            colptr[j + 1] = colptr[j] + Ti(_cap(len, j))
+        end
+    else
+        @inbounds for s in 1:sym.nsuper
+            j0 = Int(super[s])
+            j1 = Int(super[s + 1]) - 1
+            nsrow = Int(rowind_ptr[s + 1]) - Int(rowind_ptr[s])
+            for j in j0:j1
+                len = nsrow - (j - j0 + 1)          # rows strictly below j in rowind(s)
+                colptr[j + 1] = colptr[j] + Ti(_cap(len, j))
+            end
         end
     end
 
@@ -65,6 +74,25 @@ function simplicial(F::LDLFactor{T, Ti}; grow::Real = SIMPLICIAL_GROW) where {T,
     colnnz = Vector{Ti}(undef, n)
     parent = Vector{Ti}(undef, n)
     used = 0
+
+    if sym.simplicial
+        # Exact-pattern CSC source (design.md §4.5): column j's strictly-lower entries
+        # follow its diagonal slot and are already sorted.
+        lcolptr = sym.lcolptr
+        lrowval = sym.lrowval
+        @inbounds for j in 1:n
+            q0 = Int(lcolptr[j])
+            len = Int(lcolptr[j + 1]) - q0 - 1
+            p = Int(colptr[j]) - 1
+            for k in 1:len
+                rowval[p + k] = lrowval[q0 + k]
+                nzval[p + k] = F.lx[q0 + k]
+            end
+            colnnz[j] = Ti(len)
+            parent[j] = len > 0 ? rowval[p + 1] : zero(Ti)
+            used += len
+        end
+    end
 
     @inbounds for s in 1:sym.nsuper
         j0 = Int(super[s])
