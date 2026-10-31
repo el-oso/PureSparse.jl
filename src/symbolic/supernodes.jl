@@ -32,7 +32,9 @@ function fundamental_supernodes(
             p != 0 && (childcount[p] += one(Ti))
         end
     end
-    super = Ti[1]
+    super = Vector{Ti}(undef, n + 1)      # at most n supernodes; trimmed below
+    super[1] = one(Ti)
+    nsuper = 0
     j = 1
     @inbounds while j <= n
         while j < n && parent[j] == j + 1 && colcount[j] == colcount[j + 1] + 1 &&
@@ -40,9 +42,11 @@ function fundamental_supernodes(
             j += 1
         end
         j += 1
-        push!(super, Ti(j))
+        nsuper += 1
+        super[nsuper + 1] = Ti(j)
     end
-    return length(super) - 1, super
+    resize!(super, nsuper + 1)
+    return nsuper, super
 end
 
 """
@@ -183,47 +187,62 @@ function relaxed_amalgamation(
         end
     end
 
-    super2 = Ti[]
+    super2 = Vector{Ti}(undef, nsuper + 1)
+    nsuper2 = 0
     @inbounds for s in 1:nsuper
-        alive[s] && push!(super2, start[s])
+        alive[s] || continue
+        nsuper2 += 1
+        super2[nsuper2] = start[s]
     end
-    push!(super2, Ti(n + 1))
-    return length(super2) - 1, super2
+    super2[nsuper2 + 1] = Ti(n + 1)
+    resize!(super2, nsuper2 + 1)
+    return nsuper2, super2
 end
 
 """
-    supernode_rowind(n, colptr, rowval, parent, nsuper, super[, lower]; rowind_length)
+    supernode_rowind(n, colptr, rowval, parent, nsuper, super)
         -> (rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows)
 
 Row structure of L per (post-amalgamation) supernode (design.md §3.6):
 `rowind[s]` = `columns_of_s ∪ pattern(A[:,cols(s)]) below s ∪ ⋃_{children c} (rowind[c]
 minus c's columns)`. `colptr`/`rowval` is the postordered STRICT UPPER pattern (as
-`etree`/`column_counts` consume). Also computes the two independent workspace-size
-derivations from the §4.3 update schedule (design §0 B1 — NOT CHOLMOD's
-`maxcsize`/`maxesize`): `max_update_size` = `max over (descendant d, ancestor s) pairs of
-|R|·|R₁|`, and `max_extend_rows` = the tallest below-diagonal panel.
-
-Algorithm: one ascending (postorder) pass with a per-supernode stamped marker array
-(`mark`) for O(1) dedup, avoiding an O(n) clear between supernodes. For supernode `s`:
-add its own columns, then the below-diagonal entries of those columns read from the
-UPPER-triangle transpose (`hadj`/`hptr` — by symmetry, "row `c` has an entry in column
-`i>c`" ⟺ "column `c` has an entry at row `i>c`", exactly the seed pattern needed; `lower`
-is [`lower_pattern`](@ref)`(n, colptr, rowval)`, shared with `column_counts` when the
-caller passes it), then each child's rowind with the
-child's OWN columns excluded (they are always the smallest entries of a child's sorted
-rowind — every propagated row is an etree-ancestor of the child's diagonal columns, and
-postorder gives ancestors strictly increasing column index, so nothing from a
-descendant's propagated set can be smaller than the child's own first column).
+`etree`/`column_counts` consume); this method forms its below-diagonal transpose with
+[`lower_pattern`](@ref) and calls [`supernode_rowind_lower`](@ref). Also computes the two
+independent workspace-size derivations from the §4.3 update schedule (design §0 B1 —
+NOT CHOLMOD's `maxcsize`/`maxesize`): `max_update_size` = `max over (descendant d,
+ancestor s) pairs of |R|·|R₁|`, and `max_extend_rows` = the tallest below-diagonal panel.
 """
 function supernode_rowind(
         n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
         nsuper::Int, super::Vector{Ti},
-        lower::Tuple{Vector{Ti}, Vector{Ti}} = lower_pattern(n, colptr, rowval);
-        rowind_length::Int = Int(colptr[n + 1]) - 1 + n,
     ) where {Ti <: Integer}
-    # Below-diagonal seed of L's column c: hadj column c = {i > c : A[c,i] ≠ 0}.
-    hptr, hadj = lower
+    hptr, hadj = lower_pattern(n, colptr, rowval)
+    return supernode_rowind_lower(n, parent, nsuper, super, hptr, hadj; rowind_length = length(hadj) + n)
+end
 
+"""
+    supernode_rowind_lower(n, parent, nsuper, super, hptr, hadj; rowind_length)
+        -> (rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows)
+
+[`supernode_rowind`](@ref) on the below-diagonal pattern: column `c` of `hptr`/`hadj`
+holds the rows `i > c` of the postordered matrix, in any order (by symmetry, "row `c`
+has an entry in column `i>c`" ⟺ "column `c` has an entry at row `i>c`", exactly the seed
+pattern needed). `rowind_length` is the final length of `rowind` when the caller knows
+it (Σ_s ncols(s) + colcount[last column of s] − 1), otherwise a lower bound.
+
+Algorithm: one ascending (postorder) pass with a per-supernode stamped marker array
+(`mark`) for O(1) dedup, avoiding an O(n) clear between supernodes. For supernode `s`:
+add its own columns, then the below-diagonal entries of those columns, then each
+child's rowind with the child's OWN columns excluded (they are always the smallest
+entries of a child's sorted rowind — every propagated row is an etree-ancestor of the
+child's diagonal columns, and postorder gives ancestors strictly increasing column
+index, so nothing from a descendant's propagated set can be smaller than the child's
+own first column).
+"""
+function supernode_rowind_lower(
+        n::Int, parent::Vector{Ti}, nsuper::Int, super::Vector{Ti},
+        hptr::Vector{Ti}, hadj::Vector{Ti}; rowind_length::Int,
+    ) where {Ti <: Integer}
     snode_of, sparent = supernode_tree(n, nsuper, super, parent)
     child_head = zeros(Ti, nsuper)
     child_next = zeros(Ti, nsuper)
@@ -238,9 +257,7 @@ function supernode_rowind(
     mark = zeros(Int, n)
     rowind_ptr = Vector{Ti}(undef, nsuper + 1)
     rowind_ptr[1] = one(Ti)
-    # Each supernode's rows are written straight into `rowind` and sorted in place;
-    # `rowind_length` is the final length when the caller knows it (Σ_s ncols(s) +
-    # colcount[last column of s] − 1), otherwise a lower bound.
+    # Each supernode's rows are written straight into `rowind` and sorted in place.
     rowind = Ti[]
     sizehint!(rowind, rowind_length)
     max_update_size = 0
@@ -276,7 +293,9 @@ function supernode_rowind(
             end
             c = child_next[c]
         end
-        _sort_segment!(rowind, r0, length(rowind))
+        # The block's own columns j0:j1 were pushed first, in order, and every other row
+        # exceeds j1, so only the below-diagonal part needs sorting.
+        _sort_segment!(rowind, r0 + Int(j1 - j0) + 1, length(rowind))
         rows = view(rowind, r0:length(rowind))
         rowind_ptr[s + 1] = Ti(length(rowind) + 1)
 

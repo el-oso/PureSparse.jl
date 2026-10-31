@@ -47,21 +47,30 @@ function lower_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti
 end
 
 """
-    column_counts(n, colptr, rowval, parent[, lower]) -> colcount::Vector{Ti}
+    column_counts(n, colptr, rowval, parent) -> colcount::Vector{Ti}
 
 `colcount[j] = |{i ≥ j : L[i,j] ≠ 0}|` for the Cholesky factor of the symmetric matrix
 whose STRICT UPPER triangle (postordered) is given by `colptr`/`rowval` (1-based CSC),
 with elimination tree `parent` (also postordered; `parent[j]` is `0` for a root).
-Design.md §3.3. O(nnz·α(nnz,n)), computed without forming L. `lower` is
-[`lower_pattern`](@ref)`(n, colptr, rowval)`; pass it when the caller already has it.
+Design.md §3.3. O(nnz·α(nnz,n)), computed without forming L. The main pass needs each
+column's below-diagonal pattern, which the upper CSC cannot serve directly; this method
+forms it with [`lower_pattern`](@ref) and calls [`column_counts_lower`](@ref).
 """
-function column_counts(
-        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
-        lower::Tuple{Vector{Ti}, Vector{Ti}} = lower_pattern(n, colptr, rowval),
+function column_counts(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti}) where {Ti <: Integer}
+    hptr, hadj = lower_pattern(n, colptr, rowval)
+    return column_counts_lower(n, parent, hptr, hadj)
+end
+
+"""
+    column_counts_lower(n, parent, hptr, hadj) -> colcount::Vector{Ti}
+
+[`column_counts`](@ref) on the below-diagonal pattern: column `c` of `hptr`/`hadj` holds
+the rows `i > c` of the postordered matrix, in any order (as [`lower_pattern`](@ref) or
+[`permuted_lower`](@ref) return it).
+"""
+function column_counts_lower(
+        n::Int, parent::Vector{Ti}, hptr::Vector{Ti}, hadj::Vector{Ti},
     ) where {Ti <: Integer}
-    # The main pass needs row structures of the upper triangle in increasing j, which the
-    # upper CSC can't serve directly; its transpose does.
-    hptr, hadj = lower
 
     # First-descendant pass. The pattern is already postordered, so node j's postorder
     # index IS j: `first_[q]` = smallest node in subtree(q). Climb from each j installing

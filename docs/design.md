@@ -56,6 +56,26 @@ For milestone status, see [`../ROADMAP.md`](../ROADMAP.md).
 - **N9** §10 (M4): `SparseMatrixCSC` extraction of `F.L`/`F.U`/`F.p` added to the
   stdlib-parity checklist.
 
+Analysis-time pass (symbolic analysis measured against faer's `SymbolicLlt` on the 2D
+100×100 and 3D 30×30×30 Laplacians):
+
+- **S1** §2.2(3): the supervariable hash table is capped at 4096 buckets, with the
+  paper's hash value kept per node as the comparison key, and only buckets holding two
+  or more variables are scanned.
+- **S2** §2.2(7): AMD's node arrays use the narrowest integer type that holds the
+  workspace addresses (`Int32` below ~7·10⁸ pattern entries); the same algorithm and the
+  same permutation in both arms.
+- **S3** §3.1: the permuted pattern is formed once, in its final labeling, as the
+  below-diagonal pattern that column counts and row structure read; the etree is read
+  off the full pattern through the ordering. Pattern columns are no longer sorted —
+  no consumer depends on their order.
+- **S4** §3.2: the postorder visits children in ascending column order; the
+  preliminary column-count pass that ordered siblings by count is gone (nnz(L)
+  unchanged by construction; nsuper 1016 → 1013 on the 2D and 4201 → 4148 on the 3D
+  Laplacian).
+- **S5** §3.4/§3.5: supernode partition arrays are allocated at their upper bound and
+  trimmed, not grown.
+
 Unchanged (verified sound by review): AMD core mechanics (§2.2 points 1–2, 4–6 as
 corrected), etree/symbolic pipeline, the §4.3 left-looking `relmap` schedule
 (hand-traced), every PureBLAS kernel mapping in §4.3/§5.1 (signatures and β=0 overwrite
@@ -240,9 +260,14 @@ representation (variables + elements sharing one workspace, garbage-compacted in
 
 3. **Supervariable detection (and mass elimination, which falls out of it).** After
    forming `L_p`, hash each variable in it (hash = sum of its adjacency-list entries mod
-   n, per the paper), bucket by hash, and pairwise-compare within buckets;
-   indistinguishable variables (identical adjacency once both lie in `L_p`) are merged
-   into one supervariable. Mass elimination is **not a separate test**: variables that
+   n−1, plus one, per the paper §5), bucket by hash, and pairwise-compare within
+   buckets; indistinguishable variables (identical adjacency once both lie in `L_p`)
+   are merged into one supervariable. The hash value is stored per node and compared
+   before the lists are; the bucket table has `min(nextpow(2, n), 4096)` entries (16 KB
+   of `Int32`, L1-resident) and the hash is folded into it by masking, since only the
+   `|L_p|` variables hashed in one pivot share the table. Only buckets that receive a
+   second variable are scanned (on the 2D Laplacian 44k of 46k hashed variables sit
+   alone in their bucket); each survivor in `L_p` then clears its own bucket. Mass elimination is **not a separate test**: variables that
    become indistinguishable from the pivot's supervariable are merged into it and hence
    eliminated together with the pivot, as a consequence of this detection. Do not
    implement a standalone "mass elimination" pass.
@@ -263,6 +288,18 @@ representation (variables + elements sharing one workspace, garbage-compacted in
    not part of the 1996 paper's algorithm text; the paper's algorithm has no dense-row
    special case. `16` floor is ours (avoids stripping anything in tiny problems).
 
+7. **Node storage.** Node ids, list entries, degrees and the shared list workspace are
+   stored in the narrowest integer type that can address the workspace: `Int32` when
+   `3·nnz + 3n + 2 ≤ typemax(Int32)` (the workspace never grows past `2·nnz + 3n + 1`),
+   `Int64` otherwise, chosen once by a two-arm static dispatch so each arm is a concrete
+   specialization of the same code. Hash sums are accumulated in `Int` before the
+   modulus. The `w[]` generation offset advances by the largest `|L_e|` seen plus one,
+   not by `n + 1`, so it does not overflow `Int32` on large problems; the mark and `w[]`
+   arrays are cleared only when the next step would overflow their element type.
+   Measured on the 2D Laplacian (n = 10⁴), the narrow arm saves 1 MB of the 2.2 MB the
+   ordering allocates and about 3% of its time: the algorithm is bound by the number of
+   list entries it touches (≈4.5·10⁵ for 7515 pivots), not by cache footprint.
+
 Complexity: O(nnz · α) expected in practice; worst cases bounded by the compaction
 discipline. Output validated in tests against AMD.jl's permutation *quality* (nnz(L)
 within a small factor — not equality; tie-breaking differs) and against exact-minimum-
@@ -272,24 +309,38 @@ degree on tiny graphs by brute force.
 
 ## §3 Symbolic analysis
 
-Pipeline: pattern of `A+Aᵀ` (upper triangle, permuted) → etree → postorder → column
+Pipeline: full pattern of `A+Aᵀ` → ordering → etree (through the ordering, without
+forming the permuted pattern) → postorder → permuted below-diagonal pattern → column
 counts → fundamental supernodes → relaxed amalgamation → supernodal row patterns and
 workspace bounds. All O(nnz + n·α) except pattern union O(nnz).
 
 ### 3.1 Pattern setup
 
-Permute A by `perm`, symmetrize pattern (union with transpose), keep the upper triangle
-in CSC (equivalently lower in CSR). One allocation pass; done once per `Symbolic`.
+Symmetrize the pattern (union with transpose, diagonal dropped) into full CSC form —
+the ordering's input. Duplicates are removed with a per-column stamp, not a sort, and
+no pattern column is sorted anywhere in the pipeline: the ordering, the etree and the
+column-count/row-structure passes read columns as sets, and `rowind` is sorted
+separately where it is built (§3.6). The permuted pattern is materialized exactly once,
+after the postorder, as the below-diagonal pattern in final labels (column `c` = rows
+`> c`), which is what column counts (§3.3) and the supernodal row structure (§3.6)
+read. On the 2D Laplacian this replaces three pattern passes (permuted upper, relabeled
+upper, its transpose: 0.22 ms, 0.96 MB) with one (0.03 ms, 0.24 MB).
 
 ### 3.2 Elimination tree
 
 Liu's algorithm (Liu 1986, *A compact row storage scheme for Cholesky factors using
 elimination trees*; survey in Liu 1990, *The role of elimination trees in sparse
 factorization*):
-single pass over the upper-triangular pattern with a path-compressed `ancestor[]` array.
-Then compute a postorder (children-first DFS via first-child/next-sibling arrays built
-from `parent`) and relabel `perm`, `parent`, and A's pattern by it. Postordering is
-load-bearing: fundamental supernodes require consecutive columns.
+single pass over the strict-upper entries of the permuted matrix, read off the full
+pattern through `perm`/`iperm` (column `k` of `PAPᵀ` is column `perm[k]` of A; entries
+with `iperm[i] < k` are its strict-upper part), with a path-compressed `ancestor[]`
+array. Then compute a postorder (children-first DFS via first-child/next-sibling arrays
+built from `parent`, children visited in ascending column order) and relabel `perm` and
+`parent` by it. Postordering is load-bearing: fundamental supernodes require
+consecutive columns. The sibling order is not derived from column counts: doing so
+needs a preliminary column-count pass (0.3 ms and 1.5 MB on the 2D Laplacian, 1.7 ms on
+the 3D) and, measured on both, yields slightly *more* supernodes after amalgamation
+(1016 vs 1013; 4201 vs 4148) at identical nnz(L).
 
 ### 3.3 Column counts
 

@@ -198,11 +198,14 @@ hardware.
   0.1.2 (Zen 3, fixed clock; faster than CHOLMOD at every size). The named-matrix gates
   (`gate.jl`, `gate_ldlt.jl`, `qr_gate.jl`, `gpu_gate.jl`) and the Zen 4 size sweep still
   report results from earlier toolchains.
-- **Analysis time:** on 2D and 3D Laplacians, symbolic analysis is slower than faer's
-  and CHOLMOD's. AMD is the largest single stage (roughly 40% of analysis);
-  its remaining cost is spread across the main elimination
-  loop. The preliminary column-count pass used only for sibling ordering is another
-  candidate.
+- **Analysis time:** on a Zen 5c core at 3.5 GHz, single thread, `symbolic()` takes
+  about 2.8 ms on the 2D 100×100 Laplacian and 18 ms on the 3D 30×30×30 Laplacian,
+  against 2.9 ms and 26 ms for faer 0.24's `SymbolicLlt::try_new`. The 2D margin is
+  within run-to-run noise. AMD is now about 55% of the stage time (1.5 ms in 2D) and
+  is bound by the ~4.5·10⁵ list entries it touches per ordering, not by cache footprint
+  (an `Int32` layout saved 3%); the next step there would have to cut operations, not
+  bytes. The remaining non-AMD stages sum to about 1 ms in 2D, plus ~0.4 ms of GC for
+  the 5.8 MB each call allocates.
 - **Tree-level parallelism:** the numeric factorization runs supernodes sequentially, so
   extra threads only help inside large dense kernels. Matrices with many small
   supernodes, such as 2D and 3D grids, do not speed up with threads. Independent subtrees

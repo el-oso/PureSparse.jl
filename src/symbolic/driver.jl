@@ -41,21 +41,22 @@ function full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) 
         rowval2[colptr2[j] + deg[j]] = i
         deg[j] += one(Ti)
     end
-    # Pass 3: sort each column and drop duplicates in place (an entry stored in both
-    # triangles, or stored twice, arrives twice). Column j's deduplicated run starts
-    # where column j-1's ended, so the result is already contiguous.
+    # Pass 3: drop duplicates in place (an entry stored in both triangles, or stored
+    # twice, arrives twice), stamping each kept row with its column in `deg`. Column j's
+    # deduplicated run starts where column j-1's ended, so the result is already
+    # contiguous. Rows within a column are left in arrival order: no consumer of this
+    # pattern (ordering, etree, permuted_lower) depends on it.
+    fill!(deg, zero(Ti))
     w = one(Ti)
     @inbounds for j in 1:n
         lo, hi = colptr2[j], colptr2[j + 1] - one(Ti)
-        _sort_segment!(rowval2, lo, hi)
         colptr2[j] = w
-        prev = zero(Ti)
         for k in lo:hi
             v = rowval2[k]
-            v == prev && continue
+            deg[v] == Ti(j) && continue
+            deg[v] = Ti(j)
             rowval2[w] = v
             w += one(Ti)
-            prev = v
         end
     end
     colptr2[n + 1] = w
@@ -152,34 +153,13 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
         amd_iperm[p] = Ti(k)
     end
 
-    ucolptr, urowval = permuted_upper(n, fcolptr, frowval, amd_iperm)
-    parent0 = etree(n, ucolptr, urowval)
+    # The etree is read straight off the full pattern through the AMD permutation; the
+    # permuted pattern is materialized only once, in its final labeling, below.
+    parent0 = etree(n, fcolptr, frowval, amd_perm, amd_iperm)
 
-    # Merge-aware postorder (design §3.5): relaxed amalgamation requires column
-    # contiguity, which the postorder grants to exactly ONE child per parent (the
-    # last-visited sibling) — so pick that sibling by column count (derivation in the
-    # `postorder` docstring). column_counts (Gilbert–Ng–Peyton) needs a postordered
-    # labeling, so run a preliminary default-order postorder + relabel to get exact
-    # counts and map them back to parent0's labels. Column counts are a property of the
-    # elimination order, unchanged by etree-postorder relabeling (design §3.2 — the
-    # postorder is composed into `perm` precisely because it preserves fill), and here
-    # they carry no correctness weight anyway: they are only a sibling-ordering
-    # heuristic, and the final `colcount` below is recomputed on the final pattern.
-    #
-    # MEASURED: on the gate matrices this changes
-    # WHICH sibling merges but not HOW MANY merge — the zero-fraction test rejects almost
-    # no contiguity-eligible pair (2 of 1777 on laplacian2d 80×80), so nsuper is
-    # unchanged; the binding constraint is one-contiguous-child-per-parent per
-    # amalgamation pass, not sibling choice. Kept because any future multi-pass/cascade
-    # amalgamation needs a principled sibling order as its substrate.
-    _, postinv_pre = postorder(n, parent0)
-    cp_pre, rv_pre = relabel_pattern(n, ucolptr, urowval, postinv_pre)
-    cc_pre = column_counts(n, cp_pre, rv_pre, relabel_parent(n, parent0, postinv_pre))
-    colcount0 = Vector{Ti}(undef, n)
-    @inbounds for j in 1:n
-        colcount0[j] = cc_pre[postinv_pre[j]]
-    end
-    post, postinv = postorder(n, parent0, colcount0)
+    # Postorder with children visited in ascending column order (design.md §3.2): the
+    # postorder is composed into `perm`, so it changes supernode boundaries but not fill.
+    _, postinv = postorder(n, parent0)
 
     perm = Vector{Ti}(undef, n)     # perm[finallabel] = original index (design.md §3.2 composition)
     @inbounds for orig in 1:n
@@ -190,10 +170,11 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
         iperm[p] = Ti(k)
     end
 
-    cp2, rv2 = relabel_pattern(n, ucolptr, urowval, postinv)
     parent = relabel_parent(n, parent0, postinv)
-    lower = lower_pattern(n, cp2, rv2)
-    colcount = column_counts(n, cp2, rv2, parent, lower)
+    # Column counts and supernodal row structure read each column's below-diagonal
+    # pattern (design.md §3.1), so that is the only permuted pattern formed.
+    hptr, hadj = permuted_lower(n, fcolptr, frowval, perm, iperm)
+    colcount = column_counts_lower(n, parent, hptr, hadj)
 
     nsuper0, super0 = fundamental_supernodes(n, parent, colcount)
     nsuper, super = relaxed_amalgamation(n, nsuper0, super0, parent, colcount)
@@ -206,7 +187,7 @@ function symbolic(A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrd
         rowind_length += Int(super[s + 1] - super[s]) + Int(colcount[super[s + 1] - 1]) - 1
     end
     rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows =
-        supernode_rowind(n, cp2, rv2, parent, nsuper, super, lower; rowind_length)
+        supernode_rowind_lower(n, parent, nsuper, super, hptr, hadj; rowind_length)
 
     px = Vector{Ti}(undef, nsuper + 1)
     px[1] = one(Ti)

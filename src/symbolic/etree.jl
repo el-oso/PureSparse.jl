@@ -100,51 +100,47 @@ function symmetrized_upper(
 end
 
 """
-    permuted_upper(n, colptr, rowval, iperm) -> (colptr2, rowval2)
+    permuted_lower(n, colptr, rowval, perm, iperm) -> (hptr, hadj)
 
-[`symmetrized_upper`](@ref) for a pattern that is already symmetric, diagonal-free and
-duplicate-free (the output of [`full_symmetric_pattern`](@ref)): each edge is stored
-once per endpoint, so the endpoint whose permuted column is the larger one yields the
-strict-upper entry and no deduplication pass is needed.
+Below-diagonal pattern of the symmetric permutation of a full, diagonal-free,
+duplicate-free pattern (the output of [`full_symmetric_pattern`](@ref)): column `c` of
+`hadj` holds the rows `{iperm[i] : i ∈ column perm[c]} ∩ (c, n]`, in arrival order.
+Each edge is stored once per endpoint, so it lands in exactly one column and the
+result has `length(rowval) ÷ 2` entries. This is the pattern [`column_counts_lower`](@ref)
+and [`supernode_rowind_lower`](@ref) read (design.md §3.1).
 """
-function permuted_upper(
-        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, iperm::Vector{Ti},
+function permuted_lower(
+        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, perm::Vector{Ti}, iperm::Vector{Ti},
     ) where {Ti <: Integer}
-    counts = zeros(Ti, n)
-    @inbounds for jorig in 1:n
-        j = iperm[jorig]
+    hptr = Vector{Ti}(undef, n + 1)
+    hadj = Vector{Ti}(undef, length(rowval) ÷ 2)
+    w = 1
+    hptr[1] = one(Ti)
+    @inbounds for c in 1:n
+        jorig = perm[c]
         for p in colptr[jorig]:(colptr[jorig + 1] - 1)
-            iperm[rowval[p]] < j && (counts[j] += one(Ti))
+            r = iperm[rowval[p]]
+            r > c || continue
+            hadj[w] = r
+            w += 1
         end
+        hptr[c + 1] = Ti(w)
     end
-    colptr2 = Vector{Ti}(undef, n + 1)
-    colptr2[1] = one(Ti)
-    @inbounds for j in 1:n
-        colptr2[j + 1] = colptr2[j] + counts[j]
-    end
-    fill!(counts, zero(Ti))
-    rowval2 = Vector{Ti}(undef, colptr2[n + 1] - 1)
-    @inbounds for jorig in 1:n
-        j = iperm[jorig]
-        for p in colptr[jorig]:(colptr[jorig + 1] - 1)
-            i = iperm[rowval[p]]
-            i < j || continue
-            rowval2[colptr2[j] + counts[j]] = i
-            counts[j] += one(Ti)
-        end
-    end
-    @inbounds for j in 1:n
-        _sort_segment!(rowval2, colptr2[j], colptr2[j + 1] - 1)
-    end
-    return colptr2, rowval2
+    return hptr, hadj
 end
 
 """
     etree(n, colptr, rowval) -> parent::Vector{Ti}
+    etree(n, colptr, rowval, perm, iperm) -> parent::Vector{Ti}
 
 Elimination tree of the symmetric pattern given by its STRICT UPPER triangle in CSC form
 (as returned by [`symmetrized_upper`](@ref)). Liu's algorithm: one pass with a
-path-compressed `ancestor` array. `parent[j] == 0` marks a root. Design.md §3.2.
+path-compressed `ancestor` array. `parent[j]` is `0` for a root. Design.md §3.2.
+
+The five-argument form takes a FULL symmetric pattern (both triangles, as returned by
+[`full_symmetric_pattern`](@ref)) together with a permutation and returns the tree of
+the permuted matrix `P A Pᵀ` without forming it: column `k` of the permuted matrix is
+column `perm[k]`, and the entries with `iperm[i] < k` are its strict-upper part.
 """
 function etree(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     parent = zeros(Ti, n)
@@ -153,90 +149,62 @@ function etree(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Inte
         for p in colptr[k]:(colptr[k + 1] - 1)
             i = rowval[p]
             i >= k && continue   # strict upper triangle only holds i < k already; defensive
-            while i != 0 && i != k
-                inext = ancestor[i]
-                ancestor[i] = k
-                if inext == 0
-                    parent[i] = k
-                    break
-                end
-                i = inext
-            end
+            _etree_link!(parent, ancestor, i, Ti(k))
         end
     end
     return parent
 end
 
+function etree(
+        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, perm::Vector{Ti}, iperm::Vector{Ti},
+    ) where {Ti <: Integer}
+    parent = zeros(Ti, n)
+    ancestor = zeros(Ti, n)
+    @inbounds for k in 1:n
+        jorig = perm[k]
+        for p in colptr[jorig]:(colptr[jorig + 1] - 1)
+            i = iperm[rowval[p]]
+            i >= k && continue   # the other endpoint's copy of this edge handles it
+            _etree_link!(parent, ancestor, i, Ti(k))
+        end
+    end
+    return parent
+end
+
+# Liu's path-compressed climb from i: every node on i's current virtual path gets
+# ancestor k, and the path's root becomes a child of k.
+@inline function _etree_link!(parent::Vector{Ti}, ancestor::Vector{Ti}, i::Ti, k::Ti) where {Ti}
+    @inbounds while !iszero(i) && i != k
+        inext = ancestor[i]
+        ancestor[i] = k
+        if iszero(inext)
+            parent[i] = k
+            break
+        end
+        i = inext
+    end
+    return nothing
+end
+
 """
-    postorder(n, parent[, priority]) -> (post::Vector{Ti}, postinv::Vector{Ti})
+    postorder(n, parent) -> (post::Vector{Ti}, postinv::Vector{Ti})
 
 Postorder of the forest given by `parent`. `post[k]` is the k-th node visited;
 `postinv[j]` is node `j`'s position in the postorder. Iterative (stack-based) — no
-recursion whose depth depends on runtime data (CONTRIBUTING.md req 4).
-
-Without `priority`, each node's children are visited in ascending column order (for
-determinism — design.md §3.2). With `priority` (length `n`), children are visited in
-ascending `(priority, column)` order, so the LAST-visited child — the one the postorder
-makes numerically contiguous with its parent, and therefore the only sibling eligible
-for relaxed amalgamation's column-contiguity requirement (design §3.5) — is the
-max-priority child. Any sibling order yields a valid postorder (parents still follow all
-descendants), so this changes nothing about etree/colcount correctness downstream, only
-which sibling ends up parent-contiguous.
-
-Why colcount is the priority `symbolic()` passes (own derivation, no external recipe):
-for an etree child `s` of `t`, `pattern(L[:,s]) \\ {s,t} ⊆ pattern(L[:,t])` (Liu 1986,
-as cited in design.md §3.2), hence `colcount[s] ≤ colcount[t] + 1`
-with equality exactly when the patterns nest — the fundamental-supernode condition
-(Liu–Ng–Peyton 1993, design §3.4). So the max-colcount child is the closest to exact
-nesting, i.e. the one whose merge pads the fewest explicit zeros into the block that
-relaxed amalgamation's zero-fraction test evaluates (Ashcraft–Grimes 1989 / Ng–Peyton
-1993 motivate the merge itself; the sibling-selection rule is our own reasoning on top).
+recursion whose depth depends on runtime data (CONTRIBUTING.md req 4). Each node's
+children are visited in ascending column order (design.md §3.2); any sibling order
+gives a valid postorder, and this one needs no data beyond `parent`.
 """
-function postorder(
-        n::Int, parent::Vector{Ti}, priority::Union{Nothing, Vector{Ti}} = nothing,
-    ) where {Ti <: Integer}
+function postorder(n::Int, parent::Vector{Ti}) where {Ti <: Integer}
     # Build child lists via a head/next linked-list (bucketed by parent). Head insertion
     # reverses insertion order, so inserting in DESCENDING visit order yields per-parent
     # lists in ascending visit order, which the DFS then consumes front-to-back.
     head = zeros(Ti, n + 1)     # head[n+1] = roots (parent == 0)
     next = zeros(Ti, n)
-    if isnothing(priority)
-        @inbounds for j in n:-1:1
-            p = parent[j] == 0 ? n + 1 : parent[j]
-            next[j] = head[p]
-            head[p] = j
-        end
-    else
-        length(priority) == n ||
-            throw(DimensionMismatch("postorder: priority has length $(length(priority)), expected $n"))
-        # Descending (priority, column) insertion ⇒ ascending (priority, column) visit
-        # order ⇒ last-visited sibling = max priority, ties broken by largest column
-        # (identical to the no-priority behavior when priorities are uniform).
-        # Counting sort by priority (a column count, so 1 ≤ priority ≤ n), stable in
-        # column; walking the sorted order backwards gives the descending insertion.
-        pmax = 0
-        for j in 1:n
-            pmax = max(pmax, Int(priority[j]))
-        end
-        bucket = zeros(Int, pmax + 2)
-        @inbounds for j in 1:n
-            bucket[Int(priority[j]) + 2] += 1
-        end
-        @inbounds for d in 2:(pmax + 2)
-            bucket[d] += bucket[d - 1]
-        end
-        ins = Vector{Ti}(undef, n)
-        @inbounds for j in 1:n
-            d = Int(priority[j]) + 1
-            ins[bucket[d] + 1] = Ti(j)
-            bucket[d] += 1
-        end
-        @inbounds for k in n:-1:1
-            j = ins[k]
-            p = iszero(parent[j]) ? n + 1 : parent[j]
-            next[j] = head[p]
-            head[p] = j
-        end
+    @inbounds for j in n:-1:1
+        p = iszero(parent[j]) ? n + 1 : parent[j]
+        next[j] = head[p]
+        head[p] = j
     end
     post = Vector{Ti}(undef, n)
     postinv = Vector{Ti}(undef, n)

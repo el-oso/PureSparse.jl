@@ -32,6 +32,11 @@
 # Storage layout, status encoding, compaction procedure, and generation-tagged mark /
 # `w` handling below are our own independent engineering — the paper prescribes only
 # the quotient-graph sets and the elbow-room/garbage-collection discipline.
+#
+# Node ids, list entries and degrees are stored in the narrowest integer type that
+# holds them (`Int32` whenever the workspace fits, design.md §2.2 pt 7): the per-node
+# arrays are then L2-resident for n up to ~10⁵, and the algorithm is bound by their
+# random access, not by arithmetic.
 
 # Node lifecycle states. Every node id 1:n starts as a live variable; a pivot becomes an
 # element; merged variables and absorbed elements die (their workspace slice is freed).
@@ -40,6 +45,12 @@ const _AMD_DEADVAR = Int8(1)   # variable merged into another supervariable
 const _AMD_ELT = Int8(2)       # live element (an eliminated pivot)
 const _AMD_DEADELT = Int8(3)   # absorbed element
 const _AMD_DENSE = Int8(4)     # dense-stripped variable, ordered last
+
+# Supervariable hash buckets (design §2.2 pt 3). The paper's hash value is kept per
+# node as its key; the bucket table only has to spread the ≤ |L_p| keys hashed per
+# pivot, so it is capped at this many entries (16 KB of Int32 — L1-resident) instead
+# of n.
+const _AMD_HASH_BUCKETS = 4096
 
 """
     order(alg::AMDOrdering, n, colptr, rowval) -> Vector{Ti}
@@ -54,7 +65,7 @@ degree exceeds `max(AMD_DENSE_FLOOR, alg.dense_mult·√n)` are stripped before 
 loop and appended last, in ascending index order (design.md §2.2 pt 6).
 """
 function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
-    n == 0 && return Ti[]
+    iszero(n) && return Ti[]
 
     # ---- dense-row stripping (design §2.2 pt 6) ----
     threshold = max(AMD_DENSE_FLOOR, alg.dense_mult * sqrt(n))
@@ -71,7 +82,32 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
             ndense += 1
         end
     end
+    nzkeep = 0
+    if iszero(ndense)
+        nzkeep = sum(deg0)
+    else
+        @inbounds for j in 1:n, q in colptr[j]:(colptr[j + 1] - 1)
+            i = Int(rowval[q])
+            (i == j || state[j] == _AMD_DENSE || state[i] == _AMD_DENSE) && continue
+            nzkeep += 1
+        end
+    end
 
+    perm = Vector{Ti}(undef, n)
+    # Workspace addresses never exceed 2·nzkeep + 3n + 1 (see the capacity invariants in
+    # `_amd_order!`), so Int32 node storage is safe whenever that bound fits.
+    if 3 * nzkeep + 3 * n + 2 <= typemax(Int32)
+        _amd_order!(Int32, perm, alg, n, colptr, rowval, state, ndense, nzkeep)
+    else
+        _amd_order!(Int64, perm, alg, n, colptr, rowval, state, ndense, nzkeep)
+    end
+    return perm
+end
+
+function _amd_order!(
+        ::Type{Tn}, perm::Vector{Ti}, alg::AMDOrdering, n::Int,
+        colptr::Vector{Ti}, rowval::Vector{Ti}, state::Vector{Int8}, ndense::Int, nzkeep::Int,
+    ) where {Tn <: Integer, Ti <: Integer}
     # ---- quotient-graph storage (design §2.2 pt 1) ----
     # One shared integer workspace `qw`: every live node owns one contiguous slice.
     # For a live VARIABLE i the slice is its element list E_i (`ne[i]` entries) followed
@@ -82,24 +118,18 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
     # elements L_p are written to the free tail; `_amd_compact!` reclaims fragmentation
     # when the tail is exhausted (paper §5: "garbage collection occurs if the elbow
     # room is exhausted ... in practice, elbow room of size n is sufficient").
-    ptr = zeros(Int, n)
-    ne = zeros(Int, n)
-    na = zeros(Int, n)
-    nv = ones(Int, n)          # |i|: original-variable count of supervariable i
-    lvars = zeros(Int, n)      # |L_e| in ORIGINAL variables, for elements (Σ nv at creation)
-    deg = zeros(Int, n)        # approximate external degree bound d̄ᵢ (variables)
+    ptr = zeros(Tn, n)
+    ne = zeros(Tn, n)
+    na = zeros(Tn, n)
+    nv = ones(Tn, n)          # |i|: original-variable count of supervariable i
+    lvars = zeros(Tn, n)      # |L_e| in ORIGINAL variables, for elements (Σ nv at creation)
+    deg = zeros(Tn, n)        # approximate external degree bound d̄ᵢ (variables)
 
-    nzkeep = 0
-    @inbounds for j in 1:n, q in colptr[j]:(colptr[j + 1] - 1)
-        i = Int(rowval[q])
-        (i == j || state[j] == _AMD_DENSE || state[i] == _AMD_DENSE) && continue
-        nzkeep += 1
-    end
     # Elbow room ≥ the initial pattern: live storage never exceeds the initial pattern, so
     # every compaction frees at least `nzkeep + n` slots and its O(live + n log n) cost is
     # amortized over at least that many new L_p entries.
     cap = 2 * nzkeep + n + 1
-    qw = Vector{Int}(undef, cap)
+    qw = Vector{Tn}(undef, cap)
     free = 1
     @inbounds for j in 1:n
         state[j] == _AMD_DENSE && continue
@@ -115,30 +145,33 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
     end
 
     # ---- degree-list buckets (design §2.2 pt 5): O(1) insert/remove, min-scan extract ----
-    dhead = zeros(Int, n)                    # dhead[d+1] heads the bucket for degree d
-    dnext = zeros(Int, n)
-    dprev = zeros(Int, n)
+    dhead = zeros(Tn, n)                    # dhead[d+1] heads the bucket for degree d
+    dnext = zeros(Tn, n)
+    dprev = zeros(Tn, n)
     mindeg = n
     @inbounds for j in 1:n
         state[j] == _AMD_DENSE && continue
-        _amd_dl_insert!(dhead, dnext, dprev, deg[j], j)
-        mindeg = min(mindeg, deg[j])
+        _amd_dl_insert!(dhead, dnext, dprev, Int(deg[j]), j)
+        mindeg = min(mindeg, Int(deg[j]))
     end
 
     # ---- scratch state ----
-    mk = zeros(Int, n)                       # generation-tagged mark array
+    mk = zeros(Tn, n)                       # generation-tagged mark array
     tag = 0
-    w = zeros(Int, n)                        # Algorithm 2's w[] (offset by wflg per pivot)
+    w = zeros(Tn, n)                        # Algorithm 2's w[] (offset by wflg per pivot)
     wflg = 1
-    hhead = zeros(Int, n)                    # hash buckets for supervariable detection
-    hnext = zeros(Int, n)
-    hbuckets = Int[]                         # buckets touched this pivot (reset after use)
-    svnext = zeros(Int, n)                   # supervariable member chains (output expansion)
-    svtail = collect(1:n)
-    stash = Vector{Int}(undef, n)            # A_i copy during the in-place list rewrite
+    lmax = 0                                # max |L_e| over every element created so far
+    nbuckets = min(nextpow(2, n), _AMD_HASH_BUCKETS)
+    hhead = zeros(Tn, nbuckets)             # hash buckets for supervariable detection
+    hnext = zeros(Tn, n)
+    hkey = zeros(Tn, n)                     # the paper's Hash(i), compared before the lists
+    hbuckets = Vector{Int}(undef, n)        # buckets holding ≥ 2 variables this pivot (first nhb)
+    nhb = 0
+    svnext = zeros(Tn, n)                   # supervariable member chains (output expansion)
+    svtail = collect(Tn, 1:n)
+    stash = Vector{Tn}(undef, n)            # A_i copy during the in-place list rewrite
     hmod = max(n - 1, 1)
 
-    perm = Vector{Ti}(undef, n)
     kout = 0
     nelim = 0
     nondense = n - ndense
@@ -146,28 +179,30 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
     while nelim < nondense
         # ---- select variable p minimizing d̄_p (Algorithm 1) ----
         d = mindeg
-        @inbounds while dhead[d + 1] == 0
+        @inbounds while iszero(dhead[d + 1])
             d += 1
         end
-        p = dhead[d + 1]
+        p = Int(dhead[d + 1])
         _amd_dl_remove!(dhead, dnext, dprev, d, p)
         mindeg = d
-        nvp = nv[p]
+        nvp = Int(nv[p])
 
         # ---- ensure tail space for L_p ----
         # L_p ⊆ A_p ∪ ⋃_{e∈E_p} L_e, so the sum of those list lengths bounds |L_p|. The
         # looser bound "every remaining variable" exceeds the elbow room on almost every
         # pivot and turns compaction into the dominant cost.
-        need = na[p]
-        @inbounds for q in ptr[p]:(ptr[p] + ne[p] - 1)
+        need = Int(na[p])
+        @inbounds for q in Int(ptr[p]):(Int(ptr[p]) + Int(ne[p]) - 1)
             e = qw[q]
-            state[e] == _AMD_ELT && (need += na[e])
+            state[e] == _AMD_ELT && (need += Int(na[e]))
         end
         if cap - free + 1 < need
             free = _amd_compact!(qw, ptr, ne, na, state, n, free)
             if cap - free + 1 < need
                 # The post-compaction tail is ≥ n+1 (live storage ≤ initial pattern), but
-                # the list-length bound can exceed it when the L_e overlap; grow.
+                # the list-length bound can exceed it when the L_e overlap; grow. After
+                # compaction free ≤ nzkeep + n + 1 and need ≤ nzkeep + n, so the new
+                # capacity stays within 2·nzkeep + 3n + 1.
                 cap = free + need + n
                 resize!(qw, cap)
             end
@@ -179,27 +214,28 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
         lp = free
         lplen = 0
         degme = 0                            # |L_p| in original variables
-        pp = ptr[p]
-        @inbounds for q in (pp + ne[p]):(pp + ne[p] + na[p] - 1)
+        pp = Int(ptr[p])
+        nep = Int(ne[p])
+        @inbounds for q in (pp + nep):(pp + nep + Int(na[p]) - 1)
             v = qw[q]
             state[v] == _AMD_VAR || continue # skip stale dead entries
             mk[v] == tag && continue
             mk[v] = tag
             qw[lp + lplen] = v
             lplen += 1
-            degme += nv[v]
+            degme += Int(nv[v])
         end
-        @inbounds for q in pp:(pp + ne[p] - 1)
+        @inbounds for q in pp:(pp + nep - 1)
             e = qw[q]
             state[e] == _AMD_ELT || continue
-            for r in ptr[e]:(ptr[e] + na[e] - 1)
+            for r in Int(ptr[e]):(Int(ptr[e]) + Int(na[e]) - 1)
                 v = qw[r]
                 state[v] == _AMD_VAR || continue
                 mk[v] == tag && continue
                 mk[v] = tag
                 qw[lp + lplen] = v
                 lplen += 1
-                degme += nv[v]
+                degme += Int(nv[v])
             end
             state[e] = _AMD_DEADELT          # natural absorption: e ∈ E_p dies into p
             ptr[e] = 0
@@ -211,6 +247,7 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
         ne[p] = 0
         na[p] = lplen
         lvars[p] = degme
+        lmax = max(lmax, degme)
         free = lp + lplen
         nelim += nvp
         nleft = nondense - nelim             # uneliminated non-dense original variables
@@ -220,11 +257,11 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
         # once per member variable of L_e ∩ L_p, so w[e] ends at |L_e| − |L_e ∩ L_p|.
         # The wflg offset replaces the paper's "assume w(k) < 0" reset with a
         # generation counter (no O(n) clear per pivot).
-        wflg = _amd_bump_wflg!(w, wflg, n)
+        wflg = _amd_bump_wflg!(w, wflg, lmax)
         @inbounds for q in lp:(lp + lplen - 1)
-            i = qw[q]
-            _amd_dl_remove!(dhead, dnext, dprev, deg[i], i)   # re-bucketed below
-            for r in ptr[i]:(ptr[i] + ne[i] - 1)
+            i = Int(qw[q])
+            _amd_dl_remove!(dhead, dnext, dprev, Int(deg[i]), i)   # re-bucketed below
+            for r in Int(ptr[i]):(Int(ptr[i]) + Int(ne[i]) - 1)
                 e = qw[r]
                 state[e] == _AMD_ELT || continue
                 if w[e] < wflg
@@ -236,10 +273,10 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
 
         # ---- degree update (eq. (4)), list pruning, hashing ----
         @inbounds for q in lp:(lp + lplen - 1)
-            i = qw[q]
-            base = ptr[i]
-            elen = ne[i]
-            alen = na[i]
+            i = Int(qw[q])
+            base = Int(ptr[i])
+            elen = Int(ne[i])
+            alen = Int(na[i])
             # Stash A_i first: appending p to the pruned E_i below can overwrite A_i's
             # first slot before it is read (exactly the case where the slot freed by
             # this pivot is p ∈ A_i rather than an absorbed element of E_i).
@@ -249,14 +286,14 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
             # E_i := (E_i \ absorbed) ∪ {p}  — element absorption, Algorithm 1
             wpos = base
             esum = 0                          # Σ_{e ∈ E_i \ {p}} |L_e \ L_p|
-            hsum = 0
+            hsum = 0                          # Int: a list sum can exceed the node type
             for r in base:(base + elen - 1)
                 e = qw[r]
                 state[e] == _AMD_ELT || continue
                 # eq. (5): every live e ∈ E_i was scanned above, so w[e] ≥ wflg holds;
                 # the |L_e| fallback is defensive only.
-                ext = w[e] >= wflg ? w[e] - wflg : lvars[e]
-                if ext == 0 && alg.aggressive
+                ext = w[e] >= wflg ? Int(w[e]) - wflg : Int(lvars[e])
+                if iszero(ext) && alg.aggressive
                     # aggressive absorption (§5, design §2.2 pt 4): L_e ⊆ L_p makes e
                     # redundant even though e ∉ E_p.
                     state[e] = _AMD_DEADELT
@@ -266,7 +303,7 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
                 esum += ext
                 qw[wpos] = e
                 wpos += 1
-                hsum += e
+                hsum += Int(e)
             end
             qw[wpos] = p
             wpos += 1
@@ -280,10 +317,10 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
                 mk[v] == tag && continue      # ∈ L_p ∪ {p}: covered by element p now
                 qw[wpos] = v
                 wpos += 1
-                asum += nv[v]
-                hsum += v
+                asum += Int(nv[v])
+                hsum += Int(v)
             end
-            na[i] = wpos - base - ne[i]
+            na[i] = wpos - base - Int(ne[i])
             # eq. (4), with the set differences subtracting the WHOLE supervariable 𝐢
             # (design §0 N4):
             #   d̄ᵢ = min( n − k,
@@ -291,16 +328,22 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
             #             |A_i \ 𝐢| + |L_p \ 𝐢| + Σ_{e ∈ E_i \ {p}} |L_e \ L_p| )
             # `nleft − nv[i]` (all other remaining variables) tightens the paper's
             # first term n − k and is still a valid upper bound on external degree.
-            lpext = degme - nv[i]             # |L_p \ 𝐢|  (i ∈ L_p, so subtract nv[i])
-            di = min(nleft - nv[i], deg[i] + lpext, asum + lpext + esum)
+            nvi = Int(nv[i])
+            lpext = degme - nvi               # |L_p \ 𝐢|  (i ∈ L_p, so subtract nv[i])
+            di = min(nleft - nvi, Int(deg[i]) + lpext, asum + lpext + esum)
             deg[i] = max(di, 0)
             # Hash(i) = ((Σ_{j∈A_i} j + Σ_{e∈E_i} e) mod (n−1)) + 1   (paper §5)
             h = rem(hsum, hmod) + 1           # hsum ≥ 0: node ids are positive
-            if hhead[h] == 0
-                push!(hbuckets, h)
+            hkey[i] = h
+            b = (h & (nbuckets - 1)) + 1
+            if !iszero(hhead[b])
+                # A bucket is only worth scanning once it holds a second variable; one
+                # with three or more is listed more than once and skipped on the repeat.
+                nhb += 1
+                hbuckets[nhb] = b
             end
-            hnext[i] = hhead[h]
-            hhead[h] = i
+            hnext[i] = hhead[b]
+            hhead[b] = i
         end
 
         # ---- supervariable detection (design §2.2 pt 3) ----
@@ -309,30 +352,31 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
         # the stored lists — a stale dead element retained in one list but pruned from
         # the other can only cause a MISSED merge (a quality miss the paper also
         # accepts, §3.2), never a false one.
-        for h in hbuckets
-            i = hhead[h]
-            while i != 0
+        for t in 1:nhb
+            b = hbuckets[t]
+            i = Int(hhead[b])
+            while !iszero(i)
                 prevj = i
-                j = hnext[i]
+                j = Int(hnext[i])
                 marked = false              # i's lists are marked lazily, once per i
-                while j != 0
-                    same = ne[i] == ne[j] && na[i] == na[j]
+                while !iszero(j)
+                    same = hkey[i] == hkey[j] && ne[i] == ne[j] && na[i] == na[j]
                     if same
                         if !marked
                             tag = _amd_bump_tag!(mk, tag)
-                            @inbounds for r in ptr[i]:(ptr[i] + ne[i] + na[i] - 1)
+                            @inbounds for r in Int(ptr[i]):(Int(ptr[i]) + Int(ne[i]) + Int(na[i]) - 1)
                                 mk[qw[r]] = tag
                             end
                             marked = true
                         end
-                        @inbounds for r in ptr[j]:(ptr[j] + ne[j] + na[j] - 1)
+                        @inbounds for r in Int(ptr[j]):(Int(ptr[j]) + Int(ne[j]) + Int(na[j]) - 1)
                             if mk[qw[r]] != tag
                                 same = false
                                 break
                             end
                         end
                     end
-                    jn = hnext[j]
+                    jn = Int(hnext[j])
                     if same
                         # merge: i = i ∪ j, d̄ᵢ −= |j| (Algorithm 1)
                         deg[i] -= nv[j]
@@ -350,32 +394,35 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
                     end
                     j = jn
                 end
-                i = hnext[i]
+                i = Int(hnext[i])
             end
-            hhead[h] = 0
+            hhead[b] = 0
         end
-        empty!(hbuckets)
+        nhb = 0
 
         # ---- compact L_p of merged-away members; re-bucket the survivors ----
         # (lvars[p] = degme stays exact: a merge moves nv between two members of L_p.)
+        # Every survivor also empties its hash bucket; a merged-away variable shares its
+        # bucket with the survivor it merged into.
         wpos = lp
         @inbounds for q in lp:(lp + lplen - 1)
             v = qw[q]
             state[v] == _AMD_VAR || continue
+            hhead[(Int(hkey[v]) & (nbuckets - 1)) + 1] = 0
             qw[wpos] = v
             wpos += 1
-            _amd_dl_insert!(dhead, dnext, dprev, deg[v], v)
-            mindeg = min(mindeg, deg[v])
+            _amd_dl_insert!(dhead, dnext, dprev, Int(deg[v]), Int(v))
+            mindeg = min(mindeg, Int(deg[v]))
         end
         na[p] = wpos - lp
         free = wpos                           # reclaim L_p's tail slack immediately
 
         # ---- emit p̄: the pivot and every variable mass-eliminated with it ----
         v = p
-        while v != 0
+        while !iszero(v)
             kout += 1
             perm[kout] = Ti(v)
-            v = svnext[v]
+            v = Int(svnext[v])
         end
     end
 
@@ -392,45 +439,48 @@ end
 
 # Doubly-linked degree-bucket helpers (design §2.2 pt 5). `d` must be the degree under
 # which `i` is currently filed.
-@inline function _amd_dl_insert!(dhead::Vector{Int}, dnext::Vector{Int}, dprev::Vector{Int}, d::Int, i::Int)
+@inline function _amd_dl_insert!(dhead::Vector{Tn}, dnext::Vector{Tn}, dprev::Vector{Tn}, d::Int, i::Int) where {Tn}
     nxt = dhead[d + 1]
     dnext[i] = nxt
     dprev[i] = 0
-    nxt != 0 && (dprev[nxt] = i)
+    !iszero(nxt) && (dprev[nxt] = i)
     dhead[d + 1] = i
     return nothing
 end
 
-@inline function _amd_dl_remove!(dhead::Vector{Int}, dnext::Vector{Int}, dprev::Vector{Int}, d::Int, i::Int)
+@inline function _amd_dl_remove!(dhead::Vector{Tn}, dnext::Vector{Tn}, dprev::Vector{Tn}, d::Int, i::Int) where {Tn}
     prv = dprev[i]
     nxt = dnext[i]
-    if prv == 0
+    if iszero(prv)
         dhead[d + 1] = nxt
     else
         dnext[prv] = nxt
     end
-    nxt != 0 && (dprev[nxt] = prv)
+    !iszero(nxt) && (dprev[nxt] = prv)
     return nothing
 end
 
 # Generation counters: `mk[v] == tag` means "marked this round"; bumping the tag
-# invalidates all marks in O(1). The wraparound reset never fires in practice.
-function _amd_bump_tag!(mk::Vector{Int}, tag::Int)
-    if tag >= typemax(Int) - 1
+# invalidates all marks in O(1). The wraparound reset fires only when the tag would no
+# longer fit the mark array's element type.
+function _amd_bump_tag!(mk::Vector{Tn}, tag::Int) where {Tn}
+    if tag >= typemax(Tn) - 1
         fill!(mk, 0)
         tag = 0
     end
     return tag + 1
 end
 
-# w[] generation: values from a previous pivot satisfy w[e] < wflg after the bump
-# (per-pivot values never exceed wflg + n), replacing the paper's "assume w(k) < 0".
-function _amd_bump_wflg!(w::Vector{Int}, wflg::Int, n::Int)
-    if wflg >= typemax(Int) - 2 * (n + 1)
+# w[] generation: a pivot's values lie in [wflg, wflg + lmax] (lmax bounds every |L_e|),
+# so stepping wflg past that range makes every stale entry satisfy w[e] < wflg — the
+# paper's "assume w(k) < 0" without an O(n) clear. The reset fires only when the next
+# step would overflow the element type.
+function _amd_bump_wflg!(w::Vector{Tn}, wflg::Int, lmax::Int) where {Tn}
+    if wflg >= typemax(Tn) - 2 * (lmax + 1)
         fill!(w, 0)
         wflg = 1
     end
-    return wflg + n + 1
+    return wflg + lmax + 1
 end
 
 # In-place garbage compaction (design §2.2 pt 1; paper §5's "garbage collection"):
@@ -438,9 +488,9 @@ end
 # the new free-tail start. Slices only ever shrink, so the move is always leftward and
 # a forward copy is safe.
 function _amd_compact!(
-        qw::Vector{Int}, ptr::Vector{Int}, ne::Vector{Int}, na::Vector{Int},
+        qw::Vector{Tn}, ptr::Vector{Tn}, ne::Vector{Tn}, na::Vector{Tn},
         state::Vector{Int8}, n::Int, free::Int
-    )
+    ) where {Tn}
     live = Int[]
     for v in 1:n
         ptr[v] > 0 || continue
@@ -450,8 +500,8 @@ function _amd_compact!(
     sort!(live; by = v -> ptr[v])
     wpos = 1
     for v in live
-        len = state[v] == _AMD_VAR ? ne[v] + na[v] : na[v]
-        src = ptr[v]
+        len = state[v] == _AMD_VAR ? Int(ne[v]) + Int(na[v]) : Int(na[v])
+        src = Int(ptr[v])
         ptr[v] = wpos
         if src != wpos
             @inbounds for t in 0:(len - 1)
