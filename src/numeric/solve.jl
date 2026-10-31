@@ -29,6 +29,8 @@ function solve!(x::AbstractVector{T}, F::_PanelFactor{T, Ti}, b::AbstractVector{
     n = sym.n
     perm = sym.perm
     y = F.ws.rhs
+    Base.require_one_based_indexing(x, b)
+    length(x) == n == length(b) || throw(DimensionMismatch("solve!: length(x) = $(length(x)), length(b) = $(length(b)), factor has n = $n"))
 
     @inbounds for k in 1:n
         y[k] = b[Int(perm[k])]
@@ -49,6 +51,8 @@ function solve!(x::AbstractMatrix{T}, F::_PanelFactor{T, Ti}, b::AbstractMatrix{
     n = sym.n
     perm = sym.perm
     nrhs = size(b, 2)
+    Base.require_one_based_indexing(x, b)
+    size(x) == size(b) && size(b, 1) == n || throw(DimensionMismatch("solve!: size(x) = $(size(x)), size(b) = $(size(b)), factor has n = $n"))
     y = Matrix{T}(undef, n, nrhs)
 
     @inbounds for k in 1:n, c in 1:nrhs
@@ -155,7 +159,7 @@ function _solve_L_cached!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <: 
             panel = F.panels[s]
             Ldiag = view(panel, 1:nscol, 1:nscol)
             yblk = ws.rhs_blocks[s]
-            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
+            trsv!(Ldiag, view(yblk, :, 1); uplo = 'L', trans = 'N', diag = _diagchar(F))
 
             if nsrow > nscol
                 Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
@@ -189,7 +193,7 @@ function _solve_L_generic!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <:
             panel = F.panels[s]
             Ldiag = view(panel, 1:nscol, 1:nscol)
             yblk = _panelview(y, j0, nscol, 1)
-            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'N', diag = _diagchar(F), alpha = one(T))
+            trsv!(Ldiag, view(yblk, :, 1); uplo = 'L', trans = 'N', diag = _diagchar(F))
 
             if nsrow > nscol
                 Lbelow = view(panel, (nscol + 1):nsrow, 1:nscol)
@@ -283,7 +287,7 @@ function _solve_Lt_cached!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <:
                 end
                 gemv!(view(yblk, :, 1), Lbelow, gathered; trans = 'T', alpha = -one(T), beta = one(T))
             end
-            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
+            trsv!(Ldiag, view(yblk, :, 1); uplo = 'L', trans = 'T', diag = _diagchar(F))
         end
     end
     return y
@@ -316,7 +320,7 @@ function _solve_Lt_generic!(y::Vector{T}, F::_PanelFactor{T, Ti}) where {T, Ti <
                 end
                 gemv!(view(yblk, :, 1), Lbelow, gathered; trans = 'T', alpha = -one(T), beta = one(T))
             end
-            trsm!(yblk, Ldiag; side = 'L', uplo = 'L', transA = 'T', diag = _diagchar(F), alpha = one(T))
+            trsv!(Ldiag, view(yblk, :, 1); uplo = 'L', trans = 'T', diag = _diagchar(F))
         end
     end
     return y

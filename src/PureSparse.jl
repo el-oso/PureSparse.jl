@@ -9,7 +9,7 @@ import LinearAlgebra  # NOT `using` — our own `cholesky`/`cholesky!`/`ldlt`/`l
 # exists (unwrapped, not just Symmetric-wrapped) and a bare `using`
 # here would silently replace it the moment PureSparse loads.
 using SparseArrays
-using PureBLAS: potrf!, trsm!, syrk!, syr2k!, gemm!, gemv!, ger!, nrm2
+using PureBLAS: potrf!, trsm!, trsv!, syrk!, syr2k!, gemm!, gemv!, ger!, nrm2
 using PureBLAS: wy_t!, wy_apply!, WYApplyWorkspace, qr_block_size
 using Preferences: Preferences
 
