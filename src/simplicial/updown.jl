@@ -91,7 +91,7 @@ function simplicial(F::LDLFactor{T, Ti}; grow::Real = SIMPLICIAL_GROW) where {T,
     stats.nnzL = used + n                        # + n implicit unit diagonals
     G = SimplicialLDLFactor{T, Ti}(
         sym, colptr, colnnz, rowval, nzval, copy(F.d), parent,
-        zeros(T, n), Vector{Ti}(undef, n), stats, F.ok,
+        zeros(T, n), Vector{Ti}(undef, n), Vector{T}(undef, n), stats, F.ok,
     )
     return G
 end
@@ -318,7 +318,9 @@ buffer per call (correctness-first; the zero-allocation contract applies to
 function solve!(x::AbstractVector{T}, G::SimplicialLDLFactor{T, Ti}, b::AbstractVector{T}) where {T, Ti <: Integer}
     n = G.sym.n
     perm = G.sym.perm
-    y = Vector{T}(undef, n)
+    y = G.rhs
+    Base.require_one_based_indexing(x, b)
+    length(x) == n == length(b) || throw(DimensionMismatch("solve!: length(x) = $(length(x)), length(b) = $(length(b)), factor has n = $n"))
     @inbounds for k in 1:n
         y[k] = b[Int(perm[k])]
     end

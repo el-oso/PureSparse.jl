@@ -259,6 +259,7 @@ mutable struct SimplicialLDLFactor{T, Ti <: Integer} <: AbstractSparseFactor{T}
     parent::Vector{Ti}             # etree of the STORED pattern: min of column pattern, 0 = root
     wval::Vector{T}                # updowndate! workspace: scattered w, all-zero between calls
     wpat::Vector{Ti}               # updowndate! workspace: sorted support of w, length n
+    rhs::Vector{T}                 # solve! scratch for the permuted right-hand side, length n
     stats::FactorStats
     ok::Bool
 end
