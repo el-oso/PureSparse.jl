@@ -45,6 +45,15 @@ PureSparse.solve_Lt!(y, F)
 
 Multi-RHS (`b::AbstractMatrix`) is supported throughout.
 
+## Threads and tasks
+
+A `Symbolic` is read-only after construction: share one across tasks and give each task its
+own factor with `PureSparse.cholesky(S, A)` or `PureSparse.ldlt(S, A)`. A factor is not
+safe to use from two tasks at once. Refactoring writes its values, and every solve
+(`solve!`, `\`, for Cholesky, LDLᵀ and QR factors alike) writes scratch space held inside
+the factor, which is what keeps a solve free of allocations. Concurrent solves against one
+factor therefore need one factor per task, or a lock around the solve.
+
 ## Non-SPD input
 
 `cholesky!` never throws on a non-positive-definite pivot — it sets `F.ok = false` (query

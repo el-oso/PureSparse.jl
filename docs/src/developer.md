@@ -112,7 +112,9 @@ guarantee set to every definition in the module and checks them when the package
 
 - `@assert_concurrency_safe cholesky/ldlt(sym, A)` — the allocating factor treats its `Symbolic`
   argument as read-only, so one `Symbolic` is safe to share by reference across concurrent
-  factorizations (the analyze-once design).
+  factorizations (the analyze-once design). A factor itself is not concurrency-safe: every
+  `solve!` writes scratch held in the factor (`F.ws`, `G.rhs`), so
+  `@assert_concurrency_safe F \ b` correctly raises.
 - `@test_typestable solve!(...)` — concrete return type and no internal instability, all factor
   kinds.
 - `@test_noalloc solve!(...)` — the QR solve allocates on no path.
