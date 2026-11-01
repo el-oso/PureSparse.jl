@@ -203,7 +203,7 @@ end
         iperm = invperm(perm)
         cp2, rv2 = PureSparse.symmetrized_upper(n, fullcolptr, fullrows, perm, iperm)
         @test PureSparse.etree(n, fullcolptr, fullrows, perm, iperm) == PureSparse.etree(n, cp2, rv2)
-        hptr, hadj = PureSparse.permuted_lower(n, fullcolptr, fullrows, perm, iperm)
+        hptr, hadj, _ = PureSparse.permuted_lower(n, fullcolptr, fullrows, perm, iperm)
         lptr, ladj = PureSparse.lower_pattern(n, cp2, rv2)
         @test hptr == lptr
         for c in 1:n

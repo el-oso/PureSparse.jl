@@ -149,7 +149,7 @@ end
     using Random
     rng = MersenneTwister(54)
     for n in (1, 2, 5, 10, 30), density in (0.0, 0.1, 0.3)
-        # one-triangle-only strict-upper input (reuse the etree-style CSC construction)
+        # strict-lower input: the function reads the lower triangle only
         adj = [Set{Int}() for _ in 1:n]
         for j in 1:n, i in 1:(j - 1)
             rand(rng) < density && (push!(adj[i], j); push!(adj[j], i))
@@ -158,7 +158,7 @@ end
         rowval = Int[]
         colptr[1] = 1
         for j in 1:n
-            append!(rowval, sort!([i for i in adj[j] if i < j]))
+            append!(rowval, sort!([i for i in adj[j] if i > j]))
             colptr[j + 1] = length(rowval) + 1
         end
         cp2, rv2 = PureSparse.full_symmetric_pattern(n, colptr, rowval)
@@ -179,4 +179,53 @@ end
             @test (j, i) in edges
         end
     end
+end
+
+@testitem "symbolic(): stored strictly-upper entries are ignored" setup = [SymbolicHelpers] begin
+    using Random, SparseArrays, LinearAlgebra
+    rng = MersenneTwister(53)
+    for n in (5, 20, 50), density in (0.05, 0.2)
+        rng2 = MersenneTwister(hash((n, density)))
+        Alower = random_symmetric_matrix(rng2, n, density; store = :lower)
+        # the same lower triangle plus unrelated entries above the diagonal
+        U = triu(sprand(rng, n, n, 0.3), 1)
+        Amixed = Alower + U
+        @test nnz(Amixed) > nnz(Alower)
+        for method in (:supernodal, :simplicial)
+            syml = PureSparse.symbolic(Alower; method)
+            symm = PureSparse.symbolic(Amixed; method)
+            @test symm.perm == syml.perm
+            @test symm.colcount == syml.colcount
+            @test symm.nnzL == syml.nnzL
+            @test symm.rowind == syml.rowind
+            @test symm.lcolptr == syml.lcolptr
+            # the upper entries get the sentinel 0 and are never read
+            for j in 1:n, p in Amixed.colptr[j]:(Amixed.colptr[j + 1] - 1)
+                i = Amixed.rowval[p]
+                @test (symm.amap[p] == 0) == (i < j)
+            end
+        end
+    end
+    # a strictly-upper-only input mirrors to an empty full pattern
+    cp2, rv2 = PureSparse.full_symmetric_pattern(4, [1, 1, 2, 4, 6], [1, 1, 2, 2, 3])
+    @test cp2 == [1, 1, 1, 1, 1] && isempty(rv2)
+end
+
+@testitem "symbolic(): malformed input fails fast" begin
+    using SparseArrays, LinearAlgebra
+    n = 6
+    A = sparse(1.0I, n, n) + sparse([2, 3, 4], [1, 1, 2], ones(3), n, n)
+    bad = SparseMatrixCSC(n, n, copy(A.colptr), copy(A.rowval), copy(A.nzval))
+    bad.rowval[2] = 7
+    @test_throws "row index 7 at entry 2 is outside 1:6" PureSparse.symbolic(bad)
+    bad.rowval[2] = 0
+    @test_throws "row index 0 at entry 2 is outside 1:6" PureSparse.symbolic(bad)
+    badptr = SparseMatrixCSC(n, n, copy(A.colptr), copy(A.rowval), copy(A.nzval))
+    badptr.colptr[3] = badptr.colptr[2] - 1
+    @test_throws "colptr decreases at column 2" PureSparse.symbolic(badptr)
+    @test_throws "is not a permutation of 1:n (entry 2 is 1)" PureSparse.symbolic(A; ordering = PureSparse.GivenOrdering([1, 1, 3, 4, 5, 6]))
+    @test_throws "is not a permutation of 1:n (entry 1 is 7)" PureSparse.symbolic(A; ordering = PureSparse.GivenOrdering([7, 2, 3, 4, 5, 6]))
+    @test_throws "permutation has length 5, expected 6" PureSparse.symbolic(A; ordering = PureSparse.GivenOrdering([1, 2, 3, 4, 5]))
+    # a consistent input still goes through
+    @test PureSparse.symbolic(A).nnzL >= n
 end

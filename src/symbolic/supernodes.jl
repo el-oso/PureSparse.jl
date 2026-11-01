@@ -25,27 +25,31 @@ function fundamental_supernodes(
         n::Int, parent::Vector{Ti}, colcount::Vector{Ti};
         fundamental::Bool = true
     ) where {Ti <: Integer}
-    childcount = zeros(Ti, n)
+    # Only "exactly one child" is tested, so the count saturates at 2.
+    childcount = zeros(UInt8, n)
     if fundamental
         @inbounds for j in 1:n
             p = parent[j]
-            p != 0 && (childcount[p] += one(Ti))
+            iszero(p) || (childcount[p] = min(childcount[p] + 0x01, 0x02))
         end
     end
-    super = Vector{Ti}(undef, n + 1)      # at most n supernodes; trimmed below
+    # Column j starts a new supernode unless it continues j-1's; two sweeps, one to count
+    # and one to fill, so `super` is allocated at its exact size.
+    @inline continues(j) = parent[j - 1] == j && colcount[j - 1] == colcount[j] + 1 &&
+        (!fundamental || isone(childcount[j]))
+    nsuper = n > 0 ? 1 : 0
+    @inbounds for j in 2:n
+        continues(j) || (nsuper += 1)
+    end
+    super = Vector{Ti}(undef, nsuper + 1)
     super[1] = one(Ti)
-    nsuper = 0
-    j = 1
-    @inbounds while j <= n
-        while j < n && parent[j] == j + 1 && colcount[j] == colcount[j + 1] + 1 &&
-                (!fundamental || childcount[j + 1] == 1)
-            j += 1
-        end
-        j += 1
-        nsuper += 1
-        super[nsuper + 1] = Ti(j)
+    s = 1
+    @inbounds for j in 2:n
+        continues(j) && continue
+        s += 1
+        super[s] = Ti(j)
     end
-    resize!(super, nsuper + 1)
+    super[nsuper + 1] = Ti(n + 1)
     return nsuper, super
 end
 
@@ -106,9 +110,12 @@ already been passed over), so bushy etrees — 2D grid Laplacians under AMD, mos
 nodes with 2+ children — need one extra pass per additional absorbable sibling.
 Termination: every pass either merges nothing (loop exits) or strictly decreases the
 alive-block count (bounded below by 1), so at most `nsuper` passes run; in practice the
-pass count is the maximum sibling-absorption depth (single digits on the gate set).
-Absorbed supernodes redirect to their absorbing block through a path-halved `owner`
-array, so later passes find the current alive merge target in near-O(1).
+pass count is the maximum sibling-absorption depth (10 and 14 on the 2D 300² and 3D 45³
+Laplacians). A pass after the first evaluates only the supernodes whose outcome can
+have changed since their last evaluation, which gives the same result as a full sweep
+at the cost of the merges alone (the argument is in the body). Absorbed supernodes
+redirect to their absorbing block through a path-halved `owner` array, so later passes
+find the current alive merge target in near-O(1).
 
 Row count of the merged block — EXACT, not a proxy (independent derivation from the
 etree column-inclusion property, `struct(L[:,j]) ∖ {j} ⊆ struct(L[:,parent(j)])`, Liu's
@@ -143,48 +150,67 @@ function relaxed_amalgamation(
         n::Int, nsuper::Int, super::Vector{Ti}, parent::Vector{Ti}, colcount::Vector{Ti};
         amalg_cols::NTuple{3, Int} = AMALG_COLS, amalg_zmax::NTuple{3, Float64} = AMALG_ZMAX,
     ) where {Ti <: Integer}
+    # Every block spans whole fundamental supernodes: `sfirst[s]` is the fundamental
+    # supernode whose first column starts block s, so `super[sfirst[s]]` is the block's
+    # first column and `ssum` (below) gives its true nnz in O(1). A block's last column
+    # is `super[s + 1] - 1` throughout: merges only extend a block downward.
+    sfirst = collect(Ti, 1:nsuper)
     _, sparent = supernode_tree(n, nsuper, super, parent)
-    start = Vector{Ti}(undef, nsuper)
-    endc = Vector{Ti}(undef, nsuper)
-    @inbounds for s in 1:nsuper
-        start[s] = super[s]
-        endc[s] = super[s + 1] - one(Ti)
-    end
     alive = trues(nsuper)
     owner = collect(Ti, 1:nsuper)
 
-    # ccsum[j+1] = Σ colcount[1:j]: O(1) true-nnz for any contiguous column range.
-    ccsum = Vector{Int}(undef, n + 1)
-    ccsum[1] = 0
-    @inbounds for j in 1:n
-        ccsum[j + 1] = ccsum[j] + Int(colcount[j])
+    # ssum[s] = Σ colcount[1:super[s]-1].
+    ssum = Vector{Int}(undef, nsuper + 1)
+    ssum[1] = 0
+    @inbounds for s in 1:nsuper
+        acc = ssum[s]
+        for j in super[s]:(super[s + 1] - 1)
+            acc += Int(colcount[j])
+        end
+        ssum[s + 1] = acc
     end
 
-    merged_any = true
-    @inbounds while merged_any
-        merged_any = false
-        for s in 1:(nsuper - 1)
-            alive[s] || continue
-            sparent[s] == 0 && continue        # s's last column is an etree root
-            t = _find_owner!(owner, sparent[s]) # alive block containing parent[endc[s]]
-            t <= s && continue                 # malformed (shouldn't happen: postorder ⇒ ancestors > s)
-            endc[s] + 1 == start[t] || continue  # not column-contiguous: not a mergeable pair (design §3.5)
+    # A pass evaluates its candidates in ascending order; the first pass evaluates every
+    # supernode. Afterwards only a supernode whose evaluation can have changed is a
+    # candidate, which gives exactly the result of re-sweeping all supernodes until no
+    # merge happens: only a block's contiguous predecessor can merge into it, so a merge
+    # of s into t changes the outcome for just two supernodes. One is t itself, which is
+    # evaluated right away: nothing evaluated between positions s and t can touch t's
+    # block or its target, so the result is the one a sweep reaching t would get. The
+    # other is the block ending just before s's, fundamental supernode `sfirst[s] - 1`,
+    # the new contiguous predecessor, evaluated in the next pass since it precedes s.
+    # Candidates live in one bit set scanned upward; a bit set during a pass always lies
+    # behind the scan, so it is picked up by the next pass.
+    queued = trues(nsuper)
+    nsuper > 0 && (queued[nsuper] = false)
+    s = findfirst(queued)
+    @inbounds while !isnothing(s)
+        queued[s] = false
+        s0 = s
+        while alive[s] && !iszero(sparent[s])   # a root's last column has no target
+            t = _find_owner!(owner, sparent[s]) # alive block containing s's parent column
+            t <= s && break                    # malformed (shouldn't happen: postorder ⇒ ancestors > s)
+            sfirst[t] == s + 1 || break        # not column-contiguous: not a mergeable pair
 
-            merged_cols = Int(endc[t] - start[s]) + 1
+            endt = Int(super[t + 1]) - 1
+            merged_cols = endt - Int(super[sfirst[s]]) + 1
             tier = _amalg_tier(merged_cols, amalg_cols)
-            tier == 0 && continue
+            iszero(tier) && break
 
-            height = merged_cols + Int(colcount[endc[t]]) - 1  # exact (see docstring)
-            true_nnz = ccsum[endc[t] + 1] - ccsum[start[s]]
+            height = merged_cols + Int(colcount[endt]) - 1  # exact (see docstring)
+            true_nnz = ssum[t + 1] - ssum[sfirst[s]]
             z = 1.0 - true_nnz / (height * merged_cols)
+            z <= amalg_zmax[tier] || break
 
-            if z <= amalg_zmax[tier]
-                start[t] = start[s]
-                alive[s] = false
-                owner[s] = t
-                merged_any = true
-            end
+            c = sfirst[s] - one(Ti)
+            c >= 1 && (queued[c] = true)
+            sfirst[t] = sfirst[s]
+            alive[s] = false
+            owner[s] = t
+            s = t
         end
+        s = findnext(queued, s0 + 1)
+        isnothing(s) && (s = findfirst(queued))   # next pass
     end
 
     super2 = Vector{Ti}(undef, nsuper + 1)
@@ -192,7 +218,7 @@ function relaxed_amalgamation(
     @inbounds for s in 1:nsuper
         alive[s] || continue
         nsuper2 += 1
-        super2[nsuper2] = start[s]
+        super2[nsuper2] = super[sfirst[s]]
     end
     super2[nsuper2 + 1] = Ti(n + 1)
     resize!(super2, nsuper2 + 1)
@@ -200,107 +226,79 @@ function relaxed_amalgamation(
 end
 
 """
-    supernode_rowind(n, colptr, rowval, parent, nsuper, super)
+    supernode_rowind(n, colptr, rowval, parent, colcount, nsuper, super)
         -> (rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows)
 
-Row structure of L per (post-amalgamation) supernode (design.md §3.6):
-`rowind[s]` = `columns_of_s ∪ pattern(A[:,cols(s)]) below s ∪ ⋃_{children c} (rowind[c]
-minus c's columns)`. `colptr`/`rowval` is the postordered STRICT UPPER pattern (as
-`etree`/`column_counts` consume); this method forms its below-diagonal transpose with
-[`lower_pattern`](@ref) and calls [`supernode_rowind_lower`](@ref). Also computes the two
-independent workspace-size derivations from the §4.3 update schedule (design §0 B1 —
-NOT CHOLMOD's `maxcsize`/`maxesize`): `max_update_size` = `max over (descendant d,
-ancestor s) pairs of |R|·|R₁|`, and `max_extend_rows` = the tallest below-diagonal panel.
+Row structure of L per (post-amalgamation) supernode (design.md §3.6): `rowind[s]` =
+the columns of `s` followed, in ascending order, by `struct(L[:, last column of s])`
+below the block — the union of its member columns' patterns, since every member's
+etree path leaves the block only through its last column (the one range root of a
+block, see [`relaxed_amalgamation`](@ref)). `colptr`/`rowval` is the postordered STRICT
+UPPER pattern (as `etree`/`column_counts` consume), `colcount` its column counts, which
+size `rowind` exactly: `|rowind[s]| = ncols(s) + colcount[last column of s] − 1`.
+Also computes the two independent workspace-size derivations from the §4.3 update
+schedule (design §0 B1 — NOT CHOLMOD's `maxcsize`/`maxesize`): `max_update_size` =
+`max over (descendant d, ancestor s) pairs of |R|·|R₁|`, and `max_extend_rows` = the
+tallest below-diagonal panel.
+
+Algorithm: Liu's row subtrees (Liu 1990, *The role of elimination trees in sparse
+factorization*, sections 3-4) at supernode granularity. Row `i` of `L` is nonzero in
+the columns climbed from every row index `j` of column `i` of the upper pattern toward
+`i`; each etree path leaves a supernode through its last column, so the climb runs over
+the supernodal tree `sparent`, stopping at a supernode already stamped with `i` (the
+rest of its path is stamped too) or at `i`'s own supernode. Rows are processed in
+ascending order, so each supernode's list comes out sorted, and the stamp array is
+indexed by supernode, not column.
 """
 function supernode_rowind(
-        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti},
+        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::Vector{Ti}, colcount::Vector{Ti},
         nsuper::Int, super::Vector{Ti},
     ) where {Ti <: Integer}
-    hptr, hadj = lower_pattern(n, colptr, rowval)
-    return supernode_rowind_lower(n, parent, nsuper, super, hptr, hadj; rowind_length = length(hadj) + n)
-end
-
-"""
-    supernode_rowind_lower(n, parent, nsuper, super, hptr, hadj; rowind_length)
-        -> (rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows)
-
-[`supernode_rowind`](@ref) on the below-diagonal pattern: column `c` of `hptr`/`hadj`
-holds the rows `i > c` of the postordered matrix, in any order (by symmetry, "row `c`
-has an entry in column `i>c`" ⟺ "column `c` has an entry at row `i>c`", exactly the seed
-pattern needed). `rowind_length` is the final length of `rowind` when the caller knows
-it (Σ_s ncols(s) + colcount[last column of s] − 1), otherwise a lower bound.
-
-Algorithm: one ascending (postorder) pass with a per-supernode stamped marker array
-(`mark`) for O(1) dedup, avoiding an O(n) clear between supernodes. For supernode `s`:
-add its own columns, then the below-diagonal entries of those columns, then each
-child's rowind with the child's OWN columns excluded (they are always the smallest
-entries of a child's sorted rowind — every propagated row is an etree-ancestor of the
-child's diagonal columns, and postorder gives ancestors strictly increasing column
-index, so nothing from a descendant's propagated set can be smaller than the child's
-own first column).
-"""
-function supernode_rowind_lower(
-        n::Int, parent::Vector{Ti}, nsuper::Int, super::Vector{Ti},
-        hptr::Vector{Ti}, hadj::Vector{Ti}; rowind_length::Int,
-    ) where {Ti <: Integer}
     snode_of, sparent = supernode_tree(n, nsuper, super, parent)
-    child_head = zeros(Ti, nsuper)
-    child_next = zeros(Ti, nsuper)
-    @inbounds for s in 1:nsuper
-        p = sparent[s]
-        if p != 0
-            child_next[s] = child_head[p]
-            child_head[p] = Ti(s)
-        end
-    end
-
-    mark = zeros(Int, n)
     rowind_ptr = Vector{Ti}(undef, nsuper + 1)
     rowind_ptr[1] = one(Ti)
-    # Each supernode's rows are written straight into `rowind` and sorted in place.
-    rowind = Ti[]
-    sizehint!(rowind, rowind_length)
+    @inbounds for s in 1:nsuper
+        rowind_ptr[s + 1] = rowind_ptr[s] + (super[s + 1] - super[s]) + colcount[super[s + 1] - 1] - one(Ti)
+    end
+    rowind = Vector{Ti}(undef, Int(rowind_ptr[nsuper + 1]) - 1)
+    cursor = Vector{Ti}(undef, nsuper)    # next free slot of each supernode's list
+    @inbounds for s in 1:nsuper
+        q = rowind_ptr[s]
+        for c in super[s]:(super[s + 1] - one(Ti))
+            rowind[q] = c
+            q += one(Ti)
+        end
+        cursor[s] = q
+    end
+    stamp = zeros(Ti, nsuper)             # the last row whose climb passed through s
+    @inbounds for i in 1:n
+        si = snode_of[i]
+        for p in colptr[i]:(colptr[i + 1] - 1)
+            t = snode_of[rowval[p]]
+            while t != si && stamp[t] != Ti(i)
+                # Every climb ends at i's own supernode when parent and pattern agree;
+                # reaching the root first means they do not, so stop before indexing 0.
+                iszero(t) && throw(ArgumentError(lazy"supernode_rowind: row $i of column $(rowval[p]) climbs to the root before reaching its own supernode; parent and pattern disagree"))
+                stamp[t] = Ti(i)
+                rowind[cursor[t]] = Ti(i)
+                cursor[t] += one(Ti)
+                t = sparent[t]
+            end
+        end
+    end
+    # Every list must have been filled exactly: the column counts and the climbed
+    # structure describe the same L.
+    @inbounds for s in 1:nsuper
+        cursor[s] == rowind_ptr[s + 1] ||
+            throw(ErrorException(lazy"supernode_rowind: supernode $s has $(cursor[s] - rowind_ptr[s]) rows, column counts say $(rowind_ptr[s + 1] - rowind_ptr[s])"))
+    end
+
     max_update_size = 0
     max_extend_rows = 0
-
     @inbounds for s in 1:nsuper
-        j0, j1 = super[s], super[s + 1] - one(Ti)
-        r0 = length(rowind) + 1
-        for c in j0:j1
-            if mark[c] != s
-                mark[c] = s
-                push!(rowind, c)
-            end
-        end
-        for c in j0:j1
-            for p in hptr[c]:(hptr[c + 1] - 1)
-                i = hadj[p]
-                if mark[i] != s
-                    mark[i] = s
-                    push!(rowind, i)
-                end
-            end
-        end
-        c = child_head[s]
-        while c != 0
-            c_last = super[c + 1] - one(Ti)   # c's own last column (fundamental-etree indexing == column index here)
-            for p in rowind_ptr[c]:(rowind_ptr[c + 1] - 1)
-                i = rowind[p]
-                if i > c_last && mark[i] != s
-                    mark[i] = s
-                    push!(rowind, i)
-                end
-            end
-            c = child_next[c]
-        end
-        # The block's own columns j0:j1 were pushed first, in order, and every other row
-        # exceeds j1, so only the below-diagonal part needs sorting.
-        _sort_segment!(rowind, r0 + Int(j1 - j0) + 1, length(rowind))
-        rows = view(rowind, r0:length(rowind))
-        rowind_ptr[s + 1] = Ti(length(rowind) + 1)
-
+        rows = view(rowind, Int(rowind_ptr[s]):(Int(rowind_ptr[s + 1]) - 1))
         nrow_s = length(rows)
-        ncol_s = Int(j1 - j0) + 1
+        ncol_s = Int(super[s + 1] - super[s])
         max_extend_rows = max(max_extend_rows, nrow_s - ncol_s)
 
         # Workspace bound (design §3.6 / §0 B1): for THIS supernode d = s acting as a

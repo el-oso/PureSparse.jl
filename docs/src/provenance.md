@@ -24,9 +24,10 @@ re-derived before implementation began — see `docs/design.md` §0).
 
 ## Provenance table
 
-| Component | Source (papers/books/guides only) |
+| Component | Source (papers, books, user guides; faer source for the AMD encoding) |
 |---|---|
 | AMD ordering | Amestoy, Davis, Duff, *An Approximate Minimum Degree Ordering Algorithm*, SIAM J. Matrix Anal. Appl. 17(4), 1996; AMD package *User Guide* (dense-row default) |
+| AMD node-status encoding and in-place list rewrite (`src/ordering/amd.jl`) | faer 0.24.4, `src/sparse/linalg/amd.rs` (MIT), a port of SuiteSparse AMD (BSD-3); both notices are kept in the file header |
 | Elimination tree, postorder | Liu 1986; Davis, *Direct Methods for Sparse Linear Systems* (SIAM, 2006), ch. 4 |
 | Column counts | Gilbert–Ng–Peyton 1994; Davis's book, ch. 4 |
 | Fundamental supernodes | Liu, Ng, Peyton 1993 |

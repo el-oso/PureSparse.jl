@@ -10,53 +10,66 @@
 # symmetric SparseMatrixCSC works too, just redundantly).
 
 """
-    full_symmetric_pattern(n, colptr, rowval) -> (colptr2, rowval2)
+    full_symmetric_pattern([Tn,] n, colptr, rowval) -> (colptr2, rowval2)
 
-Symmetrize an arbitrary (possibly one-triangle-only, possibly with duplicate or diagonal
-entries) sparse pattern into `pattern(A) ∪ pattern(Aᵀ)` with the diagonal removed, BOTH
-triangles stored — the input contract [`order`](@ref) expects (design.md §2.1).
+The symmetric pattern of the strictly-lower-triangular entries (`i > j`) of a CSC
+pattern, BOTH triangles stored, no diagonal — the input contract [`order`](@ref) expects
+(design.md §2.1). Only the lower triangle is read, matching the numeric phase (the
+module convention above): any stored upper-triangle entry is ignored. Duplicate entries
+are dropped. The result has index type `Tn` (default: the input's), which must hold
+`2·nnz + 1`.
 """
-function full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
-    # Pass 1: every off-diagonal entry (i, j) lands in both column i and column j.
-    deg = zeros(Ti, n)
+full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer} =
+    full_symmetric_pattern(Ti, n, colptr, rowval)
+
+function full_symmetric_pattern(
+        ::Type{Tn}, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti},
+    ) where {Tn <: Integer, Ti <: Integer}
+    # Pass 1: every strictly-lower entry (i, j) lands in both column i and column j.
+    # `colptr2[c + 1]` counts column c, so the prefix sum below needs no second array.
+    colptr2 = zeros(Tn, n + 1)
     @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
         i = rowval[p]
-        i == Ti(j) && continue
-        deg[i] += one(Ti)
-        deg[j] += one(Ti)
+        i > Ti(j) || continue
+        colptr2[i + 1] += one(Tn)
+        colptr2[j + 1] += one(Tn)
     end
-    colptr2 = Vector{Ti}(undef, n + 1)
-    colptr2[1] = one(Ti)
+    colptr2[1] = one(Tn)
     @inbounds for j in 1:n
-        colptr2[j + 1] = colptr2[j] + deg[j]
+        colptr2[j + 1] += colptr2[j]
     end
-    # Pass 2: scatter, reusing `deg` as the per-column write cursor.
-    rowval2 = Vector{Ti}(undef, colptr2[n + 1] - 1)
-    fill!(deg, zero(Ti))
+    # Pass 2: scatter with `colptr2[c]` as column c's write cursor; afterwards it holds
+    # column c's end, which is column c+1's start, so one shift restores the pointers.
+    rowval2 = Vector{Tn}(undef, colptr2[n + 1] - 1)
     @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
         i = rowval[p]
-        i == Ti(j) && continue
-        rowval2[colptr2[i] + deg[i]] = Ti(j)
-        deg[i] += one(Ti)
-        rowval2[colptr2[j] + deg[j]] = i
-        deg[j] += one(Ti)
+        i > Ti(j) || continue
+        rowval2[colptr2[i]] = Tn(j)
+        colptr2[i] += one(Tn)
+        rowval2[colptr2[j]] = Tn(i)
+        colptr2[j] += one(Tn)
     end
-    # Pass 3: drop duplicates in place (an entry stored in both triangles, or stored
-    # twice, arrives twice), stamping each kept row with its column in `deg`. Column j's
+    @inbounds for c in n:-1:2
+        colptr2[c] = colptr2[c - 1]
+    end
+    colptr2[1] = one(Tn)
+    # Pass 3: drop duplicates in place, stamping each kept row with its column. Column j's
     # deduplicated run starts where column j-1's ended, so the result is already
     # contiguous. Rows within a column are left in arrival order: no consumer of this
-    # pattern (ordering, etree, permuted_lower) depends on it.
-    fill!(deg, zero(Ti))
-    w = one(Ti)
+    # pattern (ordering, etree, permuted_lower) depends on it. The pass is skipped when
+    # every input column has strictly increasing rows, which rules out duplicates.
+    _strictly_increasing_columns(n, colptr, rowval) && return colptr2, rowval2
+    stamp = zeros(Tn, n)
+    w = one(Tn)
     @inbounds for j in 1:n
-        lo, hi = colptr2[j], colptr2[j + 1] - one(Ti)
+        lo, hi = colptr2[j], colptr2[j + 1] - one(Tn)
         colptr2[j] = w
         for k in lo:hi
             v = rowval2[k]
-            deg[v] == Ti(j) && continue
-            deg[v] = Ti(j)
+            stamp[v] == Tn(j) && continue
+            stamp[v] = Tn(j)
             rowval2[w] = v
-            w += one(Ti)
+            w += one(Tn)
         end
     end
     colptr2[n + 1] = w
@@ -64,8 +77,38 @@ function full_symmetric_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) 
     return colptr2, rowval2
 end
 
+# The column pointers must be nondecreasing, start at 1 and end within `rowval`, and
+# every stored row index must lie in 1:n.
+function _check_rows(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
+    length(colptr) == n + 1 || throw(ArgumentError(lazy"symbolic: colptr has length $(length(colptr)), expected $(n + 1)"))
+    isone(colptr[1]) || throw(ArgumentError(lazy"symbolic: colptr[1] = $(colptr[1]), expected 1"))
+    Int(colptr[n + 1]) - 1 <= length(rowval) ||
+        throw(ArgumentError(lazy"symbolic: colptr[n + 1] - 1 = $(colptr[n + 1] - 1) exceeds the $(length(rowval)) stored entries"))
+    for j in 1:n
+        colptr[j] <= colptr[j + 1] || throw(ArgumentError(lazy"symbolic: colptr decreases at column $j"))
+        for p in colptr[j]:(colptr[j + 1] - 1)
+            i = rowval[p]
+            (1 <= i <= n) || throw(ArgumentError(lazy"symbolic: row index $i at entry $p is outside 1:$n"))
+        end
+    end
+    return nothing
+end
+
+# True when the rows of every column are strictly increasing (the usual CSC invariant).
+function _strictly_increasing_columns(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
+    @inbounds for j in 1:n
+        prev = zero(Ti)
+        for p in colptr[j]:(colptr[j + 1] - 1)
+            i = rowval[p]
+            i > prev || return false
+            prev = i
+        end
+    end
+    return true
+end
+
 """
-    assembly_map(A, perm, iperm, nsuper, super, snode_of, rowind_ptr, rowind, px) -> amap::Vector{Ti}
+    assembly_map(A, iperm, nsuper, super, snode_of, rowind_ptr, rowind, px, hptr, hadj, hslot) -> amap::Vector{Ti}
 
 For every stored entry of `A`'s LOWER triangle (`i >= j`), the destination linear offset
 in the numeric factor's `x` buffer (design.md §4.2's precomputed scatter map — what makes
@@ -73,62 +116,45 @@ in the numeric factor's `x` buffer (design.md §4.2's precomputed scatter map �
 if stored — ignored per this module's input convention) get sentinel `0`; a numeric LOAD
 skips those. Sized `nnz(A)` (one slot per A's own stored entry) rather than `nnz(tril(A))`
 alone — simpler and equally O(1) to consume, since the sentinel makes "not used" explicit.
+The strictly-lower entries are reached through the permuted lower pattern and its slots
+(`hptr`/`hadj`/`hslot`, [`permuted_lower`](@ref)): column `c`'s entries all land in
+`c`'s supernode, whose row list is scattered once into `relmap`. Diagonal entries are
+found by a pass over `A` itself. `relmap` is scratch of length at least `n`,
+overwritten here.
 """
 function assembly_map(
-        A::SparseMatrixCSC, perm::Vector{Ti}, iperm::Vector{Ti},
-        nsuper::Int, super::Vector{Ti}, snode_of::Vector{Ti},
-        rowind_ptr::Vector{Ti}, rowind::Vector{Ti}, px::Vector{Ti},
-    ) where {Ti <: Integer}
+        A::SparseMatrixCSC, iperm::Vector{Tn},
+        nsuper::Int, super::Vector{Tn}, snode_of::Vector{Tn},
+        rowind_ptr::Vector{Tn}, rowind::Vector{Tn}, px::Vector{Ti},
+        hptr::Vector{Tn}, hadj::Vector{Tn}, hslot::Vector{Tn};
+        relmap::Vector{Tn} = Vector{Tn}(undef, size(A, 1)),
+    ) where {Ti <: Integer, Tn <: Integer}
     n = size(A, 1)
+    length(relmap) >= n || throw(ArgumentError("assembly_map: relmap must have length >= n"))
     colptr, rowvalA = A.colptr, A.rowval
-    nz = length(rowvalA)
-    # Bucket the lower-triangle entries by destination supernode (counting sort on
-    # `snode_of[lo]`); `amap` doubles as the per-entry destination column `lo` until the
-    # per-supernode pass below overwrites it with the final offset.
-    amap = zeros(Ti, nz)
-    hi_arr = Vector{Ti}(undef, nz)
-    scount = zeros(Ti, nsuper + 1)
-    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
-        i = rowvalA[p]
-        i >= j || continue
-        ni, nj = iperm[i], iperm[j]
-        lo, hi = minmax(ni, nj)
-        amap[p] = lo
-        hi_arr[p] = hi
-        scount[snode_of[lo] + 1] += one(Ti)
-    end
-    scount[1] = one(Ti)
-    @inbounds for s in 1:nsuper
-        scount[s + 1] += scount[s]
-    end
-    bucket_p = Vector{Ti}(undef, scount[nsuper + 1] - 1)
-    @inbounds for p in 1:nz
-        lo = amap[p]
-        iszero(lo) && continue
-        s = snode_of[lo]
-        bucket_p[scount[s]] = Ti(p)
-        scount[s] += one(Ti)
-    end
-
-    relmap = zeros(Ti, n)
-    bp = 1
+    amap = zeros(Ti, length(rowvalA))
     @inbounds for s in 1:nsuper
         j0 = super[s]
         nrow = Int(rowind_ptr[s + 1] - rowind_ptr[s])
         k = 1
         for r in rowind_ptr[s]:(rowind_ptr[s + 1] - 1)
-            relmap[rowind[r]] = Ti(k)
+            relmap[rowind[r]] = Tn(k)
             k += 1
         end
-        # scount[s] is now the end of bucket s (one past its last entry).
-        while bp < scount[s]
-            p = bucket_p[bp]
-            bp += 1
-            lo, hi = amap[p], hi_arr[p]
-            local_row = Int(relmap[hi])
-            local_col = Int(lo - j0) + 1
-            amap[p] = px[s] + Ti((local_col - 1) * nrow + (local_row - 1))
+        for c in j0:(super[s + 1] - one(Tn))
+            col_off = Int(px[s]) + Int(c - j0) * nrow - 1
+            for q in hptr[c]:(hptr[c + 1] - 1)
+                amap[hslot[q]] = Ti(col_off + Int(relmap[hadj[q]]))
+            end
         end
+    end
+    # Diagonal entries: row c sits at position c - j0 + 1 of its own supernode's rows.
+    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        Int(rowvalA[p]) == j || continue
+        c = iperm[j]
+        s = snode_of[c]
+        nrow = Int(rowind_ptr[s + 1] - rowind_ptr[s])
+        amap[p] = Ti(Int(px[s]) + Int(c - super[s]) * (nrow + 1))
     end
     return amap
 end
@@ -184,6 +210,11 @@ every numeric factorization of a matrix with this sparsity pattern (design.md §
 `method` is `:auto` (simplicial when the mean work per stored entry of `L`,
 `flops / nnzL`, is at or below the `simplicial_ratio` preference, see `tuning.jl`),
 `:simplicial`, or `:supernodal`.
+
+The analysis runs on `Int32` indices whenever `A`'s index type is wider and `n`,
+`nnz(A)` and `nnz(L)` fit (design.md §3.1): every stage works on index arrays, so this
+halves the bytes allocated and touched. Only the arrays stored in the `Symbolic` are
+widened back to `A`'s index type; results are identical either way.
 """
 function symbolic(
         A::SparseMatrixCSC{T, Ti}; ordering::AbstractOrdering = AMDOrdering(), method::Symbol = :auto,
@@ -192,12 +223,33 @@ function symbolic(
     size(A, 2) == n || throw(DimensionMismatch("symbolic: A must be square, got $(size(A))"))
     (method === :auto || method === :simplicial || method === :supernodal) ||
         throw(ArgumentError("symbolic: method must be :auto, :simplicial, or :supernodal (got $method)"))
+    # Every row index must lie in 1:n: the pattern passes (`full_symmetric_pattern`,
+    # `permuted_lower`, `assembly_map`) index their arrays by the stored rows without
+    # further checks. The permutation an ordering returns is checked in `_symbolic`.
+    _check_rows(n, A.colptr, A.rowval)
+    # The full pattern holds up to 2·nnz(A) entries plus n + 1 pointers; `nnz(L)` is
+    # checked once the column counts are known.
+    if Ti !== Int32 && sizeof(Ti) > 4 && n + 1 <= typemax(Int32) && 2 * nnz(A) + 2 <= typemax(Int32)
+        return _symbolic(Int32, A, ordering, method)
+    end
+    return _symbolic(Ti, A, ordering, method)
+end
 
-    fcolptr, frowval = full_symmetric_pattern(n, A.colptr, A.rowval)
+# The analysis proper, on index type `Tn`; the result carries `A`'s index type.
+function _symbolic(
+        ::Type{Tn}, A::SparseMatrixCSC{T, Ti}, ordering::AbstractOrdering, method::Symbol,
+    ) where {Tn <: Integer, T, Ti <: Integer}
+    n = size(A, 1)
+    fcolptr, frowval = full_symmetric_pattern(Tn, n, A.colptr, A.rowval)
     amd_perm = order(ordering, n, fcolptr, frowval)
-    amd_iperm = Vector{Ti}(undef, n)
-    @inbounds for (k, p) in enumerate(amd_perm)
-        amd_iperm[p] = Ti(k)
+    length(amd_perm) == n || throw(ArgumentError(lazy"symbolic: the ordering returned $(length(amd_perm)) indices for n = $n"))
+    # The inverse doubles as the permutation check: every index must be in 1:n and
+    # appear exactly once.
+    amd_iperm = zeros(Tn, n)
+    for (k, p) in enumerate(amd_perm)
+        (1 <= p <= n && iszero(amd_iperm[p])) ||
+            throw(ArgumentError(lazy"symbolic: the ordering is not a permutation of 1:n (entry $k is $p)"))
+        amd_iperm[p] = Tn(k)
     end
 
     # The etree is read straight off the full pattern through the AMD permutation; the
@@ -206,34 +258,43 @@ function symbolic(
 
     # Postorder with children visited in ascending column order (design.md §3.2): the
     # postorder is composed into `perm`, so it changes supernode boundaries but not fill.
-    _, postinv = postorder(n, parent0)
+    post, postinv = postorder(n, parent0)
 
-    perm = Vector{Ti}(undef, n)     # perm[finallabel] = original index (design.md §3.2 composition)
+    perm = Vector{Tn}(undef, n)     # perm[finallabel] = original index (design.md §3.2 composition)
     @inbounds for orig in 1:n
-        perm[postinv[amd_iperm[orig]]] = Ti(orig)
+        perm[postinv[amd_iperm[orig]]] = Tn(orig)
     end
-    iperm = Vector{Ti}(undef, n)
+    iperm = Vector{Tn}(undef, n)
     @inbounds for (k, p) in enumerate(perm)
-        iperm[p] = Ti(k)
+        iperm[p] = Tn(k)
     end
 
     parent = relabel_parent(n, parent0, postinv)
     # Column counts and supernodal row structure read each column's below-diagonal
     # pattern (design.md §3.1), so that is the only permuted pattern formed.
-    hptr, hadj = permuted_lower(n, fcolptr, frowval, perm, iperm)
-    colcount = column_counts_lower(n, parent, hptr, hadj)
+    hptr, hadj, hslot = permuted_lower(n, A.colptr, A.rowval, perm, iperm)
+    # Buffers spent by the steps above serve as the column-count scratch.
+    colcount = column_counts_lower(n, parent, hptr, hadj; work = (amd_iperm, parent0, post, postinv))
     nnzL = Int(nnz_l(colcount))
     flops = Float64(chol_flops(colcount))
+    # Row-structure pointers run to nnz(L) + 1; a factor too large for Tn is analyzed
+    # again on A's own index type.
+    if Tn !== Ti && nnzL + 1 > typemax(Tn)
+        return _symbolic(Ti, A, ordering, method)
+    end
 
     # Path choice (design.md §4.5) from the column counts alone, before any supernode
     # work; the comparison is written without a division so an empty matrix is well
     # defined.
     if method === :simplicial || (method === :auto && flops <= SIMPLICIAL_RATIO * nnzL)
-        ucolptr, urowval, amap = upper_assembly_map(A, iperm)
-        lcolptr, lrowval, lrowptr, lcolval = l_pattern(n, parent, colcount, ucolptr, urowval)
+        iperm_ = convert(Vector{Ti}, iperm)
+        parent_ = convert(Vector{Ti}, parent)
+        colcount_ = convert(Vector{Ti}, colcount)
+        ucolptr, urowval, amap = upper_assembly_map(A, iperm_)
+        lcolptr, lrowval, lrowptr, lcolval = l_pattern(n, parent_, colcount_, ucolptr, urowval)
         one_ = Ti[one(Ti)]   # length-1 pointer arrays: `super[nsuper + 1]`-style reads stay valid
         return Symbolic{Ti}(
-            n, perm, iperm, parent, colcount,
+            n, convert(Vector{Ti}, perm), iperm_, parent_, colcount_,
             0, one_, one_, Ti[], Ti[], Ti[], one_, amap,
             true, lcolptr, lrowval, lrowptr, lcolval, ucolptr, urowval,
             0, 0, nnzL, flops,
@@ -243,16 +304,14 @@ function symbolic(
     nsuper0, super0 = fundamental_supernodes(n, parent, colcount)
     nsuper, super = relaxed_amalgamation(n, nsuper0, super0, parent, colcount)
 
-    # |rowind(s)| = ncols(s) + colcount[last column of s] − 1 exactly (the block's rows
-    # are its columns plus the last column's below-diagonal pattern; derivation in the
-    # `relaxed_amalgamation` docstring).
-    rowind_length = 0
-    @inbounds for s in 1:nsuper
-        rowind_length += Int(super[s + 1] - super[s]) + Int(colcount[super[s + 1] - 1]) - 1
-    end
+    # The row structure is climbed from the upper pattern (column i: its rows j < i),
+    # the transpose of the lower one; `lower_pattern` is that transpose.
+    uptr, uadj = lower_pattern!(fcolptr, frowval, n, hptr, hadj)   # the full pattern is spent
     rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows =
-        supernode_rowind_lower(n, parent, nsuper, super, hptr, hadj; rowind_length)
+        supernode_rowind(n, uptr, uadj, parent, colcount, nsuper, super)
 
+    # Panel offsets and the assembly map address the numeric buffer, so they are built
+    # on A's index type directly.
     px = Vector{Ti}(undef, nsuper + 1)
     px[1] = one(Ti)
     @inbounds for s in 1:nsuper
@@ -261,11 +320,13 @@ function symbolic(
         px[s + 1] = px[s] + Ti(nrow * ncol)
     end
 
-    amap = assembly_map(A, perm, iperm, nsuper, super, snode_of, rowind_ptr, rowind, px)
+    amap = assembly_map(A, iperm, nsuper, super, snode_of, rowind_ptr, rowind, px, hptr, hadj, hslot; relmap = uptr)
 
     return Symbolic{Ti}(
-        n, perm, iperm, parent, colcount,
-        nsuper, super, rowind_ptr, rowind, snode_of, sparent, px, amap,
+        n, convert(Vector{Ti}, perm), convert(Vector{Ti}, iperm), convert(Vector{Ti}, parent),
+        convert(Vector{Ti}, colcount),
+        nsuper, convert(Vector{Ti}, super), convert(Vector{Ti}, rowind_ptr), convert(Vector{Ti}, rowind),
+        convert(Vector{Ti}, snode_of), convert(Vector{Ti}, sparent), px, amap,
         false, Ti[], Ti[], Ti[], Ti[], Ti[], Ti[],
         max_update_size, max_extend_rows,
         nnzL, flops,

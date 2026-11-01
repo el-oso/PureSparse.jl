@@ -73,8 +73,45 @@ Analysis-time pass (symbolic analysis measured against faer's `SymbolicLlt` on t
   preliminary column-count pass that ordered siblings by count is gone (nnz(L)
   unchanged by construction; nsuper 1016 → 1013 on the 2D and 4201 → 4148 on the 3D
   Laplacian).
-- **S5** §3.4/§3.5: supernode partition arrays are allocated at their upper bound and
-  trimmed, not grown.
+- **S5** §3.4/§3.5: supernode partition arrays are allocated at their exact size.
+
+Large-PDE pass (symbolic analysis measured against `CHOLMOD.symbolic` on the 2D 300×300
+and 3D 30³/45³ Laplacians, galen core 8, Chairmarks medians; before → after):
+lap2d 300² 38.4 → 32.4 ms (CHOLMOD 27.2), lap3d 30³ 19.9 → 18.1 ms (CHOLMOD 18.7),
+lap3d 45³ 81.6 → 72.7 ms (CHOLMOD 65.5). AMD alone is at parity with `cholmod_l_amd`
+measured directly (15.9 vs 16.2, 12.6 vs 13.2, 46.4 vs 46.5 ms) and is 50–65% of the
+total; the rest of the gap is the per-call allocation (37–46 MB of transient arrays,
+which CHOLMOD keeps in its persistent workspace) and, on the 3D cases, the etree and
+row-structure stages.
+
+- **S6** §3.1: the pattern is built from the strictly-lower entries of `A` only (the
+  numeric phase reads nothing else), every stage allocates exact sizes, and the
+  permuted below-diagonal pattern carries each entry's slot in `A`, so the assembly
+  map (§4.2) is written straight from it instead of bucketing `A`'s entries again
+  (lap2d 300²: 3.4 → 1.2 ms, 10.1 → 4.3 MB).
+- **S7** §3.5: the amalgamation fixpoint evaluates only the supernodes whose outcome
+  can have changed, with the same result as sweeping all of them (10 and 14 sweeps on
+  the 2D and 3D Laplacians: 1.4 → 1.6 and 2.4 → 1.5 ms, no sorting, no pass count).
+- **S8** §3.6: supernodal row structure is climbed from row subtrees in ascending row
+  order, sized exactly from the column counts, so no row list is sorted and no marker
+  array over the columns is needed (lap3d 45³: 6.5 → 3.8 ms).
+- **S9** §2.2: AMD's node status is encoded in the arrays its scans read anyway, the
+  list rewrite needs no copy of `A_i`, the supervariable key is masked rather than
+  reduced modulo `n − 1`, and the hash-bucket list is bounded by the bucket count.
+  Output permutations are unchanged; the gain is 3–5%. Workspace compaction walks the
+  live slices in address order (variables in node order, then elements in elimination
+  order) instead of sorting them: 3% on the 3D Laplacians, which compact 58–152 times.
+- **S10** §3.1: when `A` carries 64-bit indices and `n`, `nnz(A)` and `nnz(L)` fit in
+  `Int32`, the analysis runs on `Int32` arrays and widens only the stored `Symbolic`
+  fields: 37 → 31 MB per call on lap2d 300², 46 → 40 MB on lap3d 45³, results
+  identical (the same code runs on either index type).
+
+After this pass (galen core 8, medians): lap2d 300² 32.0 ms (CHOLMOD 27.1), lap3d 30³
+18.0 ms (CHOLMOD 18.6), lap3d 45³ 71.0 ms (CHOLMOD 65.2). With the collector disabled
+or a 16 GB heap hint the medians do not improve, and the non-collection time of a
+20-call loop is 29.5 / 18.6 / 70.1 ms, so the remaining gap is compute, not
+allocation: AMD at parity with `cholmod_l_amd`, and on the 3D case the given-ordering
+pipeline (21.5 ms against CHOLMOD's 17.9 with a user permutation).
 
 Simplicial path (§4.5):
 
@@ -277,15 +314,18 @@ representation (variables + elements sharing one workspace, garbage-compacted in
    then per-variable pass reads it off).
 
 3. **Supervariable detection (and mass elimination, which falls out of it).** After
-   forming `L_p`, hash each variable in it (hash = sum of its adjacency-list entries mod
-   n−1, plus one, per the paper §5), bucket by hash, and pairwise-compare within
+   forming `L_p`, key each variable in it by the sum of its adjacency-list entries (the
+   paper §5 reduces that sum modulo n−1; see below), bucket by key, and pairwise-compare within
    buckets; indistinguishable variables (identical adjacency once both lie in `L_p`)
-   are merged into one supervariable. The hash value is stored per node and compared
-   before the lists are; the bucket table has `min(nextpow(2, n), 4096)` entries (16 KB
-   of `Int32`, L1-resident) and the hash is folded into it by masking, since only the
-   `|L_p|` variables hashed in one pivot share the table. Only buckets that receive a
-   second variable are scanned (on the 2D Laplacian 44k of 46k hashed variables sit
-   alone in their bucket); each survivor in `L_p` then clears its own bucket. Mass elimination is **not a separate test**: variables that
+   are merged into one supervariable. The key stored per node is the list sum masked
+   to 30 bits rather than reduced modulo `n − 1` as in the paper: it only has to agree
+   for identical lists, and the remainder cost an integer division per variable of
+   `L_p`. The key is compared before the lists are; the bucket table has
+   `min(nextpow(2, n), 4096)` entries (16 KB of `Int32`, L1-resident) and the key is
+   folded into it by masking, since only the `|L_p|` variables hashed in one pivot
+   share the table. Only buckets that receive a second variable are scanned, each
+   listed once (on the 2D Laplacian 44k of 46k hashed variables sit alone in their
+   bucket); each survivor in `L_p` then clears its own bucket. Mass elimination is **not a separate test**: variables that
    become indistinguishable from the pivot's supervariable are merged into it and hence
    eliminated together with the pivot, as a consequence of this detection. Do not
    implement a standalone "mass elimination" pass.
@@ -317,6 +357,13 @@ representation (variables + elements sharing one workspace, garbage-compacted in
    Measured on the 2D Laplacian (n = 10⁴), the narrow arm saves 1 MB of the 2.2 MB the
    ordering allocates and about 3% of its time: the algorithm is bound by the number of
    list entries it touches (≈4.5·10⁵ for 7515 pivots), not by cache footprint.
+   A node's status is read off the arrays the list scans touch anyway: a variable's
+   `nv` is positive while live, negated while it is a member of the current `L_p`, and
+   zero once merged; an absorbed element has `ptr == 0` and `w == −1`. This encoding,
+   and the in-place rewrite of a variable's lists with the pivot's slot reserved and
+   the kept entries written one step behind the read, follow faer's AMD (a port of
+   SuiteSparse AMD, §11). Measured on galen it is worth 3–5%; the scans are bound by
+   short-loop branch behavior rather than by the number of arrays they read.
 
 Complexity: O(nnz · α) expected in practice; worst cases bounded by the compaction
 discipline. Output validated in tests against AMD.jl's permutation *quality* (nnz(L)
@@ -334,15 +381,25 @@ workspace bounds. All O(nnz + n·α) except pattern union O(nnz).
 
 ### 3.1 Pattern setup
 
-Symmetrize the pattern (union with transpose, diagonal dropped) into full CSC form —
-the ordering's input. Duplicates are removed with a per-column stamp, not a sort, and
-no pattern column is sorted anywhere in the pipeline: the ordering, the etree and the
-column-count/row-structure passes read columns as sets, and `rowind` is sorted
-separately where it is built (§3.6). The permuted pattern is materialized exactly once,
-after the postorder, as the below-diagonal pattern in final labels (column `c` = rows
-`> c`), which is what column counts (§3.3) and the supernodal row structure (§3.6)
-read. On the 2D Laplacian this replaces three pattern passes (permuted upper, relabeled
-upper, its transpose: 0.22 ms, 0.96 MB) with one (0.03 ms, 0.24 MB).
+Mirror the strictly-lower entries of `A` (`i > j`; the numeric phase reads nothing
+else, so any stored upper-triangle entry is ignored throughout) into full CSC form, no
+diagonal — the ordering's input. Duplicates are removed with a per-column stamp, not a
+sort, and only when some column of `A` is not strictly increasing; no pattern column is
+sorted anywhere in the pipeline: the ordering, the etree and the column-count passes
+read columns as sets, and `rowind` (§3.6) is produced in order. The permuted pattern
+is materialized once, after the postorder, as the below-diagonal pattern in final
+labels (column `c` = rows `> c`) built directly from `A`'s lower triangle, each entry
+carrying its slot in `A`: column counts (§3.3) read it, its transpose feeds the row
+structure (§3.6), and the slots make the assembly map (§4.2) a single write per entry.
+Every array is allocated at its final size; buffers a stage no longer needs (the full
+pattern after the etree, the postorder arrays after the relabeling) are handed to the
+later stages as scratch. When `A`'s index type is wider than `Int32` and `n`,
+`nnz(A)` and `nnz(L)` fit, all of this runs on `Int32` arrays (the same generic
+code, chosen by a static two-arm dispatch like AMD's); only the arrays stored in the
+`Symbolic`, plus the panel offsets and assembly map that address the numeric buffer,
+are built on `A`'s index type. A factor whose `nnz(L)` does not fit is analyzed again
+on `A`'s index type. On lap2d 300² the pattern setup went from 4.3 ms / 7.2 MB to
+1.3 ms / 3.6 MB and the whole analysis from 52 MB to 31 MB allocated per call.
 
 ### 3.2 Elimination tree
 
@@ -405,11 +462,14 @@ even when patterns don't nest, padding with explicit zeros, to fatten dense bloc
 BLAS-3). **Those papers motivate the transformation but prescribe no thresholds; the
 thresholds below are our own free tunables (see §1.4 provenance note).**
 
-Bottom-up FIXPOINT pass over the supernodal etree (design §3.5 revision, amalgamation fixpoint;
-see the `relaxed_amalgamation` docstring in `src/symbolic/supernodes.jl` for the
-full algorithm and the exact union-height row estimate that replaced the original
-single-pass proxy): merge child c into parent s if the zero-fraction of the merged
-block,
+Bottom-up FIXPOINT over the supernodal etree (see the `relaxed_amalgamation`
+docstring in `src/symbolic/supernodes.jl` for the full algorithm and the exact
+union-height row estimate): the result is that of re-sweeping all supernodes in
+ascending order until no merge happens, but only the supernodes whose outcome can
+have changed are re-evaluated — after a merge of s into t, those are t itself and the
+block ending just before s's — tracked in a bit set, so the cost is one sweep plus the
+merges (the sweep count on the 2D and 3D Laplacians is 10 and 14). Merge child c into
+parent s if the zero-fraction of the merged block,
 
 `z = 1 − (true nnz of merged columns) / (merged block cells)`,
 
@@ -435,8 +495,15 @@ invariant — and remain free tunables, not hardware- or paper-derived constants
 
 For each (post-amalgamation) supernode s with columns `super[s]:super[s+1]-1`,
 `rowind[s]` = the sorted union of the member columns' L-patterns = the diagonal-block
-rows followed by the below-diagonal rows. Built in one pass using a length-n marker
-array. `sparent[s]` = supernode containing `parent[last column of s]`.
+rows followed by the below-diagonal rows, which equal `struct(L[:, last column of s])`
+(every member's etree path leaves the block through its last column, §3.5). Its size is
+therefore `ncols(s) + colcount[last column] − 1`, known from §3.3, and the lists are
+filled by Liu's row subtrees at supernode granularity: row `i` is climbed from the
+supernodes of its upper-triangle entries along `sparent` until a supernode already
+stamped with `i` or `i`'s own supernode. Rows are visited in ascending order, so every
+list comes out sorted, and the stamp array is indexed by supernode. `sparent[s]` =
+supernode containing `parent[last column of s]`. On lap3d 45³ the row structure takes
+3.8 ms.
 
 **Workspace bounds (independent derivation — B1).** These fall directly out of the §4.3
 schedule; they are computed here so the numeric phase never allocates:
@@ -877,9 +944,9 @@ COLAMD also keeps the matching BSD-3 notice.
 
 **Provenance table** (every algorithm, its allowed source):
 
-| Component | Source (papers/books/guides only) |
+| Component | Source (papers, books, user guides; faer source for the AMD encoding) |
 |---|---|
-| AMD | Amestoy–Davis–Duff, SIMAX 1996; AMD package *User Guide* (dense-row default, §2.2 pt 6) |
+| AMD | Amestoy–Davis–Duff, SIMAX 1996; AMD package *User Guide* (dense-row default, §2.2 pt 6); node-status encoding and in-place list rewrite (§2.2 pt 7): faer 0.24.4 `src/sparse/linalg/amd.rs` (MIT), a port of SuiteSparse AMD (BSD-3; both notices in `src/ordering/amd.jl`) |
 | Elimination tree, postorder | Liu 1986; Davis, *Direct Methods*, ch. 4 |
 | Column counts | Gilbert–Ng–Peyton 1994; Davis book ch. 4 (implementation reference, §3.3) |
 | Fundamental supernodes | Liu–Ng–Peyton 1993 |

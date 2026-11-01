@@ -263,7 +263,7 @@ end
                 PureSparse.relaxed_amalgamation(n, PureSparse.fundamental_supernodes(n, parent, colcount)..., parent, colcount),
             )
             rowind_ptr, rowind, snode_of, sparent, muz, mer = PureSparse.supernode_rowind(
-                n, cp, rv, parent, nsuper, super
+                n, cp, rv, parent, colcount, nsuper, super
             )
 
             # rowind_ptr/rowind form a valid CSC-style structure of the right total size.
@@ -373,7 +373,7 @@ end
         parent, colcount, cp, rv = postordered_pipeline(n, colptr0, rowval0)
         nsuper, super = PureSparse.fundamental_supernodes(n, parent, colcount)
         rowind_ptr, rowind, snode_of, sparent, max_update_size, max_extend_rows =
-            PureSparse.supernode_rowind(n, cp, rv, parent, nsuper, super)
+            PureSparse.supernode_rowind(n, cp, rv, parent, colcount, nsuper, super)
 
         # max_extend_rows independently recomputed from the partition directly.
         expected_extend = 0

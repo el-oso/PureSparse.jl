@@ -156,7 +156,7 @@ function symbolic_qr_frontal(
     nfront, fsuper = relaxed_amalgamation(nb, nsuper, super, sym.parent, sym.rcount; amalg_cols, amalg_zmax)
     fsnode, fparent = supernode_tree(nb, nfront, fsuper, sym.parent)
     fchildptr, fchildren = _front_children(nfront, fparent)
-    fcolptr, fcolind, _, _, _, _ = supernode_rowind(nb, sym.sptr, sym.sind, sym.parent, nfront, fsuper)
+    fcolptr, fcolind, _, _, _, _ = supernode_rowind(nb, sym.sptr, sym.sind, sym.parent, sym.rcount, nfront, fsuper)
 
     # arowptr: A-row assignment (§A3.1) — recomputed from leftcol in O(m), matching
     # qr_row_structure's own internal `aptr` (M5a drops it; the frontal builder needs

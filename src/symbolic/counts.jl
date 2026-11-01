@@ -25,16 +25,29 @@ counting transpose; rows come out sorted because columns are scanned in order.
 """
 function lower_pattern(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}) where {Ti <: Integer}
     nz = Int(colptr[n + 1]) - 1
+    return lower_pattern!(Vector{Ti}(undef, n + 1), Vector{Ti}(undef, nz), n, colptr, rowval)
+end
+
+"""
+    lower_pattern!(hptr, hadj, n, colptr, rowval) -> (hptr, hadj)
+
+[`lower_pattern`](@ref) into caller-provided arrays: `hptr` is resized to `n + 1` and
+`hadj` to the number of entries, so buffers the caller no longer needs can be reused.
+"""
+function lower_pattern!(
+        hptr::Vector{Ti}, hadj::Vector{Ti}, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti},
+    ) where {Ti <: Integer}
+    nz = Int(colptr[n + 1]) - 1
+    resize!(hptr, n + 1)
+    resize!(hadj, nz)
     cnt = zeros(Ti, n)
     @inbounds for p in 1:nz
         cnt[rowval[p]] += one(Ti)
     end
-    hptr = Vector{Ti}(undef, n + 1)
     hptr[1] = one(Ti)
     @inbounds for r in 1:n
         hptr[r + 1] = hptr[r] + cnt[r]
     end
-    hadj = Vector{Ti}(undef, nz)
     fill!(cnt, zero(Ti))
     @inbounds for c in 1:n
         for p in colptr[c]:(colptr[c + 1] - 1)
@@ -62,15 +75,20 @@ function column_counts(n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, parent::V
 end
 
 """
-    column_counts_lower(n, parent, hptr, hadj) -> colcount::Vector{Ti}
+    column_counts_lower(n, parent, hptr, hadj; work) -> colcount::Vector{Ti}
 
 [`column_counts`](@ref) on the below-diagonal pattern: column `c` of `hptr`/`hadj` holds
 the rows `i > c` of the postordered matrix, in any order (as [`lower_pattern`](@ref) or
-[`permuted_lower`](@ref) return it).
+[`permuted_lower`](@ref) return it). `work` is four scratch vectors of length at
+least `n`, overwritten here; callers with spent buffers of that size pass them in.
 """
 function column_counts_lower(
-        n::Int, parent::Vector{Ti}, hptr::Vector{Ti}, hadj::Vector{Ti},
+        n::Int, parent::Vector{Ti}, hptr::Vector{Ti}, hadj::Vector{Ti};
+        work::NTuple{4, Vector{Ti}} = ntuple(_ -> Vector{Ti}(undef, n), 4),
     ) where {Ti <: Integer}
+    first_, maxfirst, prevleaf, ancestor = work
+    all(w -> length(w) >= n, work) || throw(ArgumentError("column_counts_lower: work vectors must have length >= n"))
+    fill!(first_, zero(Ti))
 
     # First-descendant pass. The pattern is already postordered, so node j's postorder
     # index IS j: `first_[q]` = smallest node in subtree(q). Climb from each j installing
@@ -78,7 +96,6 @@ function column_counts_lower(
     # node). A node whose `first_` is still unset when its own turn comes is an etree
     # leaf — its diagonal entry seeds `colcount[j] = 1`; non-leaves start at 0 (their
     # diagonal is accounted for by the leaf/LCA deltas plus the parent decrement below).
-    first_ = zeros(Ti, n)
     colcount = Vector{Ti}(undef, n)   # holds the deltas until the final accumulation
     @inbounds for j in 1:n
         colcount[j] = (first_[j] == 0) ? one(Ti) : zero(Ti)
@@ -97,9 +114,8 @@ function column_counts_lower(
     # processed, so find-root from prevleaf[i] stops exactly at the lowest
     # not-yet-processed ancestor — the LCA. Every non-root j also decrements its parent's
     # delta, cancelling the diagonal's spill into proper ancestors during accumulation.
-    maxfirst = zeros(Ti, n)
-    prevleaf = zeros(Ti, n)
-    ancestor = Vector{Ti}(undef, n)
+    fill!(maxfirst, zero(Ti))
+    fill!(prevleaf, zero(Ti))
     @inbounds for j in 1:n
         ancestor[j] = Ti(j)
     end
@@ -154,4 +170,4 @@ nnz_l(colcount::Vector{<:Integer}) = sum(colcount)
 
 Exact LLᵀ factorization flop count (design §3.3), the GFlops-diagnostic denominator.
 """
-chol_flops(colcount::Vector{<:Integer}) = sum(abs2, colcount)
+chol_flops(colcount::Vector{<:Integer}) = sum(c -> abs2(Int(c)), colcount; init = 0)   # widen first: abs2 wraps on Int32

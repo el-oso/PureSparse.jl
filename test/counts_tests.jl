@@ -105,3 +105,20 @@ end
     colcount2 = PureSparse.column_counts(n, colptr2, rv2, parent2)
     @test colcount2 == vcat(fill(2, n - 1), 1)
 end
+
+@testitem "nnz_l and chol_flops widen Int32 counts before squaring" begin
+    using SparseArrays
+    # 46341² exceeds typemax(Int32); the per-element square must not wrap.
+    @test PureSparse.chol_flops(Int32[46341]) == 46341^2
+    @test PureSparse.chol_flops(Int32[46341, 3]) == 46341^2 + 9
+    @test PureSparse.nnz_l(Int32[typemax(Int32), 1]) == Int(typemax(Int32)) + 1
+    @test PureSparse.chol_flops(Int[]) == 0
+    # An arrow matrix with the hub ordered first has colcount[1] == n, so the flop
+    # count carries that square through the Int32 analysis path.
+    n = 46341
+    I = vcat(1:n, 2:n); J = vcat(1:n, fill(1, n - 1)); V = ones(2n - 1)
+    A = sparse(I, J, V, n, n)
+    S = PureSparse.symbolic(A; ordering = PureSparse.NaturalOrdering(), method = :supernodal)
+    @test S.flops == Float64(sum(abs2, Int.(S.colcount)))
+    @test S.flops > 2.0^31
+end

@@ -5,11 +5,13 @@
 
 # Sort `v[lo:hi]` in place. Pattern columns are short (a handful of entries for the
 # matrices this package targets), where an inline insertion sort beats the per-call
-# overhead of `sort!` on a view; longer runs fall back to `sort!`.
+# overhead of `sort!` on a view; longer runs fall back to `sort!`. The fallback asks for
+# the in-place quicksort: the default algorithm allocates scratch space on every call,
+# and this runs once per pattern column.
 @inline function _sort_segment!(v::Vector{Ti}, lo::Integer, hi::Integer) where {Ti <: Integer}
     len = hi - lo + 1
     if len > 32
-        sort!(view(v, lo:hi))
+        sort!(view(v, lo:hi); alg = QuickSort)
         return v
     end
     for k in (lo + 1):hi
@@ -100,35 +102,51 @@ function symmetrized_upper(
 end
 
 """
-    permuted_lower(n, colptr, rowval, perm, iperm) -> (hptr, hadj)
+    permuted_lower(n, colptr, rowval, perm, iperm) -> (hptr, hadj, hslot)
 
-Below-diagonal pattern of the symmetric permutation of a full, diagonal-free,
-duplicate-free pattern (the output of [`full_symmetric_pattern`](@ref)): column `c` of
-`hadj` holds the rows `{iperm[i] : i ∈ column perm[c]} ∩ (c, n]`, in arrival order.
-Each edge is stored once per endpoint, so it lands in exactly one column and the
-result has `length(rowval) ÷ 2` entries. This is the pattern [`column_counts_lower`](@ref)
-and [`supernode_rowind_lower`](@ref) read (design.md §3.1).
+Below-diagonal pattern of the symmetric permutation of the strictly-lower entries
+(`i > j`) of a CSC pattern, with the slot each entry came from: column `c` of `hadj`
+holds the rows `{max(iperm[i], iperm[j]) : i > j stored, min(iperm[i], iperm[j]) == c}`
+in arrival order, and `hslot[q]` is the index `p` into `rowval` of the entry that
+produced `hadj[q]`. Each stored strictly-lower entry lands in exactly one column, so
+`hadj` has as many entries as the strict lower triangle; a duplicate stored entry
+yields a duplicate row (every consumer reads columns as sets). This is the pattern
+[`column_counts_lower`](@ref) reads and whose transpose [`supernode_rowind`](@ref) climbs (design.md
+§3.1), and `hslot` is what [`assembly_map`](@ref) follows back to the stored entry.
 """
 function permuted_lower(
-        n::Int, colptr::Vector{Ti}, rowval::Vector{Ti}, perm::Vector{Ti}, iperm::Vector{Ti},
+        n::Int, colptr::Vector{<:Integer}, rowval::Vector{<:Integer}, perm::Vector{Ti}, iperm::Vector{Ti},
     ) where {Ti <: Integer}
-    hptr = Vector{Ti}(undef, n + 1)
-    hadj = Vector{Ti}(undef, length(rowval) ÷ 2)
-    w = 1
+    # Pass 1: count per destination column, in `hptr[c + 1]`.
+    hptr = zeros(Ti, n + 1)
+    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        i = Int(rowval[p])
+        i > j || continue
+        hptr[min(iperm[i], iperm[j]) + 1] += one(Ti)
+    end
     hptr[1] = one(Ti)
     @inbounds for c in 1:n
-        jorig = perm[c]
-        for p in colptr[jorig]:(colptr[jorig + 1] - 1)
-            r = iperm[rowval[p]]
-            r > c || continue
-            hadj[w] = r
-            w += 1
-        end
-        hptr[c + 1] = Ti(w)
+        hptr[c + 1] += hptr[c]
     end
-    return hptr, hadj
+    # Pass 2: scatter with `hptr[c]` as the cursor, then shift the pointers back.
+    nz = Int(hptr[n + 1]) - 1
+    hadj = Vector{Ti}(undef, nz)
+    hslot = Vector{Ti}(undef, nz)
+    @inbounds for j in 1:n, p in colptr[j]:(colptr[j + 1] - 1)
+        i = Int(rowval[p])
+        i > j || continue
+        lo, hi = minmax(iperm[i], iperm[j])
+        q = hptr[lo]
+        hptr[lo] = q + one(Ti)
+        hadj[q] = hi
+        hslot[q] = Ti(p)
+    end
+    @inbounds for c in n:-1:2
+        hptr[c] = hptr[c - 1]
+    end
+    hptr[1] = one(Ti)
+    return hptr, hadj, hslot
 end
-
 """
     etree(n, colptr, rowval) -> parent::Vector{Ti}
     etree(n, colptr, rowval, perm, iperm) -> parent::Vector{Ti}
@@ -211,9 +229,11 @@ function postorder(n::Int, parent::Vector{Ti}) where {Ti <: Integer}
     stack = Vector{Ti}(undef, n + 1)
     sp = 0
     k = 1
-    @inbounds for root in _linked_list(head, next, n + 1)
+    root = head[n + 1]
+    @inbounds while !iszero(root)
         sp += 1
         stack[sp] = root
+        root = next[root]
         while sp > 0
             v = stack[sp]
             c = head[v]
@@ -231,17 +251,6 @@ function postorder(n::Int, parent::Vector{Ti}) where {Ti <: Integer}
         end
     end
     return post, postinv
-end
-
-# Small helper: iterate the linked list rooted at `head[start]` (does not mutate).
-function _linked_list(head::Vector{Ti}, next::Vector{Ti}, start::Int) where {Ti <: Integer}
-    out = Ti[]
-    v = head[start]
-    while v != 0
-        push!(out, v)
-        v = next[v]
-    end
-    return out
 end
 
 """

@@ -29,28 +29,76 @@
 # *package's* documented user-guide default treatment, not part of the 1996 paper's
 # algorithm text (design.md §0 N5); stripped variables are appended last.
 #
-# Storage layout, status encoding, compaction procedure, and generation-tagged mark /
-# `w` handling below are our own independent engineering — the paper prescribes only
-# the quotient-graph sets and the elbow-room/garbage-collection discipline.
+# Storage layout, compaction procedure, and the generation-tagged mark / `w` handling
+# below are our own engineering — the paper prescribes only the quotient-graph sets and
+# the elbow-room/garbage-collection discipline. The node-status encoding (a variable's
+# membership in L_p carried by the sign of `nv`, absorbed elements marked in `ptr`/`w`)
+# and the in-place rewrite of a variable's lists with the pivot slot reserved follow
+# faer's `src/sparse/linalg/amd.rs` (faer 0.24.4, MIT license,
+# https://codeberg.org/sarah-quinones/faer), which is a port of SuiteSparse AMD. That
+# code's notice (`COPYING.SUITE_SPARSE.AMD.BSD` in the faer crate) is reproduced here:
+#
+#   AMD, Copyright (c), 1996-2022, Timothy A. Davis, Patrick R. Amestoy, and Iain S.
+#   Duff. All Rights Reserved. Availability: http://www.suitesparse.com
+#   AMD License: BSD 3-clause:
+#   Redistribution and use in source and binary forms, with or without modification,
+#   are permitted provided that the following conditions are met:
+#     * Redistributions of source code must retain the above copyright notice, this
+#       list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above copyright notice, this
+#       list of conditions and the following disclaimer in the documentation and/or
+#       other materials provided with the distribution.
+#     * Neither the name of the organizations to which the authors are affiliated, nor
+#       the names of its contributors may be used to endorse or promote products
+#       derived from this software without specific prior written permission.
+#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+#   EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+#   WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+#   IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY DIRECT, INDIRECT,
+#   INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+#   PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+#   WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+#   ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+#   POSSIBILITY OF SUCH DAMAGE.
+#
+# faer's own notice (its LICENSE file at tag faer-v0.24.4):
+#
+#   MIT License
+#   Copyright (c) 2026 sarah quiñones el kazdadi
+#   Permission is hereby granted, free of charge, to any person obtaining a copy of this
+#   software and associated documentation files (the "Software"), to deal in the
+#   Software without restriction, including without limitation the rights to use, copy,
+#   modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
+#   and to permit persons to whom the Software is furnished to do so, subject to the
+#   following conditions: The above copyright notice and this permission notice shall
+#   be included in all copies or substantial portions of the Software.
+#   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+#   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+#   PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+#   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+#   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+#   OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #
 # Node ids, list entries and degrees are stored in the narrowest integer type that
 # holds them (`Int32` whenever the workspace fits, design.md §2.2 pt 7): the per-node
 # arrays are then L2-resident for n up to ~10⁵, and the algorithm is bound by their
 # random access, not by arithmetic.
 
-# Node lifecycle states. Every node id 1:n starts as a live variable; a pivot becomes an
-# element; merged variables and absorbed elements die (their workspace slice is freed).
-const _AMD_VAR = Int8(0)       # live principal (super)variable
-const _AMD_DEADVAR = Int8(1)   # variable merged into another supervariable
-const _AMD_ELT = Int8(2)       # live element (an eliminated pivot)
-const _AMD_DEADELT = Int8(3)   # absorbed element
-const _AMD_DENSE = Int8(4)     # dense-stripped variable, ordered last
+# Dense-row stripping marks: every node starts as a variable; a stripped one takes no
+# part in the quotient graph and is ordered last. Within the main loop a node.s status
+# (variable, member of L_p, merged, element, absorbed) is encoded in the node arrays
+# themselves; see `_amd_order!`.
+const _AMD_VAR = Int8(0)       # ordinary variable
+const _AMD_DENSE = Int8(1)     # dense-stripped variable, ordered last
 
 # Supervariable hash buckets (design §2.2 pt 3). The paper's hash value is kept per
 # node as its key; the bucket table only has to spread the ≤ |L_p| keys hashed per
 # pivot, so it is capped at this many entries (16 KB of Int32 — L1-resident) instead
 # of n.
 const _AMD_HASH_BUCKETS = 4096
+# Key mask: keeps the stored key within every node type the ordering uses.
+const _AMD_HASH_MASK = Int(typemax(Int32)) >> 1
 
 """
     order(alg::AMDOrdering, n, colptr, rowval) -> Vector{Ti}
@@ -69,23 +117,23 @@ function order(alg::AMDOrdering, n::Int, colptr::Vector{Ti}, rowval::Vector{Ti})
 
     # ---- dense-row stripping (design §2.2 pt 6) ----
     threshold = max(AMD_DENSE_FLOOR, alg.dense_mult * sqrt(n))
-    deg0 = zeros(Int, n)
-    @inbounds for j in 1:n, q in colptr[j]:(colptr[j + 1] - 1)
-        Int(rowval[q]) == j && continue      # contract says no diagonal; tolerate one
-        deg0[j] += 1
-    end
     state = fill(_AMD_VAR, n)
     ndense = 0
-    for j in 1:n
-        if deg0[j] > threshold
+    nzkeep = 0
+    @inbounds for j in 1:n
+        d = 0
+        for q in colptr[j]:(colptr[j + 1] - 1)
+            Int(rowval[q]) == j && continue  # contract says no diagonal; tolerate one
+            d += 1
+        end
+        nzkeep += d
+        if d > threshold
             state[j] = _AMD_DENSE
             ndense += 1
         end
     end
-    nzkeep = 0
-    if iszero(ndense)
-        nzkeep = sum(deg0)
-    else
+    if !iszero(ndense)
+        nzkeep = 0
         @inbounds for j in 1:n, q in colptr[j]:(colptr[j + 1] - 1)
             i = Int(rowval[q])
             (i == j || state[j] == _AMD_DENSE || state[i] == _AMD_DENSE) && continue
@@ -112,12 +160,19 @@ function _amd_order!(
     # One shared integer workspace `qw`: every live node owns one contiguous slice.
     # For a live VARIABLE i the slice is its element list E_i (`ne[i]` entries) followed
     # by its variable list A_i (`na[i]` entries). For a live ELEMENT e the slice is L_e
-    # (`na[e]` entries; `ne[e]` unused). Updated slices only ever shrink in place — the
+    # (`na[e]` entries; `ne[e]` is 0). Updated slices only ever shrink in place — the
     # paper's storage argument (§3): eliminating p frees at least one slot in every
     # updated list, so total live storage never exceeds the initial pattern. New pivot
     # elements L_p are written to the free tail; `_amd_compact!` reclaims fragmentation
     # when the tail is exhausted (paper §5: "garbage collection occurs if the elbow
     # room is exhausted ... in practice, elbow room of size n is sufficient").
+    #
+    # Node status is read off the arrays the list scans touch anyway, so a scan tests
+    # one array per entry (the encoding, like faer's AMD, follows SuiteSparse AMD):
+    #   variable v:  nv[v] > 0 live, nv[v] < 0 live and in the current L_p (|nv| = |v|),
+    #                nv[v] == 0 merged into another supervariable;
+    #   element e:   ptr[e] == 0 and w[e] == -1 once absorbed.
+    # A-lists hold only variables and E-lists only elements, so the two never mix.
     ptr = zeros(Tn, n)
     ne = zeros(Tn, n)
     na = zeros(Tn, n)
@@ -156,7 +211,7 @@ function _amd_order!(
     end
 
     # ---- scratch state ----
-    mk = zeros(Tn, n)                       # generation-tagged mark array
+    mk = zeros(Tn, n)                       # generation-tagged marks for list comparison
     tag = 0
     w = zeros(Tn, n)                        # Algorithm 2's w[] (offset by wflg per pivot)
     wflg = 1
@@ -165,12 +220,10 @@ function _amd_order!(
     hhead = zeros(Tn, nbuckets)             # hash buckets for supervariable detection
     hnext = zeros(Tn, n)
     hkey = zeros(Tn, n)                     # the paper's Hash(i), compared before the lists
-    hbuckets = Vector{Int}(undef, n)        # buckets holding ≥ 2 variables this pivot (first nhb)
+    hbuckets = Vector{Tn}(undef, nbuckets)  # buckets holding ≥ 2 variables this pivot (first nhb)
     nhb = 0
     svnext = zeros(Tn, n)                   # supervariable member chains (output expansion)
     svtail = collect(Tn, 1:n)
-    stash = Vector{Tn}(undef, n)            # A_i copy during the in-place list rewrite
-    hmod = max(n - 1, 1)
 
     kout = 0
     nelim = 0
@@ -194,10 +247,10 @@ function _amd_order!(
         need = Int(na[p])
         @inbounds for q in Int(ptr[p]):(Int(ptr[p]) + Int(ne[p]) - 1)
             e = qw[q]
-            state[e] == _AMD_ELT && (need += Int(na[e]))
+            iszero(ptr[e]) || (need += Int(na[e]))
         end
         if cap - free + 1 < need
-            free = _amd_compact!(qw, ptr, ne, na, state, n, free)
+            free = _amd_compact!(qw, ptr, ne, na, nv, perm, kout, n)
             if cap - free + 1 < need
                 # The post-compaction tail is ≥ n+1 (live storage ≤ initial pattern), but
                 # the list-length bound can exceed it when the L_e overlap; grow. After
@@ -209,8 +262,9 @@ function _amd_order!(
         end
 
         # ---- form L_p = (A_p ∪ ⋃_{e∈E_p} L_e) \ p̄, absorbing E_p (Algorithm 1) ----
-        tag = _amd_bump_tag!(mk, tag)
-        mk[p] = tag                          # excludes p̄ (dead members never appear live)
+        # A variable joins L_p when its nv is still positive, and the sign flip is what
+        # marks it as a member; p̄ is excluded by flipping p first.
+        nv[p] = -nvp
         lp = free
         lplen = 0
         degme = 0                            # |L_p| in original variables
@@ -218,31 +272,31 @@ function _amd_order!(
         nep = Int(ne[p])
         @inbounds for q in (pp + nep):(pp + nep + Int(na[p]) - 1)
             v = qw[q]
-            state[v] == _AMD_VAR || continue # skip stale dead entries
-            mk[v] == tag && continue
-            mk[v] = tag
+            nvv = nv[v]
+            nvv > 0 || continue              # dead, or already in L_p
+            nv[v] = -nvv
             qw[lp + lplen] = v
             lplen += 1
-            degme += Int(nv[v])
+            degme += Int(nvv)
         end
         @inbounds for q in pp:(pp + nep - 1)
             e = qw[q]
-            state[e] == _AMD_ELT || continue
-            for r in Int(ptr[e]):(Int(ptr[e]) + Int(na[e]) - 1)
+            pe = Int(ptr[e])
+            iszero(pe) && continue
+            for r in pe:(pe + Int(na[e]) - 1)
                 v = qw[r]
-                state[v] == _AMD_VAR || continue
-                mk[v] == tag && continue
-                mk[v] = tag
+                nvv = nv[v]
+                nvv > 0 || continue
+                nv[v] = -nvv
                 qw[lp + lplen] = v
                 lplen += 1
-                degme += Int(nv[v])
+                degme += Int(nvv)
             end
-            state[e] = _AMD_DEADELT          # natural absorption: e ∈ E_p dies into p
-            ptr[e] = 0
+            ptr[e] = 0                       # natural absorption: e ∈ E_p dies into p
+            w[e] = -1
         end
 
         # convert variable p to element p (its old slice becomes garbage)
-        state[p] = _AMD_ELT
         ptr[p] = lp
         ne[p] = 0
         na[p] = lplen
@@ -260,14 +314,14 @@ function _amd_order!(
         wflg = _amd_bump_wflg!(w, wflg, lmax)
         @inbounds for q in lp:(lp + lplen - 1)
             i = Int(qw[q])
+            nvi = -nv[i]
             _amd_dl_remove!(dhead, dnext, dprev, Int(deg[i]), i)   # re-bucketed below
             for r in Int(ptr[i]):(Int(ptr[i]) + Int(ne[i]) - 1)
                 e = qw[r]
-                state[e] == _AMD_ELT || continue
-                if w[e] < wflg
-                    w[e] = lvars[e] + wflg
-                end
-                w[e] -= nv[i]
+                we = w[e]
+                we < 0 && continue           # absorbed element
+                we < wflg && (we = lvars[e] + wflg)
+                w[e] = we - nvi
             end
         end
 
@@ -277,27 +331,27 @@ function _amd_order!(
             base = Int(ptr[i])
             elen = Int(ne[i])
             alen = Int(na[i])
-            # Stash A_i first: appending p to the pruned E_i below can overwrite A_i's
-            # first slot before it is read (exactly the case where the slot freed by
-            # this pivot is p ∈ A_i rather than an absorbed element of E_i).
-            for t in 1:alen
-                stash[t] = qw[base + elen + t - 1]
-            end
-            # E_i := (E_i \ absorbed) ∪ {p}  — element absorption, Algorithm 1
+            # E_i := (E_i \ absorbed) ∪ {p}  — element absorption, Algorithm 1. The
+            # pruned list is rewritten in place with p's slot reserved right after it.
+            # The reserved slot shifts the kept A_i entries one place up, so each is
+            # written only once the next entry has been read (a one-entry delay); the
+            # last one lands at most one slot past the old end, which this pivot freed
+            # (p ∈ A_i is dropped, or an element of E_i ∩ E_p was absorbed).
             wpos = base
             esum = 0                          # Σ_{e ∈ E_i \ {p}} |L_e \ L_p|
             hsum = 0                          # Int: a list sum can exceed the node type
             for r in base:(base + elen - 1)
                 e = qw[r]
-                state[e] == _AMD_ELT || continue
+                we = w[e]
+                we < 0 && continue
                 # eq. (5): every live e ∈ E_i was scanned above, so w[e] ≥ wflg holds;
                 # the |L_e| fallback is defensive only.
-                ext = w[e] >= wflg ? Int(w[e]) - wflg : Int(lvars[e])
+                ext = we >= wflg ? Int(we) - wflg : Int(lvars[e])
                 if iszero(ext) && alg.aggressive
                     # aggressive absorption (§5, design §2.2 pt 4): L_e ⊆ L_p makes e
                     # redundant even though e ∉ E_p.
-                    state[e] = _AMD_DEADELT
                     ptr[e] = 0
+                    w[e] = -1
                     continue
                 end
                 esum += ext
@@ -305,21 +359,31 @@ function _amd_order!(
                 wpos += 1
                 hsum += Int(e)
             end
-            qw[wpos] = p
+            ppos = wpos
             wpos += 1
             hsum += p
             ne[i] = wpos - base
             # A_i := (A_i \ L_p) \ p̄  — redundant-entry removal, Algorithm 1
             asum = 0                          # |A_i \ i| in original variables
-            for t in 1:alen
-                v = stash[t]
-                state[v] == _AMD_VAR || continue
-                mk[v] == tag && continue      # ∈ L_p ∪ {p}: covered by element p now
-                qw[wpos] = v
-                wpos += 1
-                asum += Int(nv[v])
+            pend = 0                          # kept entry not yet written back
+            for r in (base + elen):(base + elen + alen - 1)
+                v = qw[r]
+                if !iszero(pend)
+                    qw[wpos] = pend
+                    wpos += 1
+                    pend = 0
+                end
+                nvv = nv[v]
+                nvv > 0 || continue           # ∈ L_p ∪ {p} (covered by element p), or dead
+                pend = Int(v)
+                asum += Int(nvv)
                 hsum += Int(v)
             end
+            if !iszero(pend)
+                qw[wpos] = pend
+                wpos += 1
+            end
+            qw[ppos] = p
             na[i] = wpos - base - Int(ne[i])
             # eq. (4), with the set differences subtracting the WHOLE supervariable 𝐢
             # (design §0 N4):
@@ -328,21 +392,24 @@ function _amd_order!(
             #             |A_i \ 𝐢| + |L_p \ 𝐢| + Σ_{e ∈ E_i \ {p}} |L_e \ L_p| )
             # `nleft − nv[i]` (all other remaining variables) tightens the paper's
             # first term n − k and is still a valid upper bound on external degree.
-            nvi = Int(nv[i])
+            nvi = -Int(nv[i])
             lpext = degme - nvi               # |L_p \ 𝐢|  (i ∈ L_p, so subtract nv[i])
             di = min(nleft - nvi, Int(deg[i]) + lpext, asum + lpext + esum)
             deg[i] = max(di, 0)
-            # Hash(i) = ((Σ_{j∈A_i} j + Σ_{e∈E_i} e) mod (n−1)) + 1   (paper §5)
-            h = rem(hsum, hmod) + 1           # hsum ≥ 0: node ids are positive
+            # The paper's Hash(i) = ((Σ_{j∈A_i} j + Σ_{e∈E_i} e) mod (n−1)) + 1 (§5); the sum
+            # is masked rather than reduced: the key only has to agree for identical
+            # lists, and a mask costs no integer division per variable of L_p.
+            h = (hsum & _AMD_HASH_MASK) + 1    # hsum ≥ 0: node ids are positive
             hkey[i] = h
             b = (h & (nbuckets - 1)) + 1
-            if !iszero(hhead[b])
-                # A bucket is only worth scanning once it holds a second variable; one
-                # with three or more is listed more than once and skipped on the repeat.
+            hb = hhead[b]
+            if !iszero(hb) && iszero(hnext[hb])
+                # A bucket is worth scanning once it holds a second variable; it is
+                # listed exactly then, so the list never exceeds the bucket count.
                 nhb += 1
                 hbuckets[nhb] = b
             end
-            hnext[i] = hhead[b]
+            hnext[i] = hb
             hhead[b] = i
         end
 
@@ -378,11 +445,11 @@ function _amd_order!(
                     end
                     jn = Int(hnext[j])
                     if same
-                        # merge: i = i ∪ j, d̄ᵢ −= |j| (Algorithm 1)
-                        deg[i] -= nv[j]
+                        # merge: i = i ∪ j, d̄ᵢ −= |j| (Algorithm 1); both nv are negative
+                        # (members of L_p), so the sums stay in that encoding
+                        deg[i] += nv[j]
                         nv[i] += nv[j]
                         nv[j] = 0
-                        state[j] = _AMD_DEADVAR
                         ptr[j] = 0
                         ne[j] = 0
                         na[j] = 0
@@ -402,12 +469,14 @@ function _amd_order!(
 
         # ---- compact L_p of merged-away members; re-bucket the survivors ----
         # (lvars[p] = degme stays exact: a merge moves nv between two members of L_p.)
-        # Every survivor also empties its hash bucket; a merged-away variable shares its
-        # bucket with the survivor it merged into.
+        # Every survivor leaves L_p (nv back to positive) and empties its hash bucket; a
+        # merged-away variable shares its bucket with the survivor it merged into.
         wpos = lp
         @inbounds for q in lp:(lp + lplen - 1)
             v = qw[q]
-            state[v] == _AMD_VAR || continue
+            nvv = nv[v]
+            nvv < 0 || continue
+            nv[v] = -nvv
             hhead[(Int(hkey[v]) & (nbuckets - 1)) + 1] = 0
             qw[wpos] = v
             wpos += 1
@@ -416,6 +485,7 @@ function _amd_order!(
         end
         na[p] = wpos - lp
         free = wpos                           # reclaim L_p's tail slack immediately
+        nv[p] = 0                            # p is an element now; no A-list still names it
 
         # ---- emit p̄: the pivot and every variable mass-eliminated with it ----
         v = p
@@ -474,10 +544,12 @@ end
 # w[] generation: a pivot's values lie in [wflg, wflg + lmax] (lmax bounds every |L_e|),
 # so stepping wflg past that range makes every stale entry satisfy w[e] < wflg — the
 # paper's "assume w(k) < 0" without an O(n) clear. The reset fires only when the next
-# step would overflow the element type.
+# step would overflow the element type; it keeps the −1 of absorbed elements.
 function _amd_bump_wflg!(w::Vector{Tn}, wflg::Int, lmax::Int) where {Tn}
     if wflg >= typemax(Tn) - 2 * (lmax + 1)
-        fill!(w, 0)
+        for e in eachindex(w)
+            w[e] >= 0 && (w[e] = 0)
+        end
         wflg = 1
     end
     return wflg + lmax + 1
@@ -486,29 +558,36 @@ end
 # In-place garbage compaction (design §2.2 pt 1; paper §5's "garbage collection"):
 # slide every live slice to the front of the workspace, in address order, and return
 # the new free-tail start. Slices only ever shrink, so the move is always leftward and
-# a forward copy is safe.
+# a forward copy is safe. Address order needs no sort: variable slices sit where the
+# initial pattern put them, in node order, and every element's slice was appended at
+# the tail when it was eliminated, so the elements follow in elimination order — the
+# order of the principal pivots in `perm[1:kout]`. A live node has `ptr > 0`; a live
+# variable also has `nv != 0` (an element's nv is 0); a slice holds `ne + na` entries.
 function _amd_compact!(
-        qw::Vector{Tn}, ptr::Vector{Tn}, ne::Vector{Tn}, na::Vector{Tn},
-        state::Vector{Int8}, n::Int, free::Int
-    ) where {Tn}
-    live = Int[]
-    for v in 1:n
-        ptr[v] > 0 || continue
-        (state[v] == _AMD_VAR || state[v] == _AMD_ELT) || continue
-        push!(live, v)
-    end
-    sort!(live; by = v -> ptr[v])
+        qw::Vector{Tn}, ptr::Vector{Tn}, ne::Vector{Tn}, na::Vector{Tn}, nv::Vector{Tn},
+        perm::Vector{Ti}, kout::Int, n::Int,
+    ) where {Tn, Ti}
     wpos = 1
-    for v in live
-        len = state[v] == _AMD_VAR ? Int(ne[v]) + Int(na[v]) : Int(na[v])
-        src = Int(ptr[v])
-        ptr[v] = wpos
-        if src != wpos
-            @inbounds for t in 0:(len - 1)
-                qw[wpos + t] = qw[src + t]
-            end
-        end
-        wpos += len
+    @inbounds for v in 1:n
+        (ptr[v] > 0 && !iszero(nv[v])) || continue
+        wpos = _amd_move_slice!(qw, ptr, ne, na, v, wpos)
+    end
+    @inbounds for k in 1:kout
+        e = Int(perm[k])
+        ptr[e] > 0 || continue           # merged variables and absorbed elements
+        wpos = _amd_move_slice!(qw, ptr, ne, na, e, wpos)
     end
     return wpos
+end
+
+@inline function _amd_move_slice!(qw::Vector{Tn}, ptr::Vector{Tn}, ne::Vector{Tn}, na::Vector{Tn}, v::Int, wpos::Int) where {Tn}
+    len = Int(ne[v]) + Int(na[v])
+    src = Int(ptr[v])
+    ptr[v] = wpos
+    if src != wpos
+        @inbounds for t in 0:(len - 1)
+            qw[wpos + t] = qw[src + t]
+        end
+    end
+    return wpos + len
 end

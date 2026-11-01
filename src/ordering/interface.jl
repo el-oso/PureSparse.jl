@@ -94,13 +94,13 @@ caller is responsible for supplying one that fits the call site.
 struct GivenOrdering{Ti <: Integer} <: AbstractOrdering
     perm::Vector{Ti}
 end
-function order(alg::GivenOrdering{Ti}, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti <: Integer}
+function order(alg::GivenOrdering, n::Int, ::Vector{Tn}, ::Vector{Tn}) where {Tn <: Integer}
     length(alg.perm) == n || throw(
         DimensionMismatch(
             "GivenOrdering: permutation has length $(length(alg.perm)), expected $n"
         )
     )
-    return alg.perm
+    return convert(Vector{Tn}, alg.perm)   # the caller's own vector when the types agree
 end
 function order_columns(alg::GivenOrdering{Ti}, m::Int, n::Int, ::Vector{Ti}, ::Vector{Ti}) where {Ti <: Integer}
     length(alg.perm) == n || throw(
