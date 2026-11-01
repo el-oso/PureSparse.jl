@@ -14,9 +14,13 @@ can cite them (for example "CONTRIBUTING.md req 5").
 
 1. **Clean-room provenance.** CHOLMOD's Supernodal and Modify modules, and SuiteSparse in
    general (including SuiteSparseQR), are GPL. Design and code must derive only from
-   published papers and independent reasoning. Never read CHOLMOD or SuiteSparse source
-   code in any form: not on GitHub, not through search snippets, not from memory of source
-   text, and not through a third-party port derived from that source. Do not reuse a
+   published papers, independent reasoning and permissively licensed code (below). Never
+   read CHOLMOD or SuiteSparse source code in any form: not on GitHub, not through search
+   snippets, not from memory of source text, and not through a third-party port derived
+   from GPL parts of it. The one permitted port is [faer](https://codeberg.org/sarah-quinones/faer)
+   (MIT): its source may be read, including its AMD and COLAMD, which carry SuiteSparse's
+   BSD-3 AMD/COLAMD licenses. Code derived from faer must keep faer's MIT notice, and code
+   derived from its AMD or COLAMD must also keep the matching BSD-3 notice. Do not reuse a
    SuiteSparse identifier, struct field name or numeric constant unless it is independently
    derivable. If a name or constant happens to match a CHOLMOD default, treat it as a
    defect and rename or re-derive it. Every name and constant must be traceable to a paper

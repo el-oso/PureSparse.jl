@@ -860,8 +860,8 @@ task list. Summary:
 
 **Prohibited, absolutely:** reading CHOLMOD/SuiteSparse source code, headers, comments,
 or commit history — directly or indirectly (including via search-result snippets, LLM
-recall of source text, or third-party ports that are themselves derived from the
-source). Also prohibited: reusing SuiteSparse identifier names, struct field names, or
+recall of source text, or third-party ports derived from GPL parts of the source). Also
+prohibited: reusing SuiteSparse identifier names, struct field names, or
 numeric constants where recall of the implementation (rather than a paper or independent
 derivation) would be the only plausible origin. Every name and constant in this document
 must survive the question "where did this come from?" with an answer that is a paper
@@ -870,7 +870,10 @@ were violations of exactly this test and are fixed in this revision.)
 
 **Permitted:** published papers and books; official *user guides* (interface
 documentation, not implementation); black-box observation of CHOLMOD's outputs and
-performance via SparseArrays; benchmarking against binaries.
+performance via SparseArrays; benchmarking against binaries; the source of faer (MIT),
+including its AMD and COLAMD, which are ports of SuiteSparse's BSD-3 licensed AMD and
+COLAMD. Code derived from faer keeps faer's MIT notice, and code derived from its AMD or
+COLAMD also keeps the matching BSD-3 notice.
 
 **Provenance table** (every algorithm, its allowed source):
 

@@ -6,7 +6,11 @@ are GPL — so PureSparse is a **strict clean-room reimplementation**: design an
 derive only from published academic papers, official user-guide documentation, and
 independent reasoning. **CHOLMOD/SuiteSparse source code is never read, in any form** —
 not on GitHub, not via search-result snippets, not from language-model recall of source
-text, not via a third-party port derived from that source. Black-box comparison against
+text, not via a third-party port derived from GPL parts of it. The exception is
+[faer](https://codeberg.org/sarah-quinones/faer) (MIT), whose source may be read; its AMD
+and COLAMD are ports of SuiteSparse's BSD-3 licensed AMD and COLAMD. Code derived from faer
+keeps faer's MIT notice, and code derived from its AMD or COLAMD also keeps the matching
+BSD-3 notice. Black-box comparison against
 CHOLMOD's *output* (via Julia's `SparseArrays` stdlib, as a correctness oracle and
 benchmark baseline) is fine and used throughout PureSparse's test suite — only the source
 is off-limits.
