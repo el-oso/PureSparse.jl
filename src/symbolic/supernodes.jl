@@ -81,7 +81,7 @@ end
 # absorbed supernode to the block that absorbed it (`owner[s] == s` while alive). Merges
 # only ever point a smaller index at a larger one (etree postorder ⇒ sparent > child), so
 # chains are strictly ascending and halving terminates.
-@inline function _find_owner(owner::Vector{Ti}, s::Ti) where {Ti <: Integer}
+@inline function _find_owner!(owner::Vector{Ti}, s::Ti) where {Ti <: Integer}
     @inbounds while owner[s] != s
         owner[s] = owner[owner[s]]
         s = owner[s]
@@ -166,7 +166,7 @@ function relaxed_amalgamation(
         for s in 1:(nsuper - 1)
             alive[s] || continue
             sparent[s] == 0 && continue        # s's last column is an etree root
-            t = _find_owner(owner, sparent[s]) # alive block containing parent[endc[s]]
+            t = _find_owner!(owner, sparent[s]) # alive block containing parent[endc[s]]
             t <= s && continue                 # malformed (shouldn't happen: postorder ⇒ ancestors > s)
             endc[s] + 1 == start[t] || continue  # not column-contiguous: not a mergeable pair (design §3.5)
 
