@@ -14,4 +14,4 @@ TrimCheck = "f940d764-e397-4179-96e0-76ce55cfe39b"
 PureSparse = {path = ".."}
 
 [compat]
-StrictModeTest = "=0.5.4"
+StrictModeTest = "0.5.8"
