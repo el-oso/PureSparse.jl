@@ -3,7 +3,8 @@
 - The rules for contributions (numbered requirements, test and benchmark methodology) are in
   [`CONTRIBUTING.md`](CONTRIBUTING.md). Follow them exactly; requirement 1 (clean-room
   provenance: never read CHOLMOD or SuiteSparse source; faer's MIT source, including its
-  BSD-licensed AMD/COLAMD ports, may be read) is the one most easily violated by
+  BSD-licensed AMD/COLAMD ports, and SparseDirectSolver.jl's MIT source may be read) is the
+  one most easily violated by
   accident.
 - Architecture and the approved design: [`docs/design.md`](docs/design.md) and the other
   `docs/design*.md` files. Milestone status and open work: [`ROADMAP.md`](ROADMAP.md).

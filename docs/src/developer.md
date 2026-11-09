@@ -71,7 +71,8 @@ third-party port derived from it. Every identifier and numeric constant must sur
 this come from?"* with a paper/user-guide citation or an in-repo derivation — a name or number
 that "happens to match" CHOLMOD's is a defect (this caught two real coincidences during review).
 Black-box comparison against CHOLMOD/SPQR **output** (via `SparseArrays`) is fine and used
-throughout. `faer` (Rust, MIT) and `PureKLU.jl` (MIT) are readable references. See
+throughout. `faer` (Rust, MIT), `PureKLU.jl` (MIT) and `SparseDirectSolver.jl` (MIT) are
+readable references. See
 [Provenance & Licensing](provenance.md) and `docs/design.md` §11.
 
 ## Performance discipline

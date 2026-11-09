@@ -20,7 +20,9 @@ can cite them (for example "CONTRIBUTING.md req 5").
    from GPL parts of it. The one permitted port is [faer](https://codeberg.org/sarah-quinones/faer)
    (MIT): its source may be read, including its AMD and COLAMD, which carry SuiteSparse's
    BSD-3 AMD/COLAMD licenses. Code derived from faer must keep faer's MIT notice, and code
-   derived from its AMD or COLAMD must also keep the matching BSD-3 notice. Do not reuse a
+   derived from its AMD or COLAMD must also keep the matching BSD-3 notice. The source of
+   [SparseDirectSolver.jl](https://github.com/exanauts/SparseDirectSolver.jl) (MIT) may also
+   be read; code derived from it must keep its MIT notice. Do not reuse a
    SuiteSparse identifier, struct field name or numeric constant unless it is independently
    derivable. If a name or constant happens to match a CHOLMOD default, treat it as a
    defect and rename or re-derive it. Every name and constant must be traceable to a paper

@@ -940,7 +940,8 @@ documentation, not implementation); black-box observation of CHOLMOD's outputs a
 performance via SparseArrays; benchmarking against binaries; the source of faer (MIT),
 including its AMD and COLAMD, which are ports of SuiteSparse's BSD-3 licensed AMD and
 COLAMD. Code derived from faer keeps faer's MIT notice, and code derived from its AMD or
-COLAMD also keeps the matching BSD-3 notice.
+COLAMD also keeps the matching BSD-3 notice; the source of SparseDirectSolver.jl (MIT,
+https://github.com/exanauts/SparseDirectSolver.jl), whose derived code keeps its MIT notice.
 
 **Provenance table** (every algorithm, its allowed source):
 

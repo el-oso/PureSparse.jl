@@ -10,7 +10,9 @@ text, not via a third-party port derived from GPL parts of it. The exception is
 [faer](https://codeberg.org/sarah-quinones/faer) (MIT), whose source may be read; its AMD
 and COLAMD are ports of SuiteSparse's BSD-3 licensed AMD and COLAMD. Code derived from faer
 keeps faer's MIT notice, and code derived from its AMD or COLAMD also keeps the matching
-BSD-3 notice. Black-box comparison against
+BSD-3 notice. The source of
+[SparseDirectSolver.jl](https://github.com/exanauts/SparseDirectSolver.jl) (MIT) may also be
+read, and code derived from it keeps its MIT notice. Black-box comparison against
 CHOLMOD's *output* (via Julia's `SparseArrays` stdlib, as a correctness oracle and
 benchmark baseline) is fine and used throughout PureSparse's test suite — only the source
 is off-limits.
