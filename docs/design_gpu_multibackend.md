@@ -212,9 +212,16 @@ cuSOLVER/cuBLAS are **black-box comparison baselines only** — never their sour
 AMDGPU.jl, oneAPI.jl are the portability layer (MIT/permissive, standard deps). No CHOLMOD/SuiteSparse
 source, in any form.
 
-## §B11 Deferred: Metal (FP32 + iterative refinement)
+## §B11 Metal (Float32 only)
 
-Apple Metal has no FP64, so a Metal backend is a *different* project: Float32 GPU factor + solve, then
-CPU **iterative refinement** (residual in FP64, correct) to recover FP64 accuracy for the ill-
-conditioned IPM/KKT target. That is a numerical-methods design in its own right (convergence,
-when-to-stop, FP32 pivot stability) — a separate future milestone, not part of M8.
+`ext/PureSparseMetalExt.jl` runs the shared engine unchanged on Apple GPUs, like the AMD extension:
+it supplies `_default_backend() = MetalBackend()` and `_vendor_available() = false`. Apple GPUs have
+no FP64 and Metal.jl refuses a Float64 array at allocation, so the backend factors and solves Float32
+matrices only. `benchmark/gpu/metal_end2end_test.jl` checks the Float32 factor against the CPU factor
+and the solve residual at every frontier cutoff.
+
+The path is correct and untuned: a warm refactorization of a 30³ 3D Laplacian takes about 6.8 s on an
+Apple M6, against milliseconds on the CPU. Recovering FP64 accuracy from a Float32 GPU factor (CPU
+**iterative refinement** with an FP64 residual, for the ill-conditioned IPM/KKT target) is a
+numerical-methods design in its own right (convergence, when to stop, FP32 pivot stability) and is
+not part of this backend.

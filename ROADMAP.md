@@ -151,7 +151,8 @@ Reopen if a probe shows the `tn` batched gemm and the panel reaching vendor pari
 
 Scope: run the M6 engine on non-NVIDIA GPUs in FP64. The engine is backend-generic
 (`ext/gpu_shared.jl`); each backend is a thin extension that supplies its KernelAbstractions
-backend. AMD ROCm comes first, then Intel oneAPI. Apple Metal is out of scope (no FP64).
+backend. AMD ROCm comes first, then Intel oneAPI. Apple Metal runs the same engine in Float32
+only, since Apple GPUs have no FP64 (`docs/design_gpu_multibackend.md` §B11).
 
 Status by half:
 
@@ -168,7 +169,8 @@ Gate: end-to-end correctness on each backend; on the performance half, faster th
 multithreaded CPU path, with the ratio to the vendor libraries recorded per backend.
 
 Open work: the CDNA probe; Intel oneAPI extension; per-backend dense-front dispatch if the
-probe shows vendor kernels win.
+probe shows vendor kernels win; Metal performance (a warm refactorization of a 30³ 3D
+Laplacian takes about 6.8 s on an Apple M6).
 
 ## M9 — MLIR investigation
 
